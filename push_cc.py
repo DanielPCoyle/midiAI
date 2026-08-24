@@ -6,24 +6,26 @@ Top pad row (notes 92-99) = up to 8 herdr agents, left to right.
   colour -> green done / yellow working / red blocked / white unknown / off empty
 
 Tab buttons above the display (CC 102-109) = push-to-talk for that column.
-  hold   -> record mic, transcribe, insert the text into that agent's prompt.
-            It does NOT press Enter. You read it, then submit.
+  hold   -> drive that agent's own voice:pushToTalk. Claude records, transcribes
+            and submits on release. Needs sox and voiceEnabled.
 
   python3 push_cc.py             run it (Push must be in User mode)
   python3 push_cc.py --list      dump agents, no hardware needed
   python3 push_cc.py --selftest  pure-logic asserts, no hardware needed
 """
 import json
-import shutil
-import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 PORT_NAME = "Ableton Push 2 User Port"
-MIC = ":1"  # ffmpeg avfoundation index: ffmpeg -f avfoundation -list_devices true -i ""
-MODEL = Path(__file__).resolve().parent / "ggml-base.en.bin"
+# Terminals have no key-up event, so Claude Code infers "still holding" from key
+# auto-repeat and calls it released after ~120ms of silence. We imitate the
+# repeat. ctrl+y is one byte, so herdr ships it as literal text -- no key-name
+# table on either side to disagree with us.
+# ponytail: bound in ~/.claude/keybindings.json; move both if ctrl+y ever clashes.
+PTT_KEY = "\x19"
+REPEAT_S = 0.06  # must stay under Claude's 120ms release timer
 POLL_S = 0.5
 SLOTS = 8
 
@@ -42,8 +44,6 @@ STATUS = {
 }
 UNKNOWN = (WHITE, STATIC)
 EMPTY = (BLACK, STATIC)
-
-WAV = Path("/tmp/push-cc-ptt.wav")
 
 
 # ---------------------------------------------------------------- herdr
@@ -86,48 +86,6 @@ def colour_for(agent):
     return STATUS.get(agent.get("agent_status"), UNKNOWN)
 
 
-# ---------------------------------------------------------------- voice
-
-def whisper_bin():
-    return shutil.which("whisper-cli") or shutil.which("whisper-cpp")
-
-
-def record_start():
-    WAV.unlink(missing_ok=True)
-    return subprocess.Popen(
-        ["ffmpeg", "-loglevel", "error", "-f", "avfoundation", "-i", MIC,
-         "-ar", "16000", "-ac", "1", "-y", str(WAV)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-
-def record_stop(proc):
-    """SIGINT so ffmpeg finalises the header, then transcribe."""
-    proc.send_signal(signal.SIGINT)
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    if not WAV.exists() or WAV.stat().st_size < 4000:  # < ~0.1s of audio
-        return ""
-    exe = whisper_bin()
-    if not exe:
-        print("no whisper-cli on PATH: brew install whisper-cpp", file=sys.stderr)
-        return ""
-    out = subprocess.run(
-        [exe, "-m", str(MODEL), "-f", str(WAV), "-nt", "-np"],
-        capture_output=True, text=True, timeout=120,
-    )
-    text = " ".join(out.stdout.split())
-    # Whisper hallucinates a stray word or a bracketed marker on near-silence.
-    # ponytail: a 3-word floor kills that; a genuinely 2-word instruction gets
-    # dropped and you say it again. Swap in whisper-vad-speech-segments if that
-    # ever actually bites.
-    if text.startswith(("[", "(")) or len(text.split()) < 3:
-        return ""
-    return text
-
-
 # ---------------------------------------------------------------- push
 
 class Push:
@@ -167,8 +125,8 @@ def run():
     if not name:
         sys.exit(f"{PORT_NAME!r} not found. Plug the Push in and press its User button.\n"
                  f"seen: {mido.get_output_names()}")
-    if not MODEL.exists():
-        print(f"warning: no whisper model at {MODEL} -- voice will no-op", file=sys.stderr)
+    if subprocess.run(["which", "rec"], capture_output=True).returncode:
+        print("warning: no sox on PATH -- voice will no-op: brew install sox", file=sys.stderr)
 
     inp = mido.open_input(name)
     out = mido.open_output(name)
@@ -176,7 +134,7 @@ def run():
     push.blank()
     out.send(mido.Message("start"))  # spec: animations don't run until a start arrives
 
-    slots, rec, rec_slot, next_poll = {}, None, None, 0.0
+    slots, talk_slot, next_key, next_poll = {}, None, 0.0, 0.0
     print(f"connected to {name}. ctrl-c to quit.")
     try:
         while True:
@@ -190,7 +148,7 @@ def run():
                     a = by_id.get(slots.get(s))
                     colour, anim = colour_for(a)
                     push.pad(s, colour, anim)
-                    if s != rec_slot:
+                    if s != talk_slot:
                         push.cc("tab", s, TAB_CCS, colour if a else BLACK)
                     push.cc("mark", s, MARK_CCS,
                             WHITE if a and a.get("focused") else BLACK)
@@ -202,22 +160,24 @@ def run():
                         herdr("agent", "focus", tid)
                 elif msg.type == "control_change" and msg.control in TAB_CCS:
                     slot = TAB_CCS.index(msg.control)
-                    if msg.value and rec is None and slots.get(slot):
-                        rec, rec_slot = record_start(), slot
+                    if msg.value and talk_slot is None and slots.get(slot):
+                        # No focus call: Claude reads its own pty, so a background
+                        # agent hears this while you keep watching another one.
+                        talk_slot, next_key = slot, 0.0
                         push.cc("tab", slot, TAB_CCS, RED, BLINK)
-                    elif not msg.value and rec is not None and slot == rec_slot:
-                        text, rec, rec_slot = record_stop(rec), None, None
+                    elif not msg.value and slot == talk_slot:
+                        # Just stop repeating; the silence is the release.
+                        talk_slot = None
                         push.cc("tab", slot, TAB_CCS, BLACK)
-                        if text:
-                            print(f"-> slot {slot}: {text}")
-                            herdr("agent", "send", slots[slot], text)
+
+            if talk_slot is not None and now >= next_key:
+                next_key = now + REPEAT_S
+                herdr("agent", "send", slots[talk_slot], PTT_KEY)
 
             time.sleep(0.005)
     except KeyboardInterrupt:
         pass
     finally:
-        if rec is not None:
-            rec.kill()
         push.painted.clear()
         push.blank()
 
