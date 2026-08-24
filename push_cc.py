@@ -25,6 +25,7 @@ PORT_NAME = "Ableton Push 2 User Port"
 # table on either side to disagree with us.
 # ponytail: bound in ~/.claude/keybindings.json; move both if ctrl+y ever clashes.
 PTT_KEY = "\x19"
+KEYS = {"ctrl+y": "\x19", "space": " "}
 REPEAT_S = 0.06  # must stay under Claude's 120ms release timer
 POLL_S = 0.5
 SLOTS = 8
@@ -134,8 +135,9 @@ def run():
     push.blank()
     out.send(mido.Message("start"))  # spec: animations don't run until a start arrives
 
-    slots, talk_slot, next_key, next_poll = {}, None, 0.0, 0.0
-    print(f"connected to {name}. ctrl-c to quit.")
+    key = KEYS[next((a.split("=")[1] for a in sys.argv if a.startswith("--key=")), "ctrl+y")]
+    slots, talk_slot, next_key, next_poll, sent = {}, None, 0.0, 0.0, 0
+    print(f"connected to {name}, sending {key!r}. ctrl-c to quit.", flush=True)
     try:
         while True:
             now = time.monotonic()
@@ -161,18 +163,20 @@ def run():
                 elif msg.type == "control_change" and msg.control in TAB_CCS:
                     slot = TAB_CCS.index(msg.control)
                     if msg.value and talk_slot is None and slots.get(slot):
+                        print(f"tab {slot} down -> {slots[slot]}", flush=True)
                         # No focus call: Claude reads its own pty, so a background
                         # agent hears this while you keep watching another one.
                         talk_slot, next_key = slot, 0.0
                         push.cc("tab", slot, TAB_CCS, RED, BLINK)
                     elif not msg.value and slot == talk_slot:
+                        print(f"tab {slot} up, {sent} keys sent", flush=True)
                         # Just stop repeating; the silence is the release.
                         talk_slot = None
                         push.cc("tab", slot, TAB_CCS, BLACK)
 
             if talk_slot is not None and now >= next_key:
-                next_key = now + REPEAT_S
-                herdr("agent", "send", slots[talk_slot], PTT_KEY)
+                next_key, sent = now + REPEAT_S, sent + 1
+                herdr("agent", "send", slots[talk_slot], key)
 
             time.sleep(0.005)
     except KeyboardInterrupt:
