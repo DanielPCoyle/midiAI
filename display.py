@@ -233,10 +233,9 @@ def render_confirm(name, slot, seconds):
     d.text((30, 58), s, font=f, fill=(240, 160, 160))
 
     x = 30
-    for colour, glyph, text in (((60, 220, 90), "\u25b2", "green pad above  = yes"),
-                                ((240, 60, 60), "\u25bc", "red pad below    = no")):
+    for colour, text in (((60, 220, 90), "button 1  green  = yes"),
+                         ((240, 60, 60), "button 2  red    = no")):
         d.rectangle([x, 104, x + 20, 124], fill=colour)
-        d.text((x + 4, 105), glyph, font=font(14), fill=(0, 0, 0))
         d.text((x + 30, 105), text, font=font(17), fill=(225, 225, 225))
         x += 330
     d.text((WIDTH - 90, 108), f"{seconds}s", font=font(20), fill=(150, 150, 150))

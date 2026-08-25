@@ -23,9 +23,11 @@ it, once, on the edge -- navigate away and it will not drag you back. Its
 button blinks red, which herdr's status alone would never tell you. Answer a
 select widget with the arrows or the master encoder, then Play.
 
-Closing asks first, on the Push: the screen turns red with the session name,
-Play answers yes, Stop Clip answers no, and an unanswered request expires
-after ten seconds. Nothing about it reaches the terminal.
+Closing asks first, on the Push: the screen turns red with the session name
+and the button row becomes a pair -- button 1 green for yes, button 2 blinking
+red for no. Play and Stop Clip answer too, being enter and escape already. An
+unanswered request expires after ten seconds, and none of it reaches the
+terminal.
 
 Add Device splits and starts a new claude there in auto mode, in the current
 agent's directory. Add Track makes a worktree off it, named from whatever is
@@ -81,6 +83,7 @@ SOLO_CC = 61                       # pin the screen so questions stop moving it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
 PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next session
 CONFIRM_S = 10                     # a close request that goes unanswered expires
+YES_SLOT, NO_SLOT = 0, 1           # while confirming, the first two session buttons
 MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
 UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
 
@@ -519,7 +522,11 @@ def run():
                     colour, anim = colour_for(a)
                     if s in asking:
                         colour, anim = RED, BLINK    # herdr cannot see this one
-                    if s == talk_slot:
+                    if closing:                   # the row is a yes/no pair now
+                        colour, anim = ((GREEN, STATIC) if s == YES_SLOT else
+                                        (RED, BLINK) if s == NO_SLOT else
+                                        (BLACK, STATIC))
+                    elif s == talk_slot:
                         colour, anim = RED, STATIC
                     elif s == current and a:
                         colour, anim = WHITE, STATIC  # the one you are driving
@@ -629,7 +636,23 @@ def run():
                         peek, shown = None, None
                 elif msg.type == "control_change" and msg.control in SESSION_CCS:
                     slot = SESSION_CCS.index(msg.control)
-                    if msg.value:
+                    if closing and msg.value:
+                        if slot == YES_SLOT:
+                            kill = closing[0]
+                            pane = (by_id.get(slots.get(kill)) or {}).get("pane_id")
+                            print(f"confirmed -> closing {pane}", flush=True)
+                            if pane:
+                                herdr("pane", "close", pane)
+                                slots.pop(kill, None)
+                            if current == kill:
+                                current = step_slot(current, 1, slots)
+                            closing, shown = None, None
+                        elif slot == NO_SLOT:
+                            print("close cancelled", flush=True)
+                            closing, shown = None, None
+                    elif closing:
+                        pass                        # ignore the release
+                    elif msg.value:
                         if slots.get(slot):
                             pad_down = (slot, now)
                     elif slot == talk_slot:
