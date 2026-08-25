@@ -100,6 +100,70 @@ def _column(d, i, rgb, focused):
     return x
 
 
+def wrap(d, text, width, f, rows):
+    """Greedy wrap to at most `rows` lines, ellipsis on the last if it overflows."""
+    out, line = [], ""
+    for word in text.split():
+        trial = f"{line} {word}".strip()
+        if d.textlength(trial, font=f) <= width:
+            line = trial
+            continue
+        if line:
+            out.append(line)
+        line = word
+        if len(out) == rows:
+            break
+    if line and len(out) < rows:
+        out.append(line)
+    if len(out) == rows and out:
+        while out[-1] and d.textlength(out[-1] + "...", font=f) > width:
+            out[-1] = out[-1][:-1]
+        remaining = len(text.split()) - sum(len(o.split()) for o in out)
+        if remaining > 0:
+            out[-1] += "..."
+    return out
+
+
+def render_focus(info):
+    """One agent, full width. info: slot, name, model, status, act, say,
+    pending, opts. With opts present this becomes the answer screen."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    rgb = STATUS_RGB.get(info.get("status"), STATUS_RGB[None])
+    d.rectangle([10, 10, 34, 34], fill=rgb)
+    d.text((16, 12), str(info.get("slot", 0) + 1), font=font(18), fill=(0, 0, 0))
+    s, f = fit(d, info.get("name", "?"), 300, 24)
+    d.text((44, 11), s, font=f, fill=(240, 240, 240))
+    d.text((352, 16), info.get("model", ""), font=font(16), fill=(150, 175, 215))
+    d.text((352 + 130, 16), info.get("status", "") or "", font=font(16), fill=rgb)
+    d.line([(10, 40), (WIDTH - 10, 40)], fill=(50, 50, 50))
+
+    opts = info.get("opts") or []
+    if opts:
+        s, f = fit(d, info.get("say", "") or "waiting for an answer", WIDTH - 24, 18)
+        d.text((12, 46), s, font=f, fill=(200, 200, 200))
+        for i, (num, label) in enumerate(opts[:4]):
+            y = 72 + i * 22
+            d.rectangle([12, y, 34, y + 18], fill=(150, 175, 215))
+            d.text((18, y + 1), num, font=font(14), fill=(0, 0, 0))
+            s, f = fit(d, label, WIDTH - 60, 16)
+            d.text((42, y), s, font=f, fill=(225, 225, 225))
+        d.text((WIDTH - 210, 20), "bottom row answers", font=font(13), fill=(120, 120, 120))
+        return img
+
+    if info.get("act"):
+        s, f = fit(d, info["act"], WIDTH - 24, 17)
+        d.text((12, 46), s, font=f, fill=(150, 150, 150))
+    body, bf = info.get("say", ""), font(17)
+    for i, line in enumerate(wrap(d, body, WIDTH - 24, bf, 3)):
+        d.text((12, 70 + i * 21), line, font=bf, fill=(228, 228, 228))
+    if info.get("pending"):
+        d.rectangle([0, HEIGHT - 22, WIDTH, HEIGHT], fill=(18, 24, 34))
+        s, f = fit(d, "> " + info["pending"], WIDTH - 24, 15)
+        d.text((12, HEIGHT - 19), s, font=f, fill=(150, 175, 215))
+    return img
+
+
 def render_usage(cols):
     """cols: 8 entries of (name, out_tokens, ctx_tokens, focused), None if empty."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))

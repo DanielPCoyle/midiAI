@@ -18,7 +18,11 @@ The 960x160 screen names each column, so two checkouts of the same repo are
 told apart by the tail of their terminal id. Missing pyusb just means no
 screen; the pads carry on.
 
-Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage.
+Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
+3 focus (one agent, what it is doing, and any question it is asking).
+
+When the current agent is asking something, the bottom row turns white and
+answers it instead of inserting macros.
 White is the one you are on. Usage counts tokens, not money -- nothing here
 knows your plan, and an invented cost is worse than no cost.
 
@@ -52,7 +56,7 @@ APPROVE_NOTES = list(range(84, 92))  # row below: answer that agent's prompt yes
 DENY_NOTES = list(range(76, 84))     # row below that: answer no
 MACRO_NOTES = list(range(36, 44))    # bottom row: canned prompts
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
-VIEWS = ["agents", "usage"]
+VIEWS = ["agents", "usage", "focus"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 
@@ -220,6 +224,52 @@ def usage_col(agent):
             bool(agent.get("focused")))
 
 
+# Two different things render as a numbered list, and they answer differently.
+# A select widget puts a caret on the highlighted row -- a typed digit does not
+# choose there, you arrow to it and press enter. Prose options carry no caret,
+# and the digit is simply the reply you type. The caret is the discriminator.
+_OPT_RE = re.compile(r"^\s*(❯|>)?\s*(\d+)\.\s+(.+?)\s*$")
+UP, DOWN = "\x1b[A", "\x1b[B"
+
+
+def pane_summary(agent):
+    """What this agent is doing, scraped from its rendered pane.
+
+    herdr exposes status but not content, and the pane is the only place the
+    question text and its options actually exist."""
+    if not agent:
+        return {}
+    try:
+        raw = json.loads(herdr("agent", "read", agent["terminal_id"], "--lines", "40"))
+        lines = raw["result"]["read"]["text"].splitlines()
+    except (json.JSONDecodeError, KeyError, OSError, subprocess.SubprocessError):
+        return {}
+    opts, say, act, pending, sel = [], "", "", "", None
+    for line in lines:
+        m = _OPT_RE.match(line)
+        if m and not line.lstrip().startswith(("⏺", "✻")):
+            if m.group(1):
+                sel = len(opts)                # caret: this is a select widget
+            opts.append((m.group(2), m.group(3)))
+        elif line.startswith("⏺"):
+            say, opts, sel = line[1:].strip(), [], None   # new answer, stale choice
+        elif line.startswith("✻"):
+            act = line[1:].strip()
+        elif line.lstrip().startswith("❯"):
+            pending = line.lstrip()[1:].strip()
+    return {"say": say, "act": act, "opts": opts, "sel": sel,
+            "pending": "" if opts else pending}
+
+
+def focus_info(slot, agent, summary):
+    return {"slot": slot,
+            "name": os.path.basename(agent.get("cwd", "")) or "?",
+            "model": model_for(agent),
+            "status": agent.get("agent_status"),
+            **{k: summary.get(k, "") for k in ("act", "say", "pending")},
+            "opts": summary.get("opts") or [], "sel": summary.get("sel")}
+
+
 def panel_col(agent):
     """One screen column. Two agents can share a repo name, so show a tail of
     the terminal id -- that is the thing that actually tells them apart."""
@@ -318,6 +368,7 @@ def run():
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
     by_id, focused = {}, None
     shown, frame, view = None, None, 0
+    current, summary, next_scrape = 0, {}, 0.0
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -342,19 +393,39 @@ def run():
                     push.note("macro", s, MACRO_NOTES[s],
                               BLUE if s < len(MACROS) else BLACK)
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
+                # Scraped every poll, not just in the focus view: the bottom row
+                # answers a pending question from wherever you happen to be.
+                cur = by_id.get(slots.get(current))
+                summary = pane_summary(cur)
+                opts = summary.get("opts") or []
+                target = slots.get(current) or focused
+
                 if disp:
-                    build, draw = (
-                        (panel_col, disp_mod.render) if VIEWS[view] == "agents"
-                        else (usage_col, disp_mod.render_usage))
-                    cols = (view,) + tuple(build(by_id.get(slots.get(s)))
-                                           for s in range(SLOTS))
-                    if cols != shown:               # re-render on change only
-                        shown, frame = cols, draw(cols[1:])
+                    if VIEWS[view] == "focus":
+                        info = focus_info(current, cur, summary) if cur else None
+                        state = (view, repr(info))
+                        drawn = (lambda: disp_mod.render_focus(info)) if info else (
+                            lambda: disp_mod.render((None,) * SLOTS))
+                    else:
+                        build, draw = ((panel_col, disp_mod.render)
+                                       if VIEWS[view] == "agents"
+                                       else (usage_col, disp_mod.render_usage))
+                        cols = tuple(build(by_id.get(slots.get(s))) for s in range(SLOTS))
+                        state = (view, cols)
+                        drawn = lambda: draw(cols)
+                    if state != shown:              # re-render on change only
+                        shown, frame = state, drawn()
                     try:
                         disp.show(frame)            # every poll: it blanks after ~2s
                     except Exception:
                         disp = None
-                push.cc("play", 0, [PLAY_CC], GREEN if focused else BLACK)
+
+                push.cc("play", 0, [PLAY_CC], GREEN if target else BLACK)
+                for s in range(SLOTS):              # bottom row changes job when asked
+                    push.note("macro", s, MACRO_NOTES[s],
+                              WHITE if s < len(opts) else
+                              (BLACK if opts else
+                               (BLUE if s < len(MACROS) else BLACK)))
 
             for msg in inp.iter_pending():
                 if debug and msg.type not in ("clock", "active_sensing"):
@@ -372,7 +443,7 @@ def run():
                         talk_slot, pad_down = None, None
                     elif pad_down and pad_down[0] == slot:
                         herdr("agent", "focus", slots[slot])   # short press = focus
-                        pad_down = None
+                        current, pad_down, shown = slot, None, None
                 elif msg.type == "note_on" and msg.velocity and msg.note in APPROVE_NOTES:
                     answer(APPROVE_NOTES.index(msg.note), YES, slots, by_id)
                 elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
@@ -384,20 +455,33 @@ def run():
                         view, shown = i, None       # force a redraw
                         print(f"view -> {VIEWS[i]}", flush=True)
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
-                      and msg.value and focused):
-                    print(f"play -> enter -> {focused}", flush=True)
-                    herdr("agent", "send", focused, ENTER)
+                      and msg.value and target):
+                    print(f"play -> enter -> {target}", flush=True)
+                    herdr("agent", "send", target, ENTER)
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if i < len(MACROS) and focused:
+                    if opts and target:
+                        if i < len(opts):           # answering, not typing
+                            num, label = opts[i]
+                            sel = summary.get("sel")
+                            print(f"answer {num}. {label[:40]!r} -> {target}", flush=True)
+                            if sel is None:
+                                herdr("agent", "send", target, num)  # prose: type it
+                            else:                   # widget: walk the caret, commit
+                                step = DOWN if i > sel else UP
+                                for _ in range(abs(i - sel)):
+                                    herdr("agent", "send", target, step)
+                                herdr("agent", "send", target, ENTER)
+                    elif i < len(MACROS) and target:
                         label, text = MACROS[i]
-                        print(f"macro {label!r} -> {focused}", flush=True)
-                        herdr("agent", "send", focused, text)
+                        print(f"macro {label!r} -> {target}", flush=True)
+                        herdr("agent", "send", target, text)
 
             if pad_down and talk_slot is None and now - pad_down[1] >= HOLD_S:
                 # No focus call: Claude reads its own pty, so a background agent
                 # hears this while you keep watching another one.
                 talk_slot, next_key, sent = pad_down[0], 0.0, 0
+                current, shown = talk_slot, None
                 print(f"pad {talk_slot} held -> talking to {slots[talk_slot]}", flush=True)
 
             if talk_slot is not None and now >= next_key:
@@ -470,6 +554,13 @@ def selftest():
     assert [int(m) for m in _re.findall(_USAGE_FIELDS["inp"], line)] == [2]
     assert [int(m) for m in _re.findall(_USAGE_FIELDS["cread"], line)] == [199412]
     assert [int(m) for m in _re.findall(_USAGE_FIELDS["out"], line)] == [1017]
+
+    assert _OPT_RE.match("❯ 1. Yes").groups() == ("❯", "1", "Yes")
+    assert _OPT_RE.match("  2. No, exit").groups() == (None, "2", "No, exit")
+    assert _OPT_RE.match("  ⏵⏵ auto mode on") is None
+    assert _OPT_RE.match("❯ commit the fix") is None   # typed text, not a choice
+    assert _OPT_RE.match("❯ 1. Yes").group(1) == "❯"    # widget: caret present
+    assert _OPT_RE.match("  2. No, exit").group(1) is None      # prose: none
     print("ok")
 
 
