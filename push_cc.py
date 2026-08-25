@@ -29,6 +29,10 @@ option when one is being offered, and scroll the focus view when none is.
 When the current agent is asking something, the bottom row turns white and
 answers it instead of inserting macros.
 
+Add Device splits and starts a new claude there in auto mode, in the current
+agent's directory. Add Track makes a worktree off it, named from whatever is
+typed in the prompt, or timestamped if that is empty.
+
 Delete runs /clear on the current agent. It submits on press, unlike the macro
 row, because a button labelled Delete doing nothing until you press another
 one is worse than the thing it guards against.
@@ -77,6 +81,8 @@ ARROW_CCS = {44: "left", 45: "right", 46: "up", 47: "down"}
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
 SCROLL_STEP = 3                    # lines per arrow press; the encoder does fine work
 DELETE_CC = 118                    # Delete -> /clear on the current agent
+ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
+ADD_TRACK_CC = 53                  # Add Track -> new worktree
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 
@@ -186,6 +192,14 @@ def assign(live, slots):
             break  # ponytail: 9th+ agent is invisible. 8 pads, 8 agents.
         slots[free] = tid
     return slots
+
+
+def slug(text):
+    """Prompt text -> a branch name. Typing the name in the prompt and pressing
+    the button beats a hardware surface that cannot ask you anything."""
+    keep = [c if (c.isalnum() or c in "/_-") else "-" for c in text.strip().lower()]
+    name = re.sub(r"-{2,}", "-", "".join(keep)).strip("-/")
+    return name[:60] or "push/" + time.strftime("%H%M%S")
 
 
 def step_slot(current, delta, slots):
@@ -513,6 +527,8 @@ def run():
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
                 push.cc("del", 0, [DELETE_CC], RED if target else BLACK)
+                push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
+                push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
                 for s in range(SLOTS):              # bottom row changes job when asked
                     push.note("macro", s, MACRO_NOTES[s],
                               RED if arming else
@@ -547,6 +563,20 @@ def run():
                     if i < len(VIEWS):
                         view, shown = i, None       # force a redraw
                         print(f"view -> {VIEWS[i]}", flush=True)
+                elif (msg.type == "control_change" and msg.control == ADD_DEVICE_CC
+                      and msg.value):
+                    where = (cur or {}).get("cwd") or os.getcwd()
+                    print(f"add device -> new claude (auto) in {where}", flush=True)
+                    herdr("agent", "start", "claude", "--cwd", where,
+                          "--split", "right", "--focus",
+                          "--", "claude", "--permission-mode", "auto")
+                elif (msg.type == "control_change" and msg.control == ADD_TRACK_CC
+                      and msg.value):
+                    where = (cur or {}).get("cwd") or os.getcwd()
+                    branch = slug(summary.get("pending") or "")
+                    print(f"add track -> worktree {branch!r} off {where}", flush=True)
+                    herdr("worktree", "create", "--cwd", where,
+                          "--branch", branch, "--focus")
                 elif (msg.type == "control_change" and msg.control == DELETE_CC
                       and msg.value and target):
                     print(f"delete -> /clear -> {target}", flush=True)
@@ -705,6 +735,13 @@ def selftest():
     assert label_for("run the tests and report what fails") == "run the"
     assert len(label_for("supercalifragilistic expialidocious")) == 14
     assert len(load_macros()) == SLOTS          # always exactly one per pad
+
+    assert slug("Fix The Parser") == "fix-the-parser"
+    assert slug("feat/thing") == "feat/thing"
+    assert slug("  spaces   everywhere  ") == "spaces-everywhere"
+    assert slug("!!!") .startswith("push/")     # nothing usable -> timestamped
+    assert slug("") .startswith("push/")
+    assert len(slug("x" * 200)) == 60
     print("ok")
 
 
