@@ -52,15 +52,29 @@ class Display:
         self.show(Image.new("RGB", (WIDTH, HEIGHT), "black"))
 
 
-def font(size):
-    for p in ("/System/Library/Fonts/SFNSMono.ttf",
+_FONTS = {}
+# Menlo first, and not for looks: SF NS Mono has no glyph for a checkbox, and
+# none for the markers Claude draws its whole transcript with -- no assistant
+# dot, no activity star, no tool-result elbow, no prompt caret. They render as
+# nothing, so the structure silently disappears. Menlo has all of them and is
+# monospaced, which suits terminal output anyway.
+FONT_PATHS = ("/System/Library/Fonts/Menlo.ttc",
               "/System/Library/Fonts/Supplemental/Menlo.ttc",
-              "/Library/Fonts/Arial.ttf"):
-        try:
-            return ImageFont.truetype(p, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
+              "/System/Library/Fonts/Monaco.ttf",
+              "/System/Library/Fonts/SFNSMono.ttf")
+
+
+def font(size):
+    if size not in _FONTS:
+        for p in FONT_PATHS:
+            try:
+                _FONTS[size] = ImageFont.truetype(p, size)
+                break
+            except OSError:
+                continue
+        else:
+            _FONTS[size] = ImageFont.load_default()
+    return _FONTS[size]
 
 
 STATUS_RGB = {
@@ -134,12 +148,15 @@ def flow(d, lines, width, f):
             if out and out[-1]:
                 out.append("")
             continue
-        indent = "  " if raw.startswith(("  ", "\t")) else ""
+        # keep the real indent, capped: a todo list under a tool result is
+        # three levels deep and flattening it loses the nesting entirely
+        indent = raw[:len(raw) - len(raw.lstrip())].replace("\t", "  ")[:10]
         piece = ""
         for word in text.split():
             trial = f"{piece} {word}".strip()
             if piece and d.textlength(indent + trial, font=f) > width:
                 out.append(indent + piece)
+                indent = indent + "  " if len(indent) < 10 else indent  # hang
                 piece = word
             else:
                 piece = trial
@@ -185,7 +202,7 @@ def render_focus(info):
     scroll = max(0, min(info.get("scroll", 0), max(0, len(body) - rows)))
     end = len(body) - scroll
     for i, line in enumerate(body[max(0, end - rows):end]):
-        grey = 150 if line.startswith(("  ", "\t")) else 228
+        grey = 150 if line.startswith("  ") else 228
         d.text((12, 46 + i * 17), line, font=bf, fill=(grey,) * 3)
 
     if len(body) > rows:                       # scrollbar, right edge
@@ -256,6 +273,23 @@ def render(cols):
     return img
 
 
+def check():
+    """The markers Claude draws its transcript with must actually have glyphs.
+    SF NS Mono silently renders every one of them as nothing."""
+    import numpy as np
+    f = font(15)
+    missing = []
+    for g in "☐☑☒✓✔✗●○⏺✻⎿❯⏵※─→←│•":
+        probe = Image.new("RGB", (40, 30), "black")
+        ImageDraw.Draw(probe).text((4, 4), g, font=f, fill=(255, 255, 255))
+        if np.asarray(probe).sum() <= 2000:
+            missing.append(g)
+    assert not missing, f"{f.getname()} cannot draw: {''.join(missing)}"
+    assert flow(ImageDraw.Draw(Image.new("RGB", (10, 10))),
+                ["    ☒ deep"], 500, f) == ["    ☒ deep"], "indent must survive"
+    print(f"ok ({f.getname()[0]})")
+
+
 def demo(text=False):
     img = Image.new("RGB", (WIDTH, HEIGHT), "black")
     d = ImageDraw.Draw(img)
@@ -274,4 +308,4 @@ def demo(text=False):
 
 
 if __name__ == "__main__":
-    demo(text="--text" in sys.argv)
+    check() if "--check" in sys.argv else demo(text="--text" in sys.argv)
