@@ -39,7 +39,7 @@ agent's directory. Add Track makes a worktree off it, named from whatever is
 typed in the prompt, or timestamped if that is empty.
 
 Stop Clip sends escape, which interrupts a working agent; it goes red while
-there is something to interrupt. Mute clears whatever is typed in the prompt
+there is something to interrupt. Undo clears whatever is typed in the prompt
 and lights only when there is something to clear. Convert runs /compact, New runs /clear, Quantize opens
 /model, Double Loop /effort and Metronome /mcp -- which is a
 select widget, so the arrows and Play drive it. Delete closes the current
@@ -98,7 +98,8 @@ DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
 
-MUTE_CC = 60                       # Mute -> backspace the prompt empty
+UNDO_CC = 119                      # Undo -> backspace the prompt empty
+FREED_CCS = [60]                   # Mute, unmapped now: blank it or it stays lit
 STOP_CC = 29                       # Stop Clip -> escape, interrupts the agent
 BACKSPACE, ESCAPE = "\x7f", "\x1b"
 
@@ -491,6 +492,8 @@ class Push:
             self.cc("tab", s, TAB_CCS, BLACK)
             self.cc("mark", s, MARK_CCS, BLACK)
         self.cc("play", 0, [PLAY_CC], BLACK)
+        for i in range(len(FREED_CCS)):
+            self.cc("freed", i, FREED_CCS, BLACK)
 
 
 def screen():
@@ -605,7 +608,7 @@ def run():
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if target else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
-                push.cc("mute", 0, [MUTE_CC],
+                push.cc("undo", 0, [UNDO_CC],
                         WHITE if summary.get("pending") else BLACK)
                 # red while there is something worth interrupting
                 push.cc("stop", 0, [STOP_CC],
@@ -667,13 +670,13 @@ def run():
                       and msg.value and target):
                     print(f"stop -> escape -> {target}", flush=True)
                     herdr("agent", "send", target, ESCAPE)
-                elif (msg.type == "control_change" and msg.control == MUTE_CC
+                elif (msg.type == "control_change" and msg.control == UNDO_CC
                       and msg.value and target):
                     # ctrl+l never reaches Claude and ctrl+u only kills the row
                     # the cursor is on, so a wrapped prompt survives both.
                     # Backspacing is dumb, depends on no keybinding, and works.
                     n = len(summary.get("pending") or "") + 16
-                    print(f"mute -> {n} backspaces -> {target}", flush=True)
+                    print(f"undo -> {n} backspaces -> {target}", flush=True)
                     herdr("agent", "send", target, BACKSPACE * n)
                 elif (msg.type == "control_change" and msg.control in COMMAND_CCS
                       and msg.value and target):
