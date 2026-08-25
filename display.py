@@ -222,6 +222,27 @@ def render_focus(info):
     return img
 
 
+def render_confirm(name, slot, seconds):
+    """The only irreversible thing on the surface asks first, on the Push."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (26, 6, 6))
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, WIDTH - 1, HEIGHT - 1], outline=(240, 60, 60), width=3)
+    s, f = fit(d, "Close this session?", WIDTH - 60, 34)
+    d.text((30, 18), s, font=f, fill=(255, 255, 255))
+    s, f = fit(d, f"{slot + 1}. {name}", WIDTH - 60, 26)
+    d.text((30, 58), s, font=f, fill=(240, 160, 160))
+
+    x = 30
+    for colour, glyph, text in (((60, 220, 90), "\u25b2", "green pad above  = yes"),
+                                ((240, 60, 60), "\u25bc", "red pad below    = no")):
+        d.rectangle([x, 104, x + 20, 124], fill=colour)
+        d.text((x + 4, 105), glyph, font=font(14), fill=(0, 0, 0))
+        d.text((x + 30, 105), text, font=font(17), fill=(225, 225, 225))
+        x += 330
+    d.text((WIDTH - 90, 108), f"{seconds}s", font=font(20), fill=(150, 150, 150))
+    return img
+
+
 def render_macros(macros, arming=False):
     """The bottom row, spelled out. Eight pads is more than anyone remembers."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))

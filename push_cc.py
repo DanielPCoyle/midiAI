@@ -40,7 +40,12 @@ agent's directory. Add Track makes a worktree off it, named from whatever is
 typed in the prompt, or timestamped if that is empty.
 
 Stop Clip sends escape, which interrupts a working agent; it goes red while
-there is something to interrupt. Hold Shift and tap an agent pad to close it, or a macro pad to record onto it.
+there is something to interrupt. Closing asks first, on the Push: the screen turns red with the session name,
+the green pad above answers yes, any red pad below answers no, and an
+unanswered request expires after ten seconds. Nothing about it reaches the
+terminal.
+
+Hold Shift and tap an agent pad to close it, or a macro pad to record onto it.
 Solo pins the screen so a question elsewhere stops dragging it away. Duplicate
 forks the current agent into a second session on the same directory. Page
 left/right scroll a screenful.
@@ -107,6 +112,7 @@ SOLO_CC = 61                       # pin the screen so questions stop moving it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
 PAGE_CCS = {62: -1, 63: 1}         # page left/right -> a screenful of scroll
 PAGE_LINES = 6                     # what fits in the focus view body
+CONFIRM_S = 10                     # a close request that goes unanswered expires
 MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
 UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
 
@@ -553,6 +559,7 @@ def run():
     current, summary, arming = 0, {}, False
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
     shifted, pinned = False, False
+    closing = None      # (slot, deadline): asked to close, waiting on an answer
     asking, next_sweep, was_asking = set(), 0.0, False
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
@@ -575,8 +582,13 @@ def run():
                             WHITE if a and a.get("focused") else BLACK)
                     # approve/deny light only when there is something to answer
                     blocked = bool(a) and a.get("agent_status") == "blocked"
-                    push.note("ok", s, APPROVE_NOTES[s], GREEN if blocked else BLACK)
-                    push.note("no", s, DENY_NOTES[s], RED if blocked else BLACK)
+                    if closing:     # the rows mean yes and no to the question
+                        push.note("ok", s, APPROVE_NOTES[s],
+                                  GREEN if s == closing[0] else BLACK)
+                        push.note("no", s, DENY_NOTES[s], RED)
+                    else:
+                        push.note("ok", s, APPROVE_NOTES[s], GREEN if blocked else BLACK)
+                        push.note("no", s, DENY_NOTES[s], RED if blocked else BLACK)
                     push.note("macro", s, MACRO_NOTES[s],
                               BLUE if s < len(MACROS) else BLACK)
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
@@ -588,6 +600,9 @@ def run():
                 summary = pane_summary(cur)
                 opts = summary.get("opts") or []
                 target = slots.get(current) or focused
+                if closing and now >= closing[1]:
+                    print("close request expired", flush=True)
+                    closing, shown = None, None
 
                 if now >= next_sweep:
                     next_sweep = now + SWEEP_S
@@ -606,7 +621,15 @@ def run():
                 was_asking = bool(asking)
 
                 if disp:
-                    if VIEWS[view] == "focus":
+                    if closing:
+                        agent = by_id.get(slots.get(closing[0]))
+                        nm = os.path.basename((agent or {}).get("cwd", "")) or "?"
+                        left = max(0, int(closing[1] - now))
+                        slot_n = closing[0]
+                        state = ("closing", slot_n, nm, left)
+                        drawn = (lambda n=nm, i=slot_n, t=left:
+                                 disp_mod.render_confirm(n, i, t))
+                    elif VIEWS[view] == "focus":
                         info = focus_info(seat, cur, summary, scroll) if cur else None
                         state = (view, repr(info))
                         drawn = (lambda: disp_mod.render_focus(info)) if info else (
@@ -679,20 +702,34 @@ def run():
                         talk_slot, pad_down = None, None
                     elif pad_down and pad_down[0] == slot:
                         if shifted:
-                            pane = (by_id.get(slots[slot]) or {}).get("pane_id")
-                            print(f"shift+pad {slot} -> closing {pane}", flush=True)
-                            if pane:
-                                herdr("pane", "close", pane)
-                                slots.pop(slot, None)
+                            closing, shown = (slot, now + CONFIRM_S), None
+                            print(f"shift+pad {slot} -> confirm close?", flush=True)
                             pad_down = None
                             continue
                         herdr("agent", "focus", slots[slot])   # short press = focus
                         current, pad_down, shown = slot, None, None
                         scrolls[slot] = 0
                 elif msg.type == "note_on" and msg.velocity and msg.note in APPROVE_NOTES:
-                    answer(APPROVE_NOTES.index(msg.note), YES, slots, by_id)
+                    slot = APPROVE_NOTES.index(msg.note)
+                    if closing:
+                        if slot == closing[0]:
+                            pane = (by_id.get(slots.get(slot)) or {}).get("pane_id")
+                            print(f"confirmed -> closing {pane}", flush=True)
+                            if pane:
+                                herdr("pane", "close", pane)
+                                slots.pop(slot, None)
+                            if current == slot:
+                                current = step_slot(current, 1, slots)
+                            closing, shown = None, None
+                    else:
+                        answer(slot, YES, slots, by_id)
                 elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
-                    answer(DENY_NOTES.index(msg.note), NO, slots, by_id)
+                    slot = DENY_NOTES.index(msg.note)
+                    if closing:
+                        print("close cancelled", flush=True)
+                        closing, shown = None, None
+                    else:
+                        answer(slot, NO, slots, by_id)
                 elif (msg.type == "control_change" and msg.control in TAB_CCS
                       and msg.value):
                     i = TAB_CCS.index(msg.control)
@@ -732,12 +769,8 @@ def run():
                     herdr("agent", "send", target, cmd)
                 elif (msg.type == "control_change" and msg.control == DELETE_CC
                       and msg.value and cur):
-                    pane = cur.get("pane_id")
-                    print(f"delete -> closing pane {pane} ({target})", flush=True)
-                    if pane:
-                        herdr("pane", "close", pane)
-                        slots.pop(current, None)    # do not paint a dead slot
-                        current, shown = step_slot(current, 1, slots), None
+                    closing, shown = (current, now + CONFIRM_S), None
+                    print(f"delete -> confirm close slot {current}?", flush=True)
                 elif msg.type == "control_change" and msg.control == RECORD_CC:
                     arming, shown = bool(msg.value), None
                     if arming:
