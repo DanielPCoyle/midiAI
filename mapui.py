@@ -37,11 +37,24 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
    border-radius:5px;padding:8px 14px;font:inherit;cursor:pointer}
  button.ghost{background:#2a2a30}
  #msg{margin-top:10px;color:#7fb37f;height:16px;font-size:12px}
+ #bar{display:flex;align-items:center;gap:10px;margin-bottom:14px;font-size:12px}
+ #bar input{width:auto}
+ #live{padding:3px 8px;border-radius:4px;background:#20262e;color:#8a93a0}
+ #live.on{background:#3a2020;color:#e08a8a}
+ body.armed .pad{cursor:crosshair}
+ body.armed .pad.set:hover{border-color:#e08a8a;background:#241a1a}
  .row{display:flex;align-items:center;gap:8px;margin-top:12px}
  .row input{width:auto}
  .row label{margin:0}
 </style>
-<div><h1>Shortcut pads &mdash; laid out as they sit on the Push
+<div>
+<div id=bar>
+  <input type=checkbox id=arm onchange=arm()>
+  <label for=arm>Run on click</label>
+  <span id=live>no session</span>
+  <span class=n>off: clicking edits &middot; on: clicking fires at the Push's session</span>
+</div>
+<h1>Shortcut pads &mdash; laid out as they sit on the Push
   <span class=n style="margin-left:10px">drag a pad onto another to swap them</span></h1>
 <div id=grid></div></div>
 <aside>
@@ -85,7 +98,7 @@ function draw(){
     d.innerHTML='<div class=n>'+(36+i)+(m&&m.submit?' <span style=color:#6eaa6e>\u23ce</span>':'')
                 +'</div>'+(m?escapeHtml(m.label):'');
     if(m) d.style.borderLeft='4px solid '+hexFor(m.colour);
-    d.onclick=()=>pick(i);
+    d.onclick=()=>$('arm').checked ? fire(i) : pick(i);
     d.draggable=!!m;                       // an empty pad has nothing to carry
     d.ondragstart=e=>{ from=i; d.classList.add('drag');
                        e.dataTransfer.effectAllowed='move'; };
@@ -103,6 +116,23 @@ function swap(a,b){
   const t=macros[a]; macros[a]=macros[b]; macros[b]=t;
   if(sel===a) sel=b; else if(sel===b) sel=a;
   from=null; put(); }
+
+function arm(){ document.body.classList.toggle('armed', $('arm').checked); }
+async function fire(i){
+  if(!macros[i]) return;
+  const r=await fetch('/fire',{method:'POST',body:JSON.stringify({index:i})});
+  const t=await r.text();
+  note(r.ok?('sent \u2014 '+t):('not sent \u2014 '+t)); }
+
+async function target(){
+  try{
+    const t=await (await fetch('/target')).json();
+    const el=$('live');
+    el.textContent = t.name ? (t.name+(t.status?' \u00b7 '+t.status:'')) : 'no session';
+    el.className = t.name ? 'on' : '';
+  }catch(e){}
+}
+setInterval(target, 2000); target();
 
 function pick(i){ sel=i; const m=macros[i]||{label:'',text:''};
   $('cur').textContent=(36+i); $('label').value=m.label||''; $('text').value=m.text||'';
@@ -150,6 +180,15 @@ fetch('/macros').then(r=>r.json()).then(d=>{
 </script>"""
 
 
+def read_target():
+    """Which session the Push is on. Empty if push_cc is not running."""
+    try:
+        with open(push_cc.TARGET_FILE) as f:
+            return json.load(f) or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype):
         body = body.encode()
@@ -160,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/target":
+            return self._send(200, json.dumps(read_target()), "application/json")
         if self.path == "/macros":
             labels, macros = push_cc.load_macros()
             self._send(200, json.dumps({"labels": labels, "pads": macros}),
@@ -168,6 +209,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE, "text/html; charset=utf-8")
 
     def do_POST(self):
+        if self.path == "/fire":
+            return self._fire()
         if self.path != "/macros":
             return self._send(404, "no", "text/plain")
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -187,6 +230,25 @@ class Handler(BaseHTTPRequestHandler):
               "tag": e.get("tag"), "submit": bool(e.get("submit"))}
              for e in pads[:push_cc.MACRO_SLOTS]], labels)
         self._send(200, "ok", "text/plain")
+
+    def _fire(self):
+        """Run a pad against whichever session the Push has selected."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            index = int(json.loads(raw)["index"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return self._send(400, "bad request", "text/plain")
+        target = read_target().get("terminal_id")
+        if not target:
+            return self._send(409, "no session selected on the Push", "text/plain")
+        _, macros = push_cc.load_macros()
+        m = macros[index] if 0 <= index < len(macros) else None
+        if not m:
+            return self._send(404, "empty pad", "text/plain")
+        push_cc.herdr("agent", "send", target,
+                      m["text"] + ("\r" if m["submit"] else ""))
+        self._send(200, f"{m['label']}{' + enter' if m['submit'] else ''}",
+                   "text/plain")
 
     def log_message(self, *_):
         pass                                   # ponytail: no request spam

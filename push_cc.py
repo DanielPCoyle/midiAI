@@ -111,7 +111,11 @@ COMMAND_CCS = {
     117: ("dbloop", "/effort\r"),   # like /model, a widget the arrows can drive
     9: ("metro", "/mcp\r"),
 }
-MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MACRO_FILE = os.path.join(_HERE, "macros.json")
+# mapui runs in its own process and cannot see which session the Push has
+# selected, so publish it. Written only when it changes.
+TARGET_FILE = os.path.join(_HERE, ".target.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 SWEEP_LINES = "40"                 # enough to spot a question at the foot of a pane
 SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
@@ -208,6 +212,19 @@ def save_macros(macros, labels=None):
 
 LABELS, MACROS = load_macros()
 _macros_mtime = 0.0
+
+
+def publish_target(agent):
+    """Tell mapui which session the Push is pointed at."""
+    payload = {} if not agent else {
+        "terminal_id": agent.get("terminal_id"),
+        "name": os.path.basename(agent.get("cwd", "")) or "?",
+        "status": agent.get("agent_status"),
+    }
+    tmp = TARGET_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, TARGET_FILE)
 
 
 def reload_macros():
@@ -544,6 +561,7 @@ def run():
     current, summary, arming = 0, {}, False
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
     shifted, pinned = False, False
+    published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
     asking, next_sweep, was_asking = set(), 0.0, False
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
@@ -580,6 +598,9 @@ def run():
                 summary = pane_summary(cur)
                 opts = summary.get("opts") or []
                 target = slots.get(current) or focused
+                if (cur or {}).get("terminal_id") != published:
+                    published = (cur or {}).get("terminal_id")
+                    publish_target(cur)
                 if reload_macros():
                     shown = None
                     print("macros reloaded", flush=True)
@@ -849,6 +870,7 @@ def run():
     except KeyboardInterrupt:
         pass
     finally:
+        publish_target(None)
         push.painted.clear()
         push.blank()
         if disp:
