@@ -41,7 +41,7 @@ typed in the prompt, or timestamped if that is empty.
 Stop Clip sends escape, which interrupts a working agent; it goes red while
 there is something to interrupt. Mute clears whatever is typed in the prompt
 and lights only when there is something to clear. Convert runs /compact, New runs /clear, Quantize opens
-/model and Double Loop /effort -- which is a
+/model, Double Loop /effort and Metronome /mcp -- which is a
 select widget, so the arrows and Play drive it. Delete closes the current
 agent's pane outright. It submits on press, unlike the macro
 row, because a button labelled Delete doing nothing until you press another
@@ -109,6 +109,7 @@ COMMAND_CCS = {
     87: ("new", "/clear\r"),
     116: ("quantize", "/model\r"),
     117: ("dbloop", "/effort\r"),   # like /model, a widget the arrows can drive
+    9: ("metro", "/mcp\r"),
 }
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
