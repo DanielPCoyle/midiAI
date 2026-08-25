@@ -21,12 +21,13 @@ import time
 PORT_NAME = "Ableton Push 2 User Port"
 # Terminals have no key-up event, so Claude Code infers "still holding" from key
 # auto-repeat and calls it released after ~120ms of silence. We imitate the
-# repeat. ctrl+y is one byte, so herdr ships it as literal text -- no key-name
-# table on either side to disagree with us.
-# ponytail: bound in ~/.claude/keybindings.json; move both if ctrl+y ever clashes.
-PTT_KEY = "\x19"
-KEYS = {"ctrl+y": "\x19", "space": " "}
+# repeat. space is Claude's stock voice:pushToTalk, so every session already has
+# it and there is no keybindings.json to keep in sync.
+# ponytail: only fires while a pad is physically held, so a stray space needs a
+# deliberate press. If that ever bites, bind a control char and send that byte.
+PTT_KEY = " "
 REPEAT_S = 0.06  # must stay under Claude's 120ms release timer
+HOLD_S = 0.25    # pad down longer than this is a hold, not a tap
 POLL_S = 0.5
 SLOTS = 8
 
@@ -135,9 +136,9 @@ def run():
     push.blank()
     out.send(mido.Message("start"))  # spec: animations don't run until a start arrives
 
-    key = KEYS[next((a.split("=")[1] for a in sys.argv if a.startswith("--key=")), "ctrl+y")]
-    slots, talk_slot, next_key, next_poll, sent = {}, None, 0.0, 0.0, 0
-    print(f"connected to {name}, sending {key!r}. ctrl-c to quit.", flush=True)
+    debug = "--debug" in sys.argv
+    slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
+    print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
             now = time.monotonic()
@@ -149,34 +150,38 @@ def run():
                 for s in range(SLOTS):
                     a = by_id.get(slots.get(s))
                     colour, anim = colour_for(a)
-                    push.pad(s, colour, anim)
-                    if s != talk_slot:
-                        push.cc("tab", s, TAB_CCS, colour if a else BLACK)
+                    push.pad(s, *((RED, STATIC) if s == talk_slot else (colour, anim)))
+                    push.cc("tab", s, TAB_CCS, colour if a else BLACK)
                     push.cc("mark", s, MARK_CCS,
                             WHITE if a and a.get("focused") else BLACK)
 
             for msg in inp.iter_pending():
-                if msg.type == "note_on" and msg.velocity and msg.note in PAD_NOTES:
-                    tid = slots.get(PAD_NOTES.index(msg.note))
-                    if tid:
-                        herdr("agent", "focus", tid)
-                elif msg.type == "control_change" and msg.control in TAB_CCS:
-                    slot = TAB_CCS.index(msg.control)
-                    if msg.value and talk_slot is None and slots.get(slot):
-                        print(f"tab {slot} down -> {slots[slot]}", flush=True)
-                        # No focus call: Claude reads its own pty, so a background
-                        # agent hears this while you keep watching another one.
-                        talk_slot, next_key = slot, 0.0
-                        push.cc("tab", slot, TAB_CCS, RED, BLINK)
-                    elif not msg.value and slot == talk_slot:
-                        print(f"tab {slot} up, {sent} keys sent", flush=True)
-                        # Just stop repeating; the silence is the release.
-                        talk_slot = None
-                        push.cc("tab", slot, TAB_CCS, BLACK)
+                if debug and msg.type not in ("clock", "active_sensing"):
+                    what = (f"CC {msg.control}={msg.value}" if msg.type == "control_change"
+                            else f"note {msg.note} v{msg.velocity}"
+                            if msg.type in ("note_on", "note_off") else msg.type)
+                    print(f"  raw: {what}", flush=True)
+                if msg.type in ("note_on", "note_off") and msg.note in PAD_NOTES:
+                    slot = PAD_NOTES.index(msg.note)
+                    if msg.type == "note_on" and msg.velocity:
+                        if slots.get(slot):
+                            pad_down = (slot, now)
+                    elif slot == talk_slot:
+                        print(f"pad {slot} released, {sent} keys sent", flush=True)
+                        talk_slot, pad_down = None, None
+                    elif pad_down and pad_down[0] == slot:
+                        herdr("agent", "focus", slots[slot])   # short press = focus
+                        pad_down = None
+
+            if pad_down and talk_slot is None and now - pad_down[1] >= HOLD_S:
+                # No focus call: Claude reads its own pty, so a background agent
+                # hears this while you keep watching another one.
+                talk_slot, next_key, sent = pad_down[0], 0.0, 0
+                print(f"pad {talk_slot} held -> talking to {slots[talk_slot]}", flush=True)
 
             if talk_slot is not None and now >= next_key:
                 next_key, sent = now + REPEAT_S, sent + 1
-                herdr("agent", "send", slots[talk_slot], key)
+                herdr("agent", "send", slots[talk_slot], PTT_KEY)
 
             time.sleep(0.005)
     except KeyboardInterrupt:
