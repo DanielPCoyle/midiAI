@@ -28,6 +28,10 @@ option when one is actually being offered.
 
 When the current agent is asking something, the bottom row turns white and
 answers it instead of inserting macros.
+
+Hold Record and tap a macro pad to save whatever is sitting in the current
+agent's prompt onto it -- type it or dictate it, then capture. Tapping with an
+empty prompt clears the pad. Stored in macros.json, which is hand-editable.
 White is the one you are on. Usage counts tokens, not money -- nothing here
 knows your plan, and an invented cost is worse than no cost.
 
@@ -61,11 +65,13 @@ APPROVE_NOTES = list(range(84, 92))  # row below: answer that agent's prompt yes
 DENY_NOTES = list(range(76, 84))     # row below that: answer no
 MACRO_NOTES = list(range(36, 44))    # bottom row: canned prompts
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
-VIEWS = ["agents", "usage", "focus"]
+VIEWS = ["agents", "usage", "focus", "macros"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
 ARROW_CCS = {44: "left", 45: "right", 46: "up", 47: "down"}
+RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
+MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
@@ -90,16 +96,56 @@ ENTER = "\r"
 # Bottom row, left to right. These INSERT and do not submit: the only way to
 # learn a pad is to press it, and a surface you explore by touching must not
 # fire irreversible things on contact. Hit enter yourself once you have read it.
-MACROS = [
-    ("continue",   "continue"),
-    ("tests",      "run the tests and report what fails"),
-    ("review",     "/code-review"),
-    ("commit",     "commit this"),
-    ("why",        "explain what you just did and why"),
-    ("recap",      "stop and summarise where you are"),
-    ("handoff",    "/handoff"),
-    ("diff",       "show me the diff"),
+DEFAULT_MACROS = [
+    "continue",
+    "run the tests and report what fails",
+    "/code-review",
+    "commit this",
+    "explain what you just did and why",
+    "stop and summarise where you are",
+    "/handoff",
+    "show me the diff",
 ]
+
+
+def label_for(text):
+    """Pads need a name that fits, and typing one by hand is a chore nobody
+    will do. Two words off the front is close enough to recognise."""
+    if not text:
+        return ""
+    words = text.split()
+    short = " ".join(words[:2])
+    return short if len(short) <= 14 else short[:13] + "\u2026"
+
+
+def load_macros():
+    """macros.json if present, defaults otherwise. Hand-editable on purpose."""
+    try:
+        with open(MACRO_FILE) as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        raw = DEFAULT_MACROS
+    out = []
+    for entry in (raw or [])[:SLOTS]:
+        if not entry:
+            out.append(None)
+        elif isinstance(entry, str):
+            out.append((label_for(entry), entry))
+        else:
+            text = entry.get("text", "")
+            out.append((entry.get("label") or label_for(text), text) if text else None)
+    return out + [None] * (SLOTS - len(out))
+
+
+def save_macros(macros):
+    tmp = MACRO_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump([None if not m else {"label": m[0], "text": m[1]} for m in macros],
+                  f, indent=2)
+    os.replace(tmp, MACRO_FILE)   # never leave a half-written file behind
+
+
+MACROS = load_macros()
 
 
 # ---------------------------------------------------------------- herdr
@@ -394,7 +440,7 @@ def run():
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
     by_id, focused = {}, None
     shown, frame, view = None, None, 0
-    current, summary, scroll = 0, {}, 0
+    current, summary, scroll, arming = 0, {}, 0, False
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -432,6 +478,10 @@ def run():
                         state = (view, repr(info))
                         drawn = (lambda: disp_mod.render_focus(info)) if info else (
                             lambda: disp_mod.render((None,) * SLOTS))
+                    elif VIEWS[view] == "macros":
+                        cols = tuple(MACROS)
+                        state = (view, cols, arming)
+                        drawn = lambda: disp_mod.render_macros(cols, arming)
                     else:
                         build, draw = ((panel_col, disp_mod.render)
                                        if VIEWS[view] == "agents"
@@ -451,11 +501,13 @@ def run():
                     lit = (bool(slots) if arrow in ("left", "right")
                            else summary.get("sel") is not None)
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
+                push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
                 for s in range(SLOTS):              # bottom row changes job when asked
                     push.note("macro", s, MACRO_NOTES[s],
-                              WHITE if s < len(opts) else
-                              (BLACK if opts else
-                               (BLUE if s < len(MACROS) else BLACK)))
+                              RED if arming else
+                              (WHITE if s < len(opts) else
+                               (BLACK if opts else
+                                (BLUE if MACROS[s] else BLACK))))
 
             for msg in inp.iter_pending():
                 if debug and msg.type not in ("clock", "active_sensing"):
@@ -484,6 +536,10 @@ def run():
                     if i < len(VIEWS):
                         view, shown = i, None       # force a redraw
                         print(f"view -> {VIEWS[i]}", flush=True)
+                elif msg.type == "control_change" and msg.control == RECORD_CC:
+                    arming, shown = bool(msg.value), None
+                    if arming:
+                        view = VIEWS.index("macros")   # show what you would overwrite
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
                       and msg.value):
                     arrow = ARROW_CCS[msg.control]
@@ -504,7 +560,14 @@ def run():
                     herdr("agent", "send", target, ENTER)
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if opts and target:
+                    if arming:
+                        text = (summary.get("pending") or "").strip()
+                        MACROS[i] = (label_for(text), text) if text else None
+                        save_macros(MACROS)
+                        shown = None
+                        print(f"pad {i} <- {text!r}" if text
+                              else f"pad {i} cleared", flush=True)
+                    elif opts and target:
                         if i < len(opts):           # answering, not typing
                             num, label = opts[i]
                             sel = summary.get("sel")
@@ -516,7 +579,7 @@ def run():
                                 for _ in range(abs(i - sel)):
                                     herdr("agent", "send", target, step)
                                 herdr("agent", "send", target, ENTER)
-                    elif i < len(MACROS) and target:
+                    elif MACROS[i] and target:
                         label, text = MACROS[i]
                         print(f"macro {label!r} -> {target}", flush=True)
                         herdr("agent", "send", target, text)
@@ -616,6 +679,12 @@ def selftest():
     assert step_slot(0, -1, live) == 5
     assert step_slot(3, 1, live) == 0           # not on a live slot -> first
     assert step_slot(0, 1, {}) == 0             # nothing live -> stay put
+
+    assert label_for("") == ""
+    assert label_for("/handoff") == "/handoff"
+    assert label_for("run the tests and report what fails") == "run the"
+    assert len(label_for("supercalifragilistic expialidocious")) == 14
+    assert len(load_macros()) == SLOTS          # always exactly one per pad
     print("ok")
 
 

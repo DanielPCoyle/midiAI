@@ -222,6 +222,33 @@ def render_focus(info):
     return img
 
 
+def render_macros(macros, arming=False):
+    """The bottom row, spelled out. Eight pads is more than anyone remembers."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    accent = (240, 60, 60) if arming else (150, 175, 215)
+    d.text((8, 2), "RECORD - tap a pad to save the prompt onto it" if arming
+           else "MACROS", font=font(12), fill=accent if arming else (90, 90, 90))
+    for i, m in enumerate(macros):
+        x = i * COL_W
+        if i:
+            d.line([(x, 20), (x, HEIGHT - 8)], fill=(45, 45, 45))
+        empty = not m
+        swatch = accent if arming else ((60, 60, 60) if empty else accent)
+        d.rectangle([x + 8, 24, x + 26, 42], fill=swatch)
+        d.text((x + 12, 25), str(i + 1), font=font(15), fill=(0, 0, 0))
+        if empty:
+            d.text((x + 32, 26), "empty", font=font(13), fill=(70, 70, 70))
+            continue
+        label, text = m
+        s, f = fit(d, label, COL_W - 36, 14)
+        d.text((x + 32, 26), s, font=f, fill=(200, 200, 200))
+        bf = font(13)
+        for j, line in enumerate(wrap(d, text, COL_W - 20, bf, 5)):
+            d.text((x + 10, 52 + j * 15), line, font=bf, fill=(225, 225, 225))
+    return img
+
+
 def render_usage(cols):
     """cols: 8 entries of (name, out_tokens, ctx_tokens, focused), None if empty."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
