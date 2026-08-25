@@ -24,7 +24,8 @@ tempo encoder scrolls that view back through the agent's output; 0 is always
 the live tail, and changing agent snaps back to it.
 
 Arrows go straight through as arrow keys, so they mean whatever Claude means
-by them in that moment. Tap a pad to change agent, turn the tempo encoder to
+by them in that moment; the master encoder sends the same up/down, which is
+easier than jabbing a button when a list is long. Tap a pad to change agent, turn the tempo encoder to
 scroll.
 
 When any agent starts asking something the screen jumps to the focus view on
@@ -87,6 +88,8 @@ VIEWS = ["agents", "usage", "focus", "macros"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
+VOLUME_CC = 79                     # master encoder -> up/down arrows at the agent
+MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
 UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
 
 # Straight through to the agent as real arrow keys. Claude already decides what
@@ -698,6 +701,13 @@ def run():
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
                       and msg.value and target):
                     herdr("agent", "send", target, ARROW_CCS[msg.control])
+                elif (msg.type == "control_change" and msg.control == VOLUME_CC
+                      and target):
+                    # clockwise walks down a list, the way a wheel does
+                    delta = turn(msg.value)
+                    steps = min(abs(delta), MAX_STEPS)
+                    herdr("agent", "send", target,
+                          (DOWN if delta > 0 else UP) * steps)
                 elif msg.type == "control_change" and msg.control == TEMPO_CC:
                     # clockwise winds back through history, anticlockwise returns
                     # to the live tail at 0 -- same sense as the up arrow
