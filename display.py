@@ -354,9 +354,10 @@ def render_typing(cols, who):
             d.line([(x, 6), (x, strip - 6)], fill=(40, 40, 40))
         if not col:
             continue
-        name, status, _model, _sub, _focused, typed = col
-        rgb = STATUS_RGB.get(status, STATUS_RGB[None])
+        rgb = STATUS_RGB.get(col["status"], STATUS_RGB[None])
         lit = i == who
+        name, typed = col["name"], col["typed"]
+        ctx_bar(d, x + 8, 4, COL_W - 18, col.get("context", 0.0), h=2)
         d.rectangle([x + 8, 10, x + 24, 26], fill=rgb if lit else tuple(c // 3 for c in rgb))
         d.text((x + 12, 11), str(i + 1), font=font(13), fill=(0, 0, 0))
         s, f = fit(d, name, COL_W - 36, 13)
@@ -366,8 +367,9 @@ def render_typing(cols, who):
     d.line([(0, strip), (WIDTH, strip)], fill=(48, 48, 48))
 
     col = cols[who]
-    d.text((16, strip + 8), f"{who + 1}. {col[0]}", font=font(13), fill=(110, 110, 110))
-    body, bf = col[5], font(30)
+    d.text((16, strip + 8), f"{who + 1}. {col['name']}", font=font(13),
+           fill=(110, 110, 110))
+    body, bf = col["typed"], font(30)
     lines = wrap(d, body, WIDTH - 40, bf, 2)
     if len(lines) < 2 or d.textlength(body, font=bf) > (WIDTH - 40) * 2:
         bf = font(22)                  # long ones get smaller rather than clipped
@@ -382,7 +384,7 @@ def render(cols, prefer=None):
 
     Hands the glass over to whoever is typing, because a half-written prompt
     is the only thing here that changes while you watch it."""
-    typing = [i for i, c in enumerate(cols) if c and c[5]]
+    typing = [i for i, c in enumerate(cols) if c and c["typed"]]
     if typing:
         # the one you are on wins: if you are typing, that is what you meant
         who = prefer if prefer in typing else typing[0]
@@ -397,10 +399,11 @@ def render(cols, prefer=None):
             t, f = fit(d, str(i + 1), COL_W - 16, 18)
             d.text((x + 10, 10), t, font=f, fill=(45, 45, 45))
             continue
-        name, status, model, sub, focused, typed, ctx = col
+        name, status, model = col["name"], col["status"], col["model"]
+        sub, typed = col["sub"], col["typed"]
         rgb = STATUS_RGB.get(status, STATUS_RGB[None])
-        _column(d, i, rgb, focused)
-        ctx_bar(d, x + 8, 6, COL_W - 18, ctx)
+        _column(d, i, rgb, col["focused"])
+        ctx_bar(d, x + 8, 6, COL_W - 18, col["context"])
         t, f = fit(d, name, COL_W - 20, 22)
         d.text((x + 10, 46), t, font=f, fill=(235, 235, 235))
         t, f = fit(d, sub, COL_W - 34, 12)

@@ -574,13 +574,13 @@ def panel_col(agent, pending=""):
     if agent is None:
         return None
     used, limit = context_for(agent)
-    return (os.path.basename(agent.get("cwd", "")) or "?",
-            agent.get("agent_status"),
-            model_for(agent),
-            agent.get("terminal_id", "")[-6:],
-            bool(agent.get("focused")),
-            pending,
-            used / limit if limit else 0.0)
+    return {"name": os.path.basename(agent.get("cwd", "")) or "?",
+            "status": agent.get("agent_status"),
+            "model": model_for(agent),
+            "sub": agent.get("terminal_id", "")[-6:],
+            "focused": bool(agent.get("focused")),
+            "typed": pending,
+            "context": used / limit if limit else 0.0}
 
 
 def colour_for(agent):
@@ -764,7 +764,14 @@ def run():
                         drawn = ((lambda: draw(cols, seat)) if draw is disp_mod.render
                                  else (lambda: draw(cols)))
                     if state != shown:              # re-render on change only
-                        shown, frame = state, drawn()
+                        try:
+                            shown, frame = state, drawn()
+                        except Exception as e:
+                            # the pads are the product, the screen is the label:
+                            # a drawing bug must not take the surface down
+                            print(f"render failed ({VIEWS[view]}): {e}",
+                                  file=sys.stderr, flush=True)
+                            shown, disp = state, None
                     try:
                         disp.show(frame)            # every poll: it blanks after ~2s
                     except Exception:
@@ -1072,11 +1079,14 @@ def selftest():
     assert panel_col(None) is None
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "blocked",
                      "terminal_id": "term_659ce899ee9293", "focused": True})
-    assert col == ("bugcast", "blocked", "", "ee9293", True, "", 0.0), col
+    assert col["name"] == "bugcast" and col["sub"] == "ee9293", col
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
                      "terminal_id": "t", "focused": False}, "half a sentence")
-    assert col[5] == "half a sentence", col
-    assert 0.0 <= col[6] <= 1.0, "context fraction stays in range"
+    assert col["typed"] == "half a sentence", col
+    assert 0.0 <= col["context"] <= 1.0, "context fraction stays in range"
+    # every renderer reads by key, so a new field cannot break an old unpack
+    assert set(col) == {"name", "status", "model", "sub", "focused",
+                        "typed", "context"}, col
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
     assert short_model("claude-sonnet-5") == "sonnet 5"
