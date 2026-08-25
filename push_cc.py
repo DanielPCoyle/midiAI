@@ -124,6 +124,9 @@ SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
+# Shift and Record are white-only buttons: the value is brightness, not a
+# palette index, so they need their own two levels.
+DIM, BRIGHT = 20, 127
 BLUE = 125  # ponytail: not in the spec's guaranteed set; worst case it is the
             # wrong hue, which costs nothing. Swap if it reads badly.
 
@@ -532,6 +535,7 @@ class Push:
         for i in range(MACRO_SLOTS):
             self.note("macro", i, MACRO_NOTES[i], BLACK)
         self.cc("play", 0, [PLAY_CC], BLACK)
+        self.cc("shift", 0, [SHIFT_CC], BLACK)
         for i in range(len(FREED_CCS)):
             self.cc("freed", i, FREED_CCS, BLACK)
 
@@ -684,7 +688,9 @@ def run():
                     push.cc(f"page{cc}", 0, [cc], WHITE if cur else BLACK)
                 for cc in ARROW_CCS:
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if target else BLACK)
-                push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
+                # a mapped button that never lights reads as a dead one
+                push.cc("shift", 0, [SHIFT_CC], BRIGHT if shifted else DIM)
+                push.cc("rec", 0, [RECORD_CC], RED if arming else DIM)
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
                 push.cc("undo", 0, [UNDO_CC],
                         WHITE if summary.get("pending") else BLACK)
