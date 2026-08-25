@@ -120,6 +120,12 @@ SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
 BLUE = 125  # ponytail: not in the spec's guaranteed set; worst case it is the
             # wrong hue, which costs nothing. Swap if it reads badly.
+
+# Palette indices the Push 2 spec guarantees, plus the blue above. Any 0-127
+# index works on the hardware; these are the ones worth offering by name.
+PALETTE = [("red", RED), ("orange", 3), ("yellow", YELLOW), ("green", GREEN),
+           ("blue", BLUE), ("white", WHITE)]
+DEFAULT_LABELS = [{"name": "prompt", "colour": BLUE}]
 STATIC, PULSE, BLINK = 0, 9, 14
 
 STATUS = {
@@ -158,33 +164,51 @@ def label_for(text):
 
 
 def load_macros():
-    """macros.json if present, defaults otherwise. Hand-editable on purpose."""
+    """macros.json if present, defaults otherwise. Hand-editable on purpose.
+
+    Accepts a bare list, which is what the file used to be, as well as the
+    {labels, pads} form -- an older file must not lose its pads to a schema
+    it was written before."""
     try:
         with open(MACRO_FILE) as f:
             raw = json.load(f)
     except (OSError, json.JSONDecodeError):
         raw = DEFAULT_MACROS
+    if isinstance(raw, dict):
+        labels, pads = raw.get("labels") or DEFAULT_LABELS, raw.get("pads") or []
+    else:
+        labels, pads = DEFAULT_LABELS, raw or []
+    by_name = {l["name"]: l.get("colour", BLUE) for l in labels if l.get("name")}
     out = []
-    for entry in (raw or [])[:MACRO_SLOTS]:
+    for entry in pads[:MACRO_SLOTS]:
         if not entry:
             out.append(None)
         elif isinstance(entry, str):
-            out.append((label_for(entry), entry))
+            out.append((label_for(entry), entry, BLUE))
         else:
             text = entry.get("text", "")
-            out.append((entry.get("label") or label_for(text), text) if text else None)
-    return out + [None] * (MACRO_SLOTS - len(out))
+            if not text:
+                out.append(None)
+                continue
+            colour = by_name.get(entry.get("tag"), entry.get("colour", BLUE))
+            out.append((entry.get("label") or label_for(text), text,
+                        int(colour) & 0x7F, entry.get("tag")))
+    out = [m if m is None or len(m) == 4 else (*m, None) for m in out]
+    return labels, out + [None] * (MACRO_SLOTS - len(out))
 
 
-def save_macros(macros):
+def save_macros(macros, labels=None):
     tmp = MACRO_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump([None if not m else {"label": m[0], "text": m[1]} for m in macros],
-                  f, indent=2)
+        json.dump({"labels": labels if labels is not None else LABELS,
+                   "pads": [None if not m else
+                            {"label": m[0], "text": m[1], "colour": m[2],
+                             "tag": m[3] if len(m) > 3 else None}
+                            for m in macros]}, f, indent=2)
     os.replace(tmp, MACRO_FILE)   # never leave a half-written file behind
 
 
-MACROS = load_macros()
+LABELS, MACROS = load_macros()
 _macros_mtime = 0.0
 
 
@@ -198,7 +222,7 @@ def reload_macros():
     if mtime == _macros_mtime:
         return False
     _macros_mtime = mtime
-    MACROS[:] = load_macros()
+    LABELS[:], MACROS[:] = load_macros()
     return True
 
 
@@ -638,7 +662,7 @@ def run():
                               RED if arming else
                               (WHITE if row0 and i < len(opts) else
                                (BLACK if opts and row0 else
-                                (BLUE if MACROS[i] else BLACK))))
+                                (MACROS[i][2] if MACROS[i] else BLACK))))
 
             for msg in inp.iter_pending():
                 if debug and msg.type not in ("clock", "active_sensing"):
@@ -794,13 +818,15 @@ def run():
                     i = MACRO_NOTES.index(msg.note)
                     if arming or shifted:
                         text = (summary.get("pending") or "").strip()
-                        MACROS[i] = (label_for(text), text) if text else None
+                        keep = MACROS[i][2] if MACROS[i] else BLUE
+                        tag = MACROS[i][3] if MACROS[i] else None
+                        MACROS[i] = (label_for(text), text, keep, tag) if text else None
                         save_macros(MACROS)
                         shown = None
                         print(f"pad {i} <- {text!r}" if text
                               else f"pad {i} cleared", flush=True)
                     elif MACROS[i] and target:
-                        label, text = MACROS[i]
+                        label, text = MACROS[i][0], MACROS[i][1]
                         print(f"macro {label!r} -> {target}", flush=True)
                         herdr("agent", "send", target, text)
 
@@ -854,8 +880,9 @@ def selftest():
     assert colour_for({}) == UNKNOWN
 
     assert len(MACROS) == MACRO_SLOTS, "one entry per macro pad"
-    assert not any(t.endswith("\r") for _, t in filter(None, MACROS)), \
+    assert not any(m[1].endswith("\r") for m in filter(None, MACROS)), \
         "macros must not self-submit"
+    assert all(0 <= m[2] <= 127 for m in filter(None, MACROS)), "palette is 0-127"
     assert len(set(MACRO_NOTES)) == len(MACRO_NOTES) == 64, "every pad, once"
     assert PLAY_CC not in TAB_CCS + SESSION_CCS, "play must not collide with a lit row"
     assert not set(SESSION_CCS) & set(TAB_CCS), "the two button rows must not overlap"
@@ -899,7 +926,7 @@ def selftest():
     assert label_for("/handoff") == "/handoff"
     assert label_for("run the tests and report what fails") == "run the"
     assert len(label_for("supercalifragilistic expialidocious")) == 14
-    assert len(load_macros()) == MACRO_SLOTS   # always exactly one per pad
+    assert len(load_macros()[1]) == MACRO_SLOTS   # always exactly one per pad
     assert len(MACRO_NOTES) == len(set(MACRO_NOTES)) == MACRO_ROWS * SLOTS
     assert min(MACRO_NOTES) == 36 and max(MACRO_NOTES) == 99
 

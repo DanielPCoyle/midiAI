@@ -250,6 +250,10 @@ def render_macros(macros, arming=False):
     d = ImageDraw.Draw(img)
     accent = (240, 60, 60) if arming else (150, 175, 215)
     rows, cell_h = 8, (HEIGHT - 14) // 8
+    # approximate: the Push owns the real palette, this only has to be
+    # recognisable next to it
+    swatches = {127: (224, 60, 60), 3: (224, 138, 44), 8: (224, 208, 44),
+                126: (60, 208, 90), 125: (74, 134, 208), 122: (230, 230, 230)}
     d.text((WIDTH - 250, 2), "RECORD - tap a pad to save the prompt" if arming
            else "SHORTCUTS", font=font(11), fill=accent if arming else (80, 80, 80))
     for r in range(rows):
@@ -261,7 +265,9 @@ def render_macros(macros, arming=False):
                         outline=(38, 38, 38))
             if not m:
                 continue
-            d.rectangle([x + 2, y, x + 5, y + cell_h - 2], fill=accent)
+            hue = accent if arming else swatches.get(
+                m[2] if len(m) > 2 else 125, (150, 175, 215))
+            d.rectangle([x + 2, y, x + 5, y + cell_h - 2], fill=hue)
             s, ff = fit(d, m[0], COL_W - 14, 11)
             d.text((x + 9, y + 1), s, font=ff, fill=(215, 215, 215))
     return img

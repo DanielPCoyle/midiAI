@@ -42,12 +42,27 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
   <input id=label maxlength=24>
   <label>Text <span class=n>(inserted into the prompt, not submitted)</span></label>
   <textarea id=text></textarea>
+  <label>Colour label</label>
+  <select id=tag></select>
   <button onclick=save()>Save</button>
   <button class=ghost onclick=clearPad()>Clear pad</button>
   <div id=msg></div>
+
+  <h1 style="margin-top:22px">Colour labels</h1>
+  <div id=labels></div>
+  <div style="display:flex;gap:6px;margin-top:8px">
+    <input id=lname placeholder="name" style="flex:1">
+    <select id=lcol></select>
+    <button onclick=addLabel() style="margin:0">Add</button>
+  </div>
 </aside>
 <script>
-let macros=[], sel=null;
+let macros=[], labels=[], sel=null;
+// Approximate only. The Push has its own 128-entry palette and the browser
+// cannot see it; these swatches are a guide, the index is the truth.
+const PALETTE=[["red",127,"#e03c3c"],["orange",3,"#e08a2c"],["yellow",8,"#e0d02c"],
+               ["green",126,"#3cd05a"],["blue",125,"#4a86d0"],["white",122,"#e6e6e6"]];
+const hexFor=c=>(PALETTE.find(p=>p[1]===c)||[,,"#4a86d0"])[2];
 const $=id=>document.getElementById(id);
 // note 36 is bottom-left on the Push, so the top screen row is the top pad row
 function draw(){
@@ -56,24 +71,53 @@ function draw(){
     const i=r*8+c, m=macros[i], d=document.createElement('div');
     d.className='pad'+(m?' set':'')+(i===sel?' sel':'');
     d.innerHTML='<div class=n>'+(36+i)+'</div>'+(m?escapeHtml(m.label):'');
+    if(m) d.style.borderLeft='4px solid '+hexFor(m.colour);
     d.onclick=()=>pick(i); g.appendChild(d);
   }
 }
 const escapeHtml=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function pick(i){ sel=i; const m=macros[i]||{label:'',text:''};
-  $('cur').textContent=(36+i); $('label').value=m.label||''; $('text').value=m.text||''; draw(); }
+  $('cur').textContent=(36+i); $('label').value=m.label||''; $('text').value=m.text||'';
+  $('tag').value=m.tag||''; draw(); }
+
+function drawLabels(){
+  const opts=['<option value="">(none)</option>'].concat(
+    labels.map(l=>'<option value="'+escapeHtml(l.name)+'">'+escapeHtml(l.name)+'</option>'));
+  $('tag').innerHTML=opts.join('');
+  $('lcol').innerHTML=PALETTE.map(p=>'<option value="'+p[1]+'">'+p[0]+'</option>').join('');
+  $('labels').innerHTML=labels.map((l,i)=>
+    '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">'+
+    '<span style="width:14px;height:14px;border-radius:3px;background:'+hexFor(l.colour)+'"></span>'+
+    '<span style="flex:1">'+escapeHtml(l.name)+'</span>'+
+    '<button class=ghost style="margin:0;padding:2px 8px" onclick="delLabel('+i+')">x</button></div>'
+  ).join('') || '<span class=n>none yet</span>';
+}
+function addLabel(){
+  const name=$('lname').value.trim(); if(!name) return note('name it first');
+  if(labels.some(l=>l.name===name)) return note('that name is taken');
+  labels.push({name,colour:+$('lcol').value}); $('lname').value=''; put(); }
+function delLabel(i){
+  const gone=labels[i].name;
+  labels.splice(i,1);
+  macros.forEach(m=>{ if(m&&m.tag===gone){ m.tag=null; } });   // no orphan tags
+  put(); }
 async function save(){
   if(sel===null) return note('pick a pad first');
   const text=$('text').value.trim();
-  macros[sel]= text ? {label:($('label').value.trim()||text.split(/\\s+/).slice(0,2).join(' ')),text} : null;
+  const tag=$('tag').value||null;
+  const lab=labels.find(l=>l.name===tag);
+  macros[sel]= text ? {label:($('label').value.trim()||text.split(/\\s+/).slice(0,2).join(' ')),
+                       text, tag, colour: lab?lab.colour:125} : null;
   await put(); }
 async function clearPad(){ if(sel===null) return note('pick a pad first');
   macros[sel]=null; $('label').value=''; $('text').value=''; await put(); }
 async function put(){
-  const r=await fetch('/macros',{method:'POST',body:JSON.stringify(macros)});
-  note(r.ok?'saved \\u2014 live on the Push':'save failed'); draw(); }
+  const r=await fetch('/macros',{method:'POST',
+    body:JSON.stringify({labels,pads:macros})});
+  note(r.ok?'saved \\u2014 live on the Push':'save failed'); draw(); drawLabels(); }
 function note(t){ $('msg').textContent=t; setTimeout(()=>$('msg').textContent='',2500); }
-fetch('/macros').then(r=>r.json()).then(m=>{macros=m; draw();});
+fetch('/macros').then(r=>r.json()).then(d=>{
+  labels=d.labels||[]; macros=d.pads||[]; draw(); drawLabels(); });
 </script>"""
 
 
@@ -88,10 +132,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/macros":
-            macros = push_cc.load_macros()
-            self._send(200, json.dumps(
-                [None if not m else {"label": m[0], "text": m[1]} for m in macros]),
-                "application/json")
+            labels, macros = push_cc.load_macros()
+            self._send(200, json.dumps({"labels": labels, "pads": [
+                None if not m else {"label": m[0], "text": m[1],
+                                    "colour": m[2], "tag": m[3]}
+                for m in macros]}), "application/json")
         else:
             self._send(200, PAGE, "text/html; charset=utf-8")
 
@@ -105,10 +150,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "bad json", "text/plain")
         # go through load_macros' shape so the file can only ever hold what the
         # Push can actually use -- 64 slots, label derived when it is missing
-        push_cc.save_macros([None if not e else
-                             (e.get("label") or push_cc.label_for(e.get("text", "")),
-                              e.get("text", ""))
-                             for e in entries[:push_cc.MACRO_SLOTS]])
+        labels = entries.get("labels") or []
+        pads = entries.get("pads") or []
+        push_cc.save_macros(
+            [None if not e else
+             (e.get("label") or push_cc.label_for(e.get("text", "")),
+              e.get("text", ""), int(e.get("colour", push_cc.BLUE)) & 0x7F,
+              e.get("tag"))
+             for e in pads[:push_cc.MACRO_SLOTS]], labels)
         self._send(200, "ok", "text/plain")
 
     def log_message(self, *_):
