@@ -33,8 +33,9 @@ Add Device splits and starts a new claude there in auto mode, in the current
 agent's directory. Add Track makes a worktree off it, named from whatever is
 typed in the prompt, or timestamped if that is empty.
 
-Mute clears whatever is typed in the prompt and lights only when there is
-something to clear. Convert runs /compact, New runs /clear, Quantize opens
+Stop Clip sends escape, which interrupts a working agent; it goes red while
+there is something to interrupt. Mute clears whatever is typed in the prompt
+and lights only when there is something to clear. Convert runs /compact, New runs /clear, Quantize opens
 /model -- which is a
 select widget, so the arrows and Play drive it. Delete closes the current
 agent's pane outright. It submits on press, unlike the macro
@@ -89,7 +90,8 @@ ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mod
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
 
 MUTE_CC = 60                       # Mute -> backspace the prompt empty
-BACKSPACE = "\x7f"
+STOP_CC = 29                       # Stop Clip -> escape, interrupts the agent
+BACKSPACE, ESCAPE = "\x7f", "\x1b"
 
 # Buttons that send a fixed string to the current agent. The newline is part of
 # the entry: not everything here submits.
@@ -565,6 +567,10 @@ def run():
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
                 push.cc("mute", 0, [MUTE_CC],
                         WHITE if summary.get("pending") else BLACK)
+                # red while there is something worth interrupting
+                push.cc("stop", 0, [STOP_CC],
+                        RED if (cur or {}).get("agent_status") == "working"
+                        else (WHITE if target else BLACK))
                 for cc, (name, _) in COMMAND_CCS.items():
                     push.cc(name, 0, [cc], WHITE if target else BLACK)
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
@@ -617,6 +623,10 @@ def run():
                     print(f"add track -> worktree {branch!r} off {where}", flush=True)
                     herdr("worktree", "create", "--cwd", where,
                           "--branch", branch, "--focus")
+                elif (msg.type == "control_change" and msg.control == STOP_CC
+                      and msg.value and target):
+                    print(f"stop -> escape -> {target}", flush=True)
+                    herdr("agent", "send", target, ESCAPE)
                 elif (msg.type == "control_change" and msg.control == MUTE_CC
                       and msg.value and target):
                     # ctrl+l never reaches Claude and ctrl+u only kills the row
