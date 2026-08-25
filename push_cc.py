@@ -23,8 +23,8 @@ Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
 tempo encoder scrolls that view back through the agent's output; 0 is always
 the live tail, and changing agent snaps back to it.
 
-Arrows: left/right step between live agents, up/down move the highlighted
-option when one is actually being offered.
+Arrows: left/right step between live agents. Up/down move the highlighted
+option when one is being offered, and scroll the focus view when none is.
 
 When the current agent is asking something, the bottom row turns white and
 answers it instead of inserting macros.
@@ -71,6 +71,7 @@ PLAY_CC = 85                       # transport Play -> enter, submits what is ty
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
 ARROW_CCS = {44: "left", 45: "right", 46: "up", 47: "down"}
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
+SCROLL_STEP = 3                    # lines per arrow press; the encoder does fine work
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 
@@ -498,8 +499,12 @@ def run():
 
                 push.cc("play", 0, [PLAY_CC], GREEN if target else BLACK)
                 for cc, arrow in ARROW_CCS.items():
-                    lit = (bool(slots) if arrow in ("left", "right")
-                           else summary.get("sel") is not None)
+                    if arrow in ("left", "right"):
+                        lit = bool(slots)
+                    elif summary.get("sel") is not None:
+                        lit = True              # answering
+                    else:
+                        lit = VIEWS[view] == "focus"    # scrolling
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
                 for s in range(SLOTS):              # bottom row changes job when asked
@@ -550,10 +555,15 @@ def run():
                     elif summary.get("sel") is not None and target:
                         # A real select widget: up/down are confirm:previous and
                         # confirm:next there. In prose, up is history:previous and
-                        # would recall an old prompt, so it stays inert.
+                        # would recall an old prompt, so we never forward it.
                         herdr("agent", "send", target, UP if arrow == "up" else DOWN)
+                    else:                       # nothing to answer -> scroll instead
+                        scroll, shown = max(0, scroll + (
+                            SCROLL_STEP if arrow == "up" else -SCROLL_STEP)), None
                 elif msg.type == "control_change" and msg.control == TEMPO_CC:
-                    scroll, shown = max(0, scroll - turn(msg.value)), None
+                    # clockwise winds back through history, anticlockwise returns
+                    # to the live tail at 0 -- same sense as the up arrow
+                    scroll, shown = max(0, scroll + turn(msg.value)), None
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
                       and msg.value and target):
                     print(f"play -> enter -> {target}", flush=True)
