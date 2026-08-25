@@ -89,6 +89,8 @@ MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus ma
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
 VOLUME_CC = 79                     # master encoder -> up/down arrows at the agent
+ENC_CCS = list(range(71, 79))      # the 8 encoders, one over each agent column
+ENC_TOUCH = list(range(0, 8))      # touching one is a note, not a CC
 MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
 UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
 
@@ -531,7 +533,8 @@ def run():
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
     by_id, focused = {}, None
     shown, frame, view = None, None, 0
-    current, summary, scroll, arming = 0, {}, 0, False
+    current, summary, arming = 0, {}, False
+    scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
     asking, next_sweep, was_asking = set(), 0.0, False
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
@@ -561,7 +564,9 @@ def run():
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
                 # Scraped every poll, not just in the focus view: the bottom row
                 # answers a pending question from wherever you happen to be.
-                cur = by_id.get(slots.get(current))
+                seat = current if peek is None else peek
+                cur = by_id.get(slots.get(seat))
+                scroll = scrolls.get(seat, 0)
                 summary = pane_summary(cur)
                 opts = summary.get("opts") or []
                 target = slots.get(current) or focused
@@ -578,13 +583,13 @@ def run():
                 if asking and not was_asking:
                     ask_slot = current if current in asking else sorted(asking)[0]
                     current, view = ask_slot, VIEWS.index("focus")
-                    shown, scroll = None, 0
+                    shown, scrolls[ask_slot] = None, 0
                     print(f"question on slot {ask_slot} -> focus", flush=True)
                 was_asking = bool(asking)
 
                 if disp:
                     if VIEWS[view] == "focus":
-                        info = focus_info(current, cur, summary, scroll) if cur else None
+                        info = focus_info(seat, cur, summary, scroll) if cur else None
                         state = (view, repr(info))
                         drawn = (lambda: disp_mod.render_focus(info)) if info else (
                             lambda: disp_mod.render((None,) * SLOTS))
@@ -634,7 +639,14 @@ def run():
                             else f"note {msg.note} v{msg.velocity}"
                             if msg.type in ("note_on", "note_off") else msg.type)
                     print(f"  raw: {what}", flush=True)
-                if msg.type in ("note_on", "note_off") and msg.note in PAD_NOTES:
+                if msg.type in ("note_on", "note_off") and msg.note in ENC_TOUCH:
+                    slot = ENC_TOUCH.index(msg.note)
+                    held = msg.type == "note_on" and msg.velocity
+                    if held and slots.get(slot):
+                        peek, view, shown = slot, VIEWS.index("focus"), None
+                    elif not held and peek == slot:
+                        peek, shown = None, None
+                elif msg.type in ("note_on", "note_off") and msg.note in PAD_NOTES:
                     slot = PAD_NOTES.index(msg.note)
                     if msg.type == "note_on" and msg.velocity:
                         if slots.get(slot):
@@ -644,7 +656,8 @@ def run():
                         talk_slot, pad_down = None, None
                     elif pad_down and pad_down[0] == slot:
                         herdr("agent", "focus", slots[slot])   # short press = focus
-                        current, pad_down, shown, scroll = slot, None, None, 0
+                        current, pad_down, shown = slot, None, None
+                        scrolls[slot] = 0
                 elif msg.type == "note_on" and msg.velocity and msg.note in APPROVE_NOTES:
                     answer(APPROVE_NOTES.index(msg.note), YES, slots, by_id)
                 elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
@@ -693,7 +706,7 @@ def run():
                     if pane:
                         herdr("pane", "close", pane)
                         slots.pop(current, None)    # do not paint a dead slot
-                        current, shown, scroll = step_slot(current, 1, slots), None, 0
+                        current, shown = step_slot(current, 1, slots), None
                 elif msg.type == "control_change" and msg.control == RECORD_CC:
                     arming, shown = bool(msg.value), None
                     if arming:
@@ -711,7 +724,15 @@ def run():
                 elif msg.type == "control_change" and msg.control == TEMPO_CC:
                     # clockwise winds back through history, anticlockwise returns
                     # to the live tail at 0 -- same sense as the up arrow
-                    scroll, shown = max(0, scroll + turn(msg.value)), None
+                    seat = current if peek is None else peek
+                    scrolls[seat] = max(0, scrolls.get(seat, 0) + turn(msg.value))
+                    shown = None
+                elif msg.type == "control_change" and msg.control in ENC_CCS:
+                    # each knob scrolls the column beneath it, no switching needed
+                    slot = ENC_CCS.index(msg.control)
+                    scrolls[slot] = max(0, scrolls.get(slot, 0) + turn(msg.value))
+                    if slot in (current, peek):
+                        shown = None
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
                       and msg.value and target):
                     print(f"play -> enter -> {target}", flush=True)
@@ -746,7 +767,8 @@ def run():
                 # No focus call: Claude reads its own pty, so a background agent
                 # hears this while you keep watching another one.
                 talk_slot, next_key, sent = pad_down[0], 0.0, 0
-                current, shown, scroll = talk_slot, None, 0
+                current, shown = talk_slot, None
+                scrolls[talk_slot] = 0
                 print(f"pad {talk_slot} held -> talking to {slots[talk_slot]}", flush=True)
 
             if talk_slot is not None and now >= next_key:
