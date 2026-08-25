@@ -102,6 +102,17 @@ def human(n):
     return str(int(n))
 
 
+def ctx_bar(d, x, y, w, frac, h=3):
+    """How full the context is. Colour carries the warning, not a number: at a
+    glance you want to know whether it is fine, not that it is 0.62."""
+    frac = max(0.0, min(1.0, frac or 0.0))
+    hue = ((60, 208, 90) if frac < 0.6 else
+           (224, 208, 44) if frac < 0.85 else (224, 60, 60))
+    d.rectangle([x, y, x + w, y + h], fill=(38, 38, 38))
+    if frac > 0:
+        d.rectangle([x, y, x + max(1, int(w * frac)), y + h], fill=hue)
+
+
 def _column(d, i, rgb, focused):
     """Shared chrome: divider, focus ring, numbered swatch."""
     x = i * COL_W
@@ -171,6 +182,7 @@ def render_focus(info):
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
     rgb = STATUS_RGB.get(info.get("status"), STATUS_RGB[None])
+    ctx_bar(d, 10, 3, WIDTH - 20, info.get("context", 0.0))
     d.rectangle([10, 10, 34, 34], fill=rgb)
     d.text((16, 12), str(info.get("slot", 0) + 1), font=font(18), fill=(0, 0, 0))
     s, f = fit(d, info.get("name", "?"), 300, 24)
@@ -385,9 +397,10 @@ def render(cols, prefer=None):
             t, f = fit(d, str(i + 1), COL_W - 16, 18)
             d.text((x + 10, 10), t, font=f, fill=(45, 45, 45))
             continue
-        name, status, model, sub, focused, typed = col
+        name, status, model, sub, focused, typed, ctx = col
         rgb = STATUS_RGB.get(status, STATUS_RGB[None])
         _column(d, i, rgb, focused)
+        ctx_bar(d, x + 8, 6, COL_W - 18, ctx)
         t, f = fit(d, name, COL_W - 20, 22)
         d.text((x + 10, 46), t, font=f, fill=(235, 235, 235))
         t, f = fit(d, sub, COL_W - 34, 12)

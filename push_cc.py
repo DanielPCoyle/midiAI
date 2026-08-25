@@ -414,6 +414,50 @@ def usage_for(agent):
     return tot
 
 
+_ctx_cache = {}     # path -> (size, used)
+# Every current model is 1M except Haiku. Checked against the model table
+# rather than recalled: assuming 200k put these sessions at 137% full.
+CONTEXT_LIMITS = (("haiku", 200_000),)
+CONTEXT_DEFAULT = 1_000_000
+
+
+def context_for(agent):
+    """How full this session's context is, and out of what.
+
+    Not the usage totals: those accumulate over the whole session. Context is
+    the input side of the most recent request only."""
+    path = transcript(agent)
+    model = model_for(agent)
+    limit = next((v for k, v in CONTEXT_LIMITS if k in model), CONTEXT_DEFAULT)
+    if not path:                       # no session id: open(None) is a TypeError
+        return 0, limit
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        return 0, limit
+    hit = _ctx_cache.get(path)
+    if hit and hit[0] == size:
+        return hit[1], limit
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, size - TAIL_BYTES))
+            tail = f.read()
+    except OSError:
+        return 0, limit
+    i = tail.rfind(b'"usage":{')
+    used = 0
+    if i >= 0:
+        # one object, not the file: fields must come from the same request
+        chunk = tail[i:i + 600]
+        for pat in (_USAGE_FIELDS["inp"], _USAGE_FIELDS["cread"],
+                    _USAGE_FIELDS["cwrite"]):
+            m = re.search(pat, chunk)
+            if m:
+                used += int(m.group(1))
+    _ctx_cache[path] = (size, used)
+    return used, limit
+
+
 def usage_col(agent):
     if agent is None:
         return None
@@ -511,13 +555,15 @@ def sweep_panes(slots, by_id, current):
 
 
 def focus_info(slot, agent, summary, scroll=0):
+    used, limit = context_for(agent)
     return {"slot": slot,
             "name": os.path.basename(agent.get("cwd", "")) or "?",
             "model": model_for(agent),
             "status": agent.get("agent_status"),
             **{k: summary.get(k, "") for k in ("act", "say", "pending")},
             "opts": summary.get("opts") or [], "sel": summary.get("sel"),
-            "lines": summary.get("lines") or [], "scroll": scroll}
+            "lines": summary.get("lines") or [], "scroll": scroll,
+            "context": used / max(1, limit)}
 
 
 def panel_col(agent, pending=""):
@@ -525,12 +571,14 @@ def panel_col(agent, pending=""):
     the terminal id -- that is the thing that actually tells them apart."""
     if agent is None:
         return None
+    used, limit = context_for(agent)
     return (os.path.basename(agent.get("cwd", "")) or "?",
             agent.get("agent_status"),
             model_for(agent),
             agent.get("terminal_id", "")[-6:],
             bool(agent.get("focused")),
-            pending)
+            pending,
+            used / limit if limit else 0.0)
 
 
 def colour_for(agent):
@@ -1008,10 +1056,11 @@ def selftest():
     assert panel_col(None) is None
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "blocked",
                      "terminal_id": "term_659ce899ee9293", "focused": True})
-    assert col == ("bugcast", "blocked", "", "ee9293", True, ""), col
+    assert col == ("bugcast", "blocked", "", "ee9293", True, "", 0.0), col
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
                      "terminal_id": "t", "focused": False}, "half a sentence")
-    assert col[-1] == "half a sentence", col
+    assert col[5] == "half a sentence", col
+    assert 0.0 <= col[6] <= 1.0, "context fraction stays in range"
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
     assert short_model("claude-sonnet-5") == "sonnet 5"
