@@ -795,6 +795,14 @@ def run():
                                 (MACROS[i]["colour"] if MACROS[i] else BLACK))))
 
             for msg in inp.iter_pending():
+                if msg.type == "sysex":
+                    # The Push sends this when it switches Live/User mode, which
+                    # also blanks its LEDs. painted still believes they are lit,
+                    # so without this the surface stays dark until a restart.
+                    push.painted.clear()
+                    shown = None
+                    print("mode change -> repainting", flush=True)
+                    continue
                 if debug and msg.type not in ("clock", "active_sensing"):
                     what = (f"CC {msg.control}={msg.value}" if msg.type == "control_change"
                             else f"note {msg.note} v{msg.velocity}"
