@@ -29,6 +29,10 @@ option when one is being offered, and scroll the focus view when none is.
 When the current agent is asking something, the bottom row turns white and
 answers it instead of inserting macros.
 
+Delete runs /clear on the current agent. It submits on press, unlike the macro
+row, because a button labelled Delete doing nothing until you press another
+one is worse than the thing it guards against.
+
 Hold Record and tap a macro pad to save whatever is sitting in the current
 agent's prompt onto it -- type it or dictate it, then capture. Tapping with an
 empty prompt clears the pad. Stored in macros.json, which is hand-editable.
@@ -72,6 +76,7 @@ TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
 ARROW_CCS = {44: "left", 45: "right", 46: "up", 47: "down"}
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
 SCROLL_STEP = 3                    # lines per arrow press; the encoder does fine work
+DELETE_CC = 118                    # Delete -> /clear on the current agent
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 
@@ -507,6 +512,7 @@ def run():
                         lit = VIEWS[view] == "focus"    # scrolling
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
+                push.cc("del", 0, [DELETE_CC], RED if target else BLACK)
                 for s in range(SLOTS):              # bottom row changes job when asked
                     push.note("macro", s, MACRO_NOTES[s],
                               RED if arming else
@@ -541,6 +547,10 @@ def run():
                     if i < len(VIEWS):
                         view, shown = i, None       # force a redraw
                         print(f"view -> {VIEWS[i]}", flush=True)
+                elif (msg.type == "control_change" and msg.control == DELETE_CC
+                      and msg.value and target):
+                    print(f"delete -> /clear -> {target}", flush=True)
+                    herdr("agent", "send", target, "/clear" + ENTER)
                 elif msg.type == "control_change" and msg.control == RECORD_CC:
                     arming, shown = bool(msg.value), None
                     if arming:
