@@ -5,12 +5,58 @@ which push_cc.py re-reads on change, so edits land on the pads live.
     python3 mapui.py        then open http://localhost:8765
 """
 import json
+import os
+import subprocess
+import sys
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import push_cc
 
 PORT = 8765
+PUSH_CC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push_cc.py")
+PUSH_LOG = "/tmp/push.log"
+
+
+def push_state():
+    """Why the Push is or is not working, rather than just whether it is.
+
+    Three separate things look identical from the outside: the process being
+    down, the device off USB, and the device sitting in Live mode."""
+    running = subprocess.run(["pgrep", "-f", "push_cc.py"],
+                             capture_output=True).returncode == 0
+    try:
+        import mido
+        midi = any("Push 2 User Port" in n for n in mido.get_output_names())
+    except Exception:
+        midi = False
+    try:
+        import usb.core
+        usb_ok = usb.core.find(idVendor=0x2982, idProduct=0x1967) is not None
+    except Exception:
+        usb_ok = False
+    if not usb_ok and not midi:
+        why = "Push not on USB \u2014 check the cable, or the dock"
+    elif not midi:
+        why = "no User Port \u2014 press User on the Push"
+    elif not running:
+        why = "push_cc is not running"
+    else:
+        why = "connected"
+    return {"running": running, "midi": midi, "usb": usb_ok, "why": why,
+            "ok": running and midi}
+
+
+def relaunch():
+    subprocess.run(["pkill", "-f", "push_cc.py"], capture_output=True)
+    time.sleep(1.2)                      # let it drop the MIDI and USB handles
+    log = open(PUSH_LOG, "a")
+    subprocess.Popen([sys.executable, PUSH_CC, "--debug"],
+                     stdout=log, stderr=subprocess.STDOUT,
+                     start_new_session=True)   # must outlive this request
+    time.sleep(2.5)
+    return push_state()
 
 PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
 <style>
@@ -52,6 +98,8 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
   <input type=checkbox id=arm onchange=arm()>
   <label for=arm>Run on click</label>
   <span id=live>no session</span>
+  <button id=reconn onclick=reconnect() style="margin:0;padding:4px 10px">Reconnect Push</button>
+  <span id=pushstate class=n></span>
   <span class=n>clicking always selects for editing &middot; armed, it also fires at the Push's session</span>
 </div>
 <h1>Shortcut pads &mdash; laid out as they sit on the Push
@@ -135,8 +183,19 @@ async function target(){
     const el=$('live');
     el.textContent = t.name ? (t.name+(t.status?' \u00b7 '+t.status:'')) : 'no session';
     el.className = t.name ? 'on' : '';
+    const p=$('pushstate');
+    p.textContent = t.why || '';
+    p.style.color = t.ok ? '#6eaa6e' : '#e08a8a';
   }catch(e){}
 }
+async function reconnect(){
+  const b=$('reconn'); b.disabled=true; b.textContent='Reconnecting\u2026';
+  try{
+    const r=await fetch('/relaunch',{method:'POST'});
+    const s=await r.json();
+    note(s.ok ? 'reconnected' : ('still down \u2014 '+s.why));
+  }catch(e){ note('relaunch failed'); }
+  b.disabled=false; b.textContent='Reconnect Push'; target(); }
 setInterval(target, 2000); target();
 
 function showPad(i){ const m=macros[i]||{label:'',text:''};
@@ -212,7 +271,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/target":
-            return self._send(200, json.dumps(read_target()), "application/json")
+            return self._send(200, json.dumps({**read_target(), **push_state()}),
+                              "application/json")
         if self.path == "/macros":
             labels, macros = push_cc.load_macros()
             self._send(200, json.dumps({"labels": labels, "pads": macros}),
@@ -223,6 +283,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/fire":
             return self._fire()
+        if self.path == "/relaunch":
+            state = relaunch()
+            return self._send(200, json.dumps(state), "application/json")
         if self.path != "/macros":
             return self._send(404, "no", "text/plain")
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
