@@ -1,72 +1,45 @@
 #!/usr/bin/env python3
 """Ableton Push 2 as an AI command center, driven by herdr.
 
-Top pad row (notes 92-99) = up to 8 herdr agents, left to right.
-  tap    -> focus that agent's pane
-  colour -> green done / yellow working / red blocked / white unknown / off empty
+Buttons under the display (CC 20-27) = up to 8 herdr agents, left to right.
+  tap    -> drive that agent
+  hold   -> talk to it, via that agent's own voice:pushToTalk
+  colour -> green done / yellow working / red blocked / white the one you drive
+  Page left/right step between them.
 
-Row 2 (84-91) approve / row 3 (76-83) deny, per column. Lit only while that
-agent is blocked, and ignored otherwise, so a stray press cannot answer a
-prompt that is not there.
+The whole 8x8 pad grid (36-99) = shortcuts. Tap one to insert its text into
+the current agent; Play submits. Hold Record, or Shift, and tap one to save
+whatever is in the prompt onto it. macros.json is hand-editable.
 
-Rows 1-4 (36-67) = MACROS, inserted into whichever agent herdr reports
-focused. They do not submit -- you read it, then hit Play.
-
-Play (CC 85) = enter, sent to the focused agent. Lit green when there is one.
+Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
+3 focus, 4 shortcuts. White is the one you are on.
 
 The 960x160 screen names each column, so two checkouts of the same repo are
 told apart by the tail of their terminal id. Missing pyusb just means no
-screen; the pads carry on.
-
-Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
-3 focus (one agent, what it is doing, and any question it is asking). The
-tempo encoder scrolls that view back through the agent's output; 0 is always
-the live tail, and changing agent snaps back to it.
-
-Arrows go straight through as arrow keys, so they mean whatever Claude means
-by them in that moment; the master encoder sends the same up/down, which is
-easier than jabbing a button when a list is long. Tap a pad to change agent, turn the tempo encoder to
-scroll.
+screen; the buttons carry on.
 
 When any agent starts asking something the screen jumps to the focus view on
-it, once, on the edge -- navigate away and it will not drag you back. Its pad
-blinks red, which herdr's status alone would never tell you.
+it, once, on the edge -- navigate away and it will not drag you back. Its
+button blinks red, which herdr's status alone would never tell you. Answer a
+select widget with the arrows or the master encoder, then Play.
 
-When the current agent is asking something, the bottom row turns white and
-answers it instead of inserting macros.
+Closing asks first, on the Push: the screen turns red with the session name,
+Play answers yes, Stop Clip answers no, and an unanswered request expires
+after ten seconds. Nothing about it reaches the terminal.
 
 Add Device splits and starts a new claude there in auto mode, in the current
 agent's directory. Add Track makes a worktree off it, named from whatever is
-typed in the prompt, or timestamped if that is empty.
+typed in the prompt. Duplicate forks the current agent. Solo pins the screen.
 
-Stop Clip sends escape, which interrupts a working agent; it goes red while
-there is something to interrupt. Closing asks first, on the Push: the screen turns red with the session name,
-the green pad above answers yes, any red pad below answers no, and an
-unanswered request expires after ten seconds. Nothing about it reaches the
-terminal.
-
-Hold Shift and tap an agent pad to close it, or a macro pad to record onto it.
-Solo pins the screen so a question elsewhere stops dragging it away. Duplicate
-forks the current agent into a second session on the same directory. Page
-left/right scroll a screenful.
-
-Undo clears whatever is typed in the prompt
-and lights only when there is something to clear. Convert runs /compact, New runs /clear, Quantize opens
-/model, Double Loop /effort and Metronome /mcp -- which is a
-select widget, so the arrows and Play drive it. Delete closes the current
-agent's pane outright. It submits on press, unlike the macro
-row, because a button labelled Delete doing nothing until you press another
-one is worse than the thing it guards against.
-
-Hold Record and tap a macro pad to save whatever is sitting in the current
-agent's prompt onto it -- type it or dictate it, then capture. Tapping with an
-empty prompt clears the pad. Stored in macros.json, which is hand-editable.
-White is the one you are on. Usage counts tokens, not money -- nothing here
-knows your plan, and an invented cost is worse than no cost.
+Convert runs /compact, New /clear, Quantize /model, Double Loop /effort and
+Metronome /mcp. Stop Clip sends escape. Undo clears what is typed. Arrows and
+the master encoder pass through as arrow keys. The tempo encoder scrolls; each
+of the eight encoders scrolls the agent above it, and touching one peeks at it.
 
   python3 push_cc.py             run it (Push must be in User mode)
   python3 push_cc.py --list      dump agents, no hardware needed
   python3 push_cc.py --selftest  pure-logic asserts, no hardware needed
+  python3 push_cc.py --debug     log every control you press, with its number
 """
 import json
 import os
@@ -89,19 +62,15 @@ TAIL_BYTES = 256 * 1024   # transcripts run to megabytes; only the end matters
 POLL_S = 0.5
 SLOTS = 8
 
-PAD_NOTES = list(range(92, 100))     # top pad row, left -> right = agents
-APPROVE_NOTES = list(range(84, 92))  # row below: answer that agent's prompt yes
-DENY_NOTES = list(range(76, 84))     # row below that: answer no
-# Four rows, bottom-up. No bank switching: a mode you have to remember you are
-# in is worse than pads you can simply see.
-MACRO_ROWS = 4
-MACRO_NOTES = [n for row in range(MACRO_ROWS)
-               for n in range(36 + row * 8, 44 + row * 8)]
+
+# The whole grid is shortcuts now. Sessions live on the buttons under the
+# display, where there are exactly eight of them and no row arithmetic.
+MACRO_ROWS = 8
+MACRO_NOTES = list(range(36, 100))
 MACRO_SLOTS = len(MACRO_NOTES)
-ANSWER_NOTES = MACRO_NOTES[:SLOTS]   # options answer on the bottom row only
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 VIEWS = ["agents", "usage", "focus", "macros"]
-MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
+SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
 VOLUME_CC = 79                     # master encoder -> up/down arrows at the agent
@@ -110,8 +79,7 @@ ENC_TOUCH = list(range(0, 8))      # touching one is a note, not a CC
 SHIFT_CC = 49                      # held modifier, the standard Push idiom
 SOLO_CC = 61                       # pin the screen so questions stop moving it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
-PAGE_CCS = {62: -1, 63: 1}         # page left/right -> a screenful of scroll
-PAGE_LINES = 6                     # what fits in the focus view body
+PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next session
 CONFIRM_S = 10                     # a close request that goes unanswered expires
 MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
 UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
@@ -158,9 +126,6 @@ STATUS = {
 UNKNOWN = (WHITE, STATIC)
 EMPTY = (BLACK, STATIC)
 
-# Claude's Confirmation context binds y/enter to yes and escape/n to no. We only
-# ever send these while herdr reports the agent blocked.
-YES, NO = "y", "n"
 ENTER = "\r"
 
 # Bottom row, left to right. These INSERT and do not submit: the only way to
@@ -268,12 +233,6 @@ def step_slot(current, delta, slots):
     if current in live:
         return live[(live.index(current) + delta) % len(live)]
     return live[0] if delta > 0 else live[-1]
-
-
-def blocked_agent(slot, slots, by_id):
-    """The agent on this slot, but only if it is actually waiting on an answer."""
-    a = by_id.get(slots.get(slot))
-    return a if a and a.get("agent_status") == "blocked" else None
 
 
 _model_cache = {}   # path -> (size, name). Model changes mid-session via /model.
@@ -473,24 +432,12 @@ def colour_for(agent):
     return STATUS.get(agent.get("agent_status"), UNKNOWN)
 
 
-def answer(slot, key, slots, by_id):
-    a = blocked_agent(slot, slots, by_id)
-    if not a:
-        return False   # nothing to answer; a stray press must not type into a prompt
-    print(f"answering {key!r} -> {a['terminal_id']}", flush=True)
-    herdr("agent", "send", a["terminal_id"], key)
-    return True
-
-
 # ---------------------------------------------------------------- push
 
 class Push:
     def __init__(self, mido, inp, out):
         self.mido, self.inp, self.out = mido, inp, out
         self.painted = {}
-
-    def pad(self, slot, colour, anim):
-        self.note("pad", slot, PAD_NOTES[slot], colour, anim)
 
     def note(self, kind, slot, note, colour, anim=STATIC):
         self._send(kind, slot, self.mido.Message(
@@ -512,11 +459,8 @@ class Push:
 
     def blank(self):
         for s in range(SLOTS):
-            self.pad(s, BLACK, STATIC)
-            self.note("ok", s, APPROVE_NOTES[s], BLACK)
-            self.note("no", s, DENY_NOTES[s], BLACK)
             self.cc("tab", s, TAB_CCS, BLACK)
-            self.cc("mark", s, MARK_CCS, BLACK)
+            self.cc("session", s, SESSION_CCS, BLACK)
         for i in range(MACRO_SLOTS):
             self.note("macro", i, MACRO_NOTES[i], BLACK)
         self.cc("play", 0, [PLAY_CC], BLACK)
@@ -575,22 +519,13 @@ def run():
                     colour, anim = colour_for(a)
                     if s in asking:
                         colour, anim = RED, BLINK    # herdr cannot see this one
-                    push.pad(s, *((RED, STATIC) if s == talk_slot else (colour, anim)))
+                    if s == talk_slot:
+                        colour, anim = RED, STATIC
+                    elif s == current and a:
+                        colour, anim = WHITE, STATIC  # the one you are driving
+                    push.cc("session", s, SESSION_CCS, colour, anim)
                     push.cc("tab", s, TAB_CCS,
                             WHITE if s == view else (BLUE if s < len(VIEWS) else BLACK))
-                    push.cc("mark", s, MARK_CCS,
-                            WHITE if a and a.get("focused") else BLACK)
-                    # approve/deny light only when there is something to answer
-                    blocked = bool(a) and a.get("agent_status") == "blocked"
-                    if closing:     # the rows mean yes and no to the question
-                        push.note("ok", s, APPROVE_NOTES[s],
-                                  GREEN if s == closing[0] else BLACK)
-                        push.note("no", s, DENY_NOTES[s], RED)
-                    else:
-                        push.note("ok", s, APPROVE_NOTES[s], GREEN if blocked else BLACK)
-                        push.note("no", s, DENY_NOTES[s], RED if blocked else BLACK)
-                    push.note("macro", s, MACRO_NOTES[s],
-                              BLUE if s < len(MACROS) else BLACK)
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
                 # Scraped every poll, not just in the focus view: the bottom row
                 # answers a pending question from wherever you happen to be.
@@ -692,9 +627,9 @@ def run():
                         peek, view, shown = slot, VIEWS.index("focus"), None
                     elif not held and peek == slot:
                         peek, shown = None, None
-                elif msg.type in ("note_on", "note_off") and msg.note in PAD_NOTES:
-                    slot = PAD_NOTES.index(msg.note)
-                    if msg.type == "note_on" and msg.velocity:
+                elif msg.type == "control_change" and msg.control in SESSION_CCS:
+                    slot = SESSION_CCS.index(msg.control)
+                    if msg.value:
                         if slots.get(slot):
                             pad_down = (slot, now)
                     elif slot == talk_slot:
@@ -709,27 +644,6 @@ def run():
                         herdr("agent", "focus", slots[slot])   # short press = focus
                         current, pad_down, shown = slot, None, None
                         scrolls[slot] = 0
-                elif msg.type == "note_on" and msg.velocity and msg.note in APPROVE_NOTES:
-                    slot = APPROVE_NOTES.index(msg.note)
-                    if closing:
-                        if slot == closing[0]:
-                            pane = (by_id.get(slots.get(slot)) or {}).get("pane_id")
-                            print(f"confirmed -> closing {pane}", flush=True)
-                            if pane:
-                                herdr("pane", "close", pane)
-                                slots.pop(slot, None)
-                            if current == slot:
-                                current = step_slot(current, 1, slots)
-                            closing, shown = None, None
-                    else:
-                        answer(slot, YES, slots, by_id)
-                elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
-                    slot = DENY_NOTES.index(msg.note)
-                    if closing:
-                        print("close cancelled", flush=True)
-                        closing, shown = None, None
-                    else:
-                        answer(slot, NO, slots, by_id)
                 elif (msg.type == "control_change" and msg.control in TAB_CCS
                       and msg.value):
                     i = TAB_CCS.index(msg.control)
@@ -751,9 +665,13 @@ def run():
                     herdr("worktree", "create", "--cwd", where,
                           "--branch", branch, "--focus")
                 elif (msg.type == "control_change" and msg.control == STOP_CC
-                      and msg.value and target):
-                    print(f"stop -> escape -> {target}", flush=True)
-                    herdr("agent", "send", target, ESCAPE)
+                      and msg.value):
+                    if closing:
+                        print("close cancelled", flush=True)
+                        closing, shown = None, None
+                    elif target:
+                        print(f"stop -> escape -> {target}", flush=True)
+                        herdr("agent", "send", target, ESCAPE)
                 elif (msg.type == "control_change" and msg.control == UNDO_CC
                       and msg.value and target):
                     # ctrl+l never reaches Claude and ctrl+u only kills the row
@@ -806,10 +724,9 @@ def run():
                           "--", "claude", "--permission-mode", "auto")
                 elif (msg.type == "control_change" and msg.control in PAGE_CCS
                       and msg.value):
-                    seat = current if peek is None else peek
-                    scrolls[seat] = max(0, scrolls.get(seat, 0)
-                                        + PAGE_CCS[msg.control] * PAGE_LINES)
-                    shown = None
+                    current = step_slot(current, PAGE_CCS[msg.control], slots)
+                    shown, scrolls[current] = None, 0
+                    print(f"page -> slot {current} ({slots.get(current)})", flush=True)
                 elif msg.type == "control_change" and msg.control in ENC_CCS:
                     # each knob scrolls the column beneath it, no switching needed
                     slot = ENC_CCS.index(msg.control)
@@ -817,9 +734,20 @@ def run():
                     if slot in (current, peek):
                         shown = None
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
-                      and msg.value and target):
-                    print(f"play -> enter -> {target}", flush=True)
-                    herdr("agent", "send", target, ENTER)
+                      and msg.value):
+                    if closing:                     # Play is yes to the question
+                        slot = closing[0]
+                        pane = (by_id.get(slots.get(slot)) or {}).get("pane_id")
+                        print(f"confirmed -> closing {pane}", flush=True)
+                        if pane:
+                            herdr("pane", "close", pane)
+                            slots.pop(slot, None)
+                        if current == slot:
+                            current = step_slot(current, 1, slots)
+                        closing, shown = None, None
+                    elif target:
+                        print(f"play -> enter -> {target}", flush=True)
+                        herdr("agent", "send", target, ENTER)
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
                     if arming or shifted:
@@ -829,18 +757,6 @@ def run():
                         shown = None
                         print(f"pad {i} <- {text!r}" if text
                               else f"pad {i} cleared", flush=True)
-                    elif opts and target and msg.note in ANSWER_NOTES:
-                        if i < len(opts):           # answering, not typing
-                            num, label = opts[i]
-                            sel = summary.get("sel")
-                            print(f"answer {num}. {label[:40]!r} -> {target}", flush=True)
-                            if sel is None:
-                                herdr("agent", "send", target, num)  # prose: type it
-                            else:                   # widget: walk the caret, commit
-                                step = DOWN if i > sel else UP
-                                for _ in range(abs(i - sel)):
-                                    herdr("agent", "send", target, step)
-                                herdr("agent", "send", target, ENTER)
                     elif MACROS[i] and target:
                         label, text = MACROS[i]
                         print(f"macro {label!r} -> {target}", flush=True)
@@ -895,20 +811,12 @@ def selftest():
     assert colour_for(a("x", "banana")) == UNKNOWN
     assert colour_for({}) == UNKNOWN
 
-    # approve/deny must be inert unless herdr says that agent is blocked
-    by_id = {"x": a("x", "idle"), "y": a("y", "blocked")}
-    slots = {0: "x", 1: "y"}
-    assert blocked_agent(0, slots, by_id) is None      # idle -> no
-    assert blocked_agent(1, slots, by_id)["terminal_id"] == "y"
-    assert blocked_agent(7, slots, by_id) is None      # empty slot -> no
-    assert answer(0, YES, slots, by_id) is False       # never sends to a non-blocked agent
-
     assert len(MACROS) == MACRO_SLOTS, "one entry per macro pad"
     assert not any(t.endswith("\r") for _, t in filter(None, MACROS)), \
         "macros must not self-submit"
-    assert len(set(PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES)) == \
-        len(PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES), "pads overlap"
-    assert PLAY_CC not in TAB_CCS + MARK_CCS, "play must not collide with a lit row"
+    assert len(set(MACRO_NOTES)) == len(MACRO_NOTES) == 64, "every pad, once"
+    assert PLAY_CC not in TAB_CCS + SESSION_CCS, "play must not collide with a lit row"
+    assert not set(SESSION_CCS) & set(TAB_CCS), "the two button rows must not overlap"
 
     assert panel_col(None) is None
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "blocked",
@@ -951,8 +859,7 @@ def selftest():
     assert len(label_for("supercalifragilistic expialidocious")) == 14
     assert len(load_macros()) == MACRO_SLOTS   # always exactly one per pad
     assert len(MACRO_NOTES) == len(set(MACRO_NOTES)) == MACRO_ROWS * SLOTS
-    assert max(MACRO_NOTES) < min(DENY_NOTES), "macros must not reach the deny row"
-    assert ANSWER_NOTES == list(range(36, 44))
+    assert min(MACRO_NOTES) == 36 and max(MACRO_NOTES) == 99
 
     assert slug("Fix The Parser") == "fix-the-parser"
     assert slug("feat/thing") == "feat/thing"

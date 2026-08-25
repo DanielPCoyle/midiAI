@@ -244,29 +244,27 @@ def render_confirm(name, slot, seconds):
 
 
 def render_macros(macros, arming=False):
-    """The bottom row, spelled out. Eight pads is more than anyone remembers."""
+    """All 64 pads. Drawn the way the grid sits under your hands: note 36 is
+    bottom-left on the Push, so it is bottom-left here too. Getting that
+    backwards would make the screen actively misleading."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
     accent = (240, 60, 60) if arming else (150, 175, 215)
-    d.text((8, 2), "RECORD - tap a pad to save the prompt onto it" if arming
-           else "MACROS", font=font(12), fill=accent if arming else (90, 90, 90))
-    for i, m in enumerate(macros):
-        x = i * COL_W
-        if i:
-            d.line([(x, 20), (x, HEIGHT - 8)], fill=(45, 45, 45))
-        empty = not m
-        swatch = accent if arming else ((60, 60, 60) if empty else accent)
-        d.rectangle([x + 8, 24, x + 26, 42], fill=swatch)
-        d.text((x + 12, 25), str(i + 1), font=font(15), fill=(0, 0, 0))
-        if empty:
-            d.text((x + 32, 26), "empty", font=font(13), fill=(70, 70, 70))
-            continue
-        label, text = m
-        s, f = fit(d, label, COL_W - 36, 14)
-        d.text((x + 32, 26), s, font=f, fill=(200, 200, 200))
-        bf = font(13)
-        for j, line in enumerate(wrap(d, text, COL_W - 20, bf, 5)):
-            d.text((x + 10, 52 + j * 15), line, font=bf, fill=(225, 225, 225))
+    rows, cell_h = 8, (HEIGHT - 14) // 8
+    d.text((WIDTH - 250, 2), "RECORD - tap a pad to save the prompt" if arming
+           else "SHORTCUTS", font=font(11), fill=accent if arming else (80, 80, 80))
+    for r in range(rows):
+        for c in range(8):
+            i = (rows - 1 - r) * 8 + c          # screen top row = top pad row
+            x, y = c * COL_W, 12 + r * cell_h
+            m = macros[i] if i < len(macros) else None
+            d.rectangle([x + 2, y, x + COL_W - 4, y + cell_h - 2],
+                        outline=(38, 38, 38))
+            if not m:
+                continue
+            d.rectangle([x + 2, y, x + 5, y + cell_h - 2], fill=accent)
+            s, ff = fit(d, m[0], COL_W - 14, 11)
+            d.text((x + 9, y + 1), s, font=ff, fill=(215, 215, 215))
     return img
 
 
