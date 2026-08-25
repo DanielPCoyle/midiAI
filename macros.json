@@ -22,12 +22,7 @@
       "colour": 125,
       "tag": null
     },
-    {
-      "label": "/code-review",
-      "text": "/code-review",
-      "colour": 126,
-      "tag": "git"
-    },
+    null,
     {
       "label": "commit this",
       "text": "commit this",
@@ -46,12 +41,7 @@
       "colour": 125,
       "tag": null
     },
-    {
-      "label": "/handoff",
-      "text": "/handoff",
-      "colour": 125,
-      "tag": null
-    },
+    null,
     {
       "label": "show me",
       "text": "show me the diff",
@@ -106,8 +96,18 @@
     null,
     null,
     null,
-    null,
-    null,
+    {
+      "label": "/handoff",
+      "text": "/handoff",
+      "colour": 126,
+      "tag": "Slash Command"
+    },
+    {
+      "label": "/code-review",
+      "text": "/code-review",
+      "colour": 126,
+      "tag": "git"
+    },
     null,
     null,
     null,

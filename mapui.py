@@ -24,6 +24,9 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
  .pad:hover{border-color:#4a4a58}
  .pad.set{background:#16202e;border-color:#3d5a80}
  .pad.sel{outline:2px solid #7aa2d2;outline-offset:1px}
+ .pad.over{border-color:#7aa2d2;background:#1d2733}
+ .pad.drag{opacity:.35}
+ .pad[draggable=true]{user-select:none}
  .n{color:#555c66;font-size:9px}
  aside{width:330px}
  label{display:block;margin:12px 0 4px;color:#9aa;font-size:12px}
@@ -35,7 +38,9 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
  button.ghost{background:#2a2a30}
  #msg{margin-top:10px;color:#7fb37f;height:16px;font-size:12px}
 </style>
-<div><h1>Shortcut pads &mdash; laid out as they sit on the Push</h1><div id=grid></div></div>
+<div><h1>Shortcut pads &mdash; laid out as they sit on the Push
+  <span class=n style="margin-left:10px">drag a pad onto another to swap them</span></h1>
+<div id=grid></div></div>
 <aside>
   <h1>Pad <span id=cur>-</span></h1>
   <label>Label <span class=n>(shown on the Push screen)</span></label>
@@ -57,7 +62,7 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
   </div>
 </aside>
 <script>
-let macros=[], labels=[], sel=null;
+let macros=[], labels=[], sel=null, from=null;
 // Approximate only. The Push has its own 128-entry palette and the browser
 // cannot see it; these swatches are a guide, the index is the truth.
 const PALETTE=[["red",127,"#e03c3c"],["orange",3,"#e08a2c"],["yellow",8,"#e0d02c"],
@@ -72,10 +77,25 @@ function draw(){
     d.className='pad'+(m?' set':'')+(i===sel?' sel':'');
     d.innerHTML='<div class=n>'+(36+i)+'</div>'+(m?escapeHtml(m.label):'');
     if(m) d.style.borderLeft='4px solid '+hexFor(m.colour);
-    d.onclick=()=>pick(i); g.appendChild(d);
+    d.onclick=()=>pick(i);
+    d.draggable=!!m;                       // an empty pad has nothing to carry
+    d.ondragstart=e=>{ from=i; d.classList.add('drag');
+                       e.dataTransfer.effectAllowed='move'; };
+    d.ondragend=()=>{ from=null; draw(); };
+    d.ondragover=e=>{ if(from!==null&&from!==i){ e.preventDefault(); d.classList.add('over'); } };
+    d.ondragleave=()=>d.classList.remove('over');
+    d.ondrop=e=>{ e.preventDefault(); if(from===null||from===i) return; swap(from,i); };
+    g.appendChild(d);
   }
 }
 const escapeHtml=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// Swap rather than overwrite: dropping onto an occupied pad must never be a
+// way to lose what was already there.
+function swap(a,b){
+  const t=macros[a]; macros[a]=macros[b]; macros[b]=t;
+  if(sel===a) sel=b; else if(sel===b) sel=a;
+  from=null; put(); }
+
 function pick(i){ sel=i; const m=macros[i]||{label:'',text:''};
   $('cur').textContent=(36+i); $('label').value=m.label||''; $('text').value=m.text||'';
   $('tag').value=m.tag||''; draw(); }
