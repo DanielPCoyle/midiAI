@@ -5,9 +5,11 @@ Top pad row (notes 92-99) = up to 8 herdr agents, left to right.
   tap    -> focus that agent's pane
   colour -> green done / yellow working / red blocked / white unknown / off empty
 
-Tab buttons above the display (CC 102-109) = push-to-talk for that column.
-  hold   -> drive that agent's own voice:pushToTalk. Claude records, transcribes
-            and submits on release. Needs sox and voiceEnabled.
+Row 2 (84-91) approve / row 3 (76-83) deny, per column. Lit only while that
+agent is blocked, and ignored otherwise, so a stray press cannot answer a
+prompt that is not there.
+
+Bottom row (36-43) = MACROS, sent to whichever agent herdr reports focused.
 
   python3 push_cc.py             run it (Push must be in User mode)
   python3 push_cc.py --list      dump agents, no hardware needed
@@ -31,12 +33,17 @@ HOLD_S = 0.25    # pad down longer than this is a hold, not a tap
 POLL_S = 0.5
 SLOTS = 8
 
-PAD_NOTES = list(range(92, 100))   # top pad row, left -> right
+PAD_NOTES = list(range(92, 100))     # top pad row, left -> right = agents
+APPROVE_NOTES = list(range(84, 92))  # row below: answer that agent's prompt yes
+DENY_NOTES = list(range(76, 84))     # row below that: answer no
+MACRO_NOTES = list(range(36, 44))    # bottom row: canned prompts
 TAB_CCS = list(range(102, 110))    # buttons above the display
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
+BLUE = 125  # ponytail: not in the spec's guaranteed set; worst case it is the
+            # wrong hue, which costs nothing. Swap if it reads badly.
 STATIC, PULSE, BLINK = 0, 9, 14
 
 STATUS = {
@@ -46,6 +53,23 @@ STATUS = {
 }
 UNKNOWN = (WHITE, STATIC)
 EMPTY = (BLACK, STATIC)
+
+# Claude's Confirmation context binds y/enter to yes and escape/n to no. We only
+# ever send these while herdr reports the agent blocked.
+YES, NO = "y", "n"
+
+# Bottom row, left to right. Each submits, because a macro that needs a second
+# keystroke is not a macro. Edit freely; anything past 8 is ignored.
+MACROS = [
+    ("continue",   "continue\r"),
+    ("tests",      "run the tests and report what fails\r"),
+    ("review",     "/code-review\r"),
+    ("commit",     "commit this\r"),
+    ("why",        "explain what you just did and why\r"),
+    ("recap",      "stop and summarise where you are\r"),
+    ("handoff",    "/handoff\r"),
+    ("diff",       "show me the diff\r"),
+]
 
 
 # ---------------------------------------------------------------- herdr
@@ -82,10 +106,25 @@ def assign(live, slots):
     return slots
 
 
+def blocked_agent(slot, slots, by_id):
+    """The agent on this slot, but only if it is actually waiting on an answer."""
+    a = by_id.get(slots.get(slot))
+    return a if a and a.get("agent_status") == "blocked" else None
+
+
 def colour_for(agent):
     if agent is None:
         return EMPTY
     return STATUS.get(agent.get("agent_status"), UNKNOWN)
+
+
+def answer(slot, key, slots, by_id):
+    a = blocked_agent(slot, slots, by_id)
+    if not a:
+        return False   # nothing to answer; a stray press must not type into a prompt
+    print(f"answering {key!r} -> {a['terminal_id']}", flush=True)
+    herdr("agent", "send", a["terminal_id"], key)
+    return True
 
 
 # ---------------------------------------------------------------- push
@@ -96,8 +135,11 @@ class Push:
         self.painted = {}
 
     def pad(self, slot, colour, anim):
-        self._send("pad", slot, self.mido.Message(
-            "note_on", channel=anim, note=PAD_NOTES[slot], velocity=colour))
+        self.note("pad", slot, PAD_NOTES[slot], colour, anim)
+
+    def note(self, kind, slot, note, colour, anim=STATIC):
+        self._send(kind, slot, self.mido.Message(
+            "note_on", channel=anim, note=note, velocity=colour))
 
     def cc(self, kind, slot, ccs, colour, anim=STATIC):
         self._send(kind, slot, self.mido.Message(
@@ -116,6 +158,9 @@ class Push:
     def blank(self):
         for s in range(SLOTS):
             self.pad(s, BLACK, STATIC)
+            self.note("ok", s, APPROVE_NOTES[s], BLACK)
+            self.note("no", s, DENY_NOTES[s], BLACK)
+            self.note("macro", s, MACRO_NOTES[s], BLACK)
             self.cc("tab", s, TAB_CCS, BLACK)
             self.cc("mark", s, MARK_CCS, BLACK)
 
@@ -138,6 +183,7 @@ def run():
 
     debug = "--debug" in sys.argv
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
+    by_id, focused = {}, None
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -154,6 +200,13 @@ def run():
                     push.cc("tab", s, TAB_CCS, colour if a else BLACK)
                     push.cc("mark", s, MARK_CCS,
                             WHITE if a and a.get("focused") else BLACK)
+                    # approve/deny light only when there is something to answer
+                    blocked = bool(a) and a.get("agent_status") == "blocked"
+                    push.note("ok", s, APPROVE_NOTES[s], GREEN if blocked else BLACK)
+                    push.note("no", s, DENY_NOTES[s], RED if blocked else BLACK)
+                    push.note("macro", s, MACRO_NOTES[s],
+                              BLUE if s < len(MACROS) else BLACK)
+                focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
 
             for msg in inp.iter_pending():
                 if debug and msg.type not in ("clock", "active_sensing"):
@@ -172,6 +225,16 @@ def run():
                     elif pad_down and pad_down[0] == slot:
                         herdr("agent", "focus", slots[slot])   # short press = focus
                         pad_down = None
+                elif msg.type == "note_on" and msg.velocity and msg.note in APPROVE_NOTES:
+                    answer(APPROVE_NOTES.index(msg.note), YES, slots, by_id)
+                elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
+                    answer(DENY_NOTES.index(msg.note), NO, slots, by_id)
+                elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
+                    i = MACRO_NOTES.index(msg.note)
+                    if i < len(MACROS) and focused:
+                        label, text = MACROS[i]
+                        print(f"macro {label!r} -> {focused}", flush=True)
+                        herdr("agent", "send", focused, text)
 
             if pad_down and talk_slot is None and now - pad_down[1] >= HOLD_S:
                 # No focus call: Claude reads its own pty, so a background agent
@@ -214,6 +277,18 @@ def selftest():
     assert colour_for(a("x", "idle")) == (GREEN, STATIC)
     assert colour_for(a("x", "banana")) == UNKNOWN
     assert colour_for({}) == UNKNOWN
+
+    # approve/deny must be inert unless herdr says that agent is blocked
+    by_id = {"x": a("x", "idle"), "y": a("y", "blocked")}
+    slots = {0: "x", 1: "y"}
+    assert blocked_agent(0, slots, by_id) is None      # idle -> no
+    assert blocked_agent(1, slots, by_id)["terminal_id"] == "y"
+    assert blocked_agent(7, slots, by_id) is None      # empty slot -> no
+    assert answer(0, YES, slots, by_id) is False       # never sends to a non-blocked agent
+
+    assert len(MACROS) <= SLOTS, "bottom row only has 8 pads"
+    assert all(t.endswith("\r") for _, t in MACROS), "a macro must submit"
+    assert len({n for n in PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES}) == 32
     print("ok")
 
 
