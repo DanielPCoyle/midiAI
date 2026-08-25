@@ -37,6 +37,9 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
    border-radius:5px;padding:8px 14px;font:inherit;cursor:pointer}
  button.ghost{background:#2a2a30}
  #msg{margin-top:10px;color:#7fb37f;height:16px;font-size:12px}
+ .row{display:flex;align-items:center;gap:8px;margin-top:12px}
+ .row input{width:auto}
+ .row label{margin:0}
 </style>
 <div><h1>Shortcut pads &mdash; laid out as they sit on the Push
   <span class=n style="margin-left:10px">drag a pad onto another to swap them</span></h1>
@@ -45,10 +48,14 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
   <h1>Pad <span id=cur>-</span></h1>
   <label>Label <span class=n>(shown on the Push screen)</span></label>
   <input id=label maxlength=24>
-  <label>Text <span class=n>(inserted into the prompt, not submitted)</span></label>
+  <label>Text <span class=n>(inserted into the prompt)</span></label>
   <textarea id=text></textarea>
   <label>Colour label</label>
   <select id=tag></select>
+  <div class=row>
+    <input type=checkbox id=submit>
+    <label for=submit>Auto submit <span class=n>(press enter on tap)</span></label>
+  </div>
   <button onclick=save()>Save</button>
   <button class=ghost onclick=clearPad()>Clear pad</button>
   <div id=msg></div>
@@ -75,7 +82,8 @@ function draw(){
   for(let r=7;r>=0;r--) for(let c=0;c<8;c++){
     const i=r*8+c, m=macros[i], d=document.createElement('div');
     d.className='pad'+(m?' set':'')+(i===sel?' sel':'');
-    d.innerHTML='<div class=n>'+(36+i)+'</div>'+(m?escapeHtml(m.label):'');
+    d.innerHTML='<div class=n>'+(36+i)+(m&&m.submit?' <span style=color:#6eaa6e>\u23ce</span>':'')
+                +'</div>'+(m?escapeHtml(m.label):'');
     if(m) d.style.borderLeft='4px solid '+hexFor(m.colour);
     d.onclick=()=>pick(i);
     d.draggable=!!m;                       // an empty pad has nothing to carry
@@ -98,7 +106,7 @@ function swap(a,b){
 
 function pick(i){ sel=i; const m=macros[i]||{label:'',text:''};
   $('cur').textContent=(36+i); $('label').value=m.label||''; $('text').value=m.text||'';
-  $('tag').value=m.tag||''; draw(); }
+  $('tag').value=m.tag||''; $('submit').checked=!!m.submit; draw(); }
 
 function drawLabels(){
   const opts=['<option value="">(none)</option>'].concat(
@@ -127,7 +135,8 @@ async function save(){
   const tag=$('tag').value||null;
   const lab=labels.find(l=>l.name===tag);
   macros[sel]= text ? {label:($('label').value.trim()||text.split(/\\s+/).slice(0,2).join(' ')),
-                       text, tag, colour: lab?lab.colour:125} : null;
+                       text, tag, colour: lab?lab.colour:125,
+                       submit: $('submit').checked} : null;
   await put(); }
 async function clearPad(){ if(sel===null) return note('pick a pad first');
   macros[sel]=null; $('label').value=''; $('text').value=''; await put(); }
@@ -153,10 +162,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/macros":
             labels, macros = push_cc.load_macros()
-            self._send(200, json.dumps({"labels": labels, "pads": [
-                None if not m else {"label": m[0], "text": m[1],
-                                    "colour": m[2], "tag": m[3]}
-                for m in macros]}), "application/json")
+            self._send(200, json.dumps({"labels": labels, "pads": macros}),
+                       "application/json")
         else:
             self._send(200, PAGE, "text/html; charset=utf-8")
 
@@ -174,9 +181,10 @@ class Handler(BaseHTTPRequestHandler):
         pads = entries.get("pads") or []
         push_cc.save_macros(
             [None if not e else
-             (e.get("label") or push_cc.label_for(e.get("text", "")),
-              e.get("text", ""), int(e.get("colour", push_cc.BLUE)) & 0x7F,
-              e.get("tag"))
+             {"label": e.get("label") or push_cc.label_for(e.get("text", "")),
+              "text": e.get("text", ""),
+              "colour": int(e.get("colour", push_cc.BLUE)) & 0x7F,
+              "tag": e.get("tag"), "submit": bool(e.get("submit"))}
              for e in pads[:push_cc.MACRO_SLOTS]], labels)
         self._send(200, "ok", "text/plain")
 

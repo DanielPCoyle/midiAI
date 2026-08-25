@@ -265,11 +265,13 @@ def render_macros(macros, arming=False):
                         outline=(38, 38, 38))
             if not m:
                 continue
-            hue = accent if arming else swatches.get(
-                m[2] if len(m) > 2 else 125, (150, 175, 215))
+            hue = accent if arming else swatches.get(m["colour"], (150, 175, 215))
             d.rectangle([x + 2, y, x + 5, y + cell_h - 2], fill=hue)
-            s, ff = fit(d, m[0], COL_W - 14, 11)
+            s, ff = fit(d, m["label"], COL_W - 20, 11)
             d.text((x + 9, y + 1), s, font=ff, fill=(215, 215, 215))
+            if m.get("submit"):        # this one fires the moment you tap it
+                d.text((x + COL_W - 13, y + 1), "\u23ce", font=font(11),
+                       fill=(110, 170, 110))
     return img
 
 

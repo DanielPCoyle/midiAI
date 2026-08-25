@@ -181,19 +181,20 @@ def load_macros():
     by_name = {l["name"]: l.get("colour", BLUE) for l in labels if l.get("name")}
     out = []
     for entry in pads[:MACRO_SLOTS]:
-        if not entry:
+        if isinstance(entry, str):
+            entry = {"text": entry}
+        text = (entry or {}).get("text", "")
+        if not text:
             out.append(None)
-        elif isinstance(entry, str):
-            out.append((label_for(entry), entry, BLUE))
-        else:
-            text = entry.get("text", "")
-            if not text:
-                out.append(None)
-                continue
-            colour = by_name.get(entry.get("tag"), entry.get("colour", BLUE))
-            out.append((entry.get("label") or label_for(text), text,
-                        int(colour) & 0x7F, entry.get("tag")))
-    out = [m if m is None or len(m) == 4 else (*m, None) for m in out]
+            continue
+        colour = by_name.get(entry.get("tag"), entry.get("colour", BLUE))
+        out.append({"label": entry.get("label") or label_for(text),
+                    "text": text,
+                    "colour": int(colour) & 0x7F,
+                    "tag": entry.get("tag"),
+                    # off unless asked for: a pad that fires on contact is how
+                    # /handoff went into a live session three times
+                    "submit": bool(entry.get("submit"))})
     return labels, out + [None] * (MACRO_SLOTS - len(out))
 
 
@@ -201,10 +202,7 @@ def save_macros(macros, labels=None):
     tmp = MACRO_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"labels": labels if labels is not None else LABELS,
-                   "pads": [None if not m else
-                            {"label": m[0], "text": m[1], "colour": m[2],
-                             "tag": m[3] if len(m) > 3 else None}
-                            for m in macros]}, f, indent=2)
+                   "pads": list(macros)}, f, indent=2)
     os.replace(tmp, MACRO_FILE)   # never leave a half-written file behind
 
 
@@ -662,7 +660,7 @@ def run():
                               RED if arming else
                               (WHITE if row0 and i < len(opts) else
                                (BLACK if opts and row0 else
-                                (MACROS[i][2] if MACROS[i] else BLACK))))
+                                (MACROS[i]["colour"] if MACROS[i] else BLACK))))
 
             for msg in inp.iter_pending():
                 if debug and msg.type not in ("clock", "active_sensing"):
@@ -818,16 +816,21 @@ def run():
                     i = MACRO_NOTES.index(msg.note)
                     if arming or shifted:
                         text = (summary.get("pending") or "").strip()
-                        keep = MACROS[i][2] if MACROS[i] else BLUE
-                        tag = MACROS[i][3] if MACROS[i] else None
-                        MACROS[i] = (label_for(text), text, keep, tag) if text else None
+                        was = MACROS[i] or {}
+                        MACROS[i] = {"label": label_for(text), "text": text,
+                                     "colour": was.get("colour", BLUE),
+                                     "tag": was.get("tag"),
+                                     "submit": was.get("submit", False)} if text else None
                         save_macros(MACROS)
                         shown = None
                         print(f"pad {i} <- {text!r}" if text
                               else f"pad {i} cleared", flush=True)
                     elif MACROS[i] and target:
-                        label, text = MACROS[i][0], MACROS[i][1]
-                        print(f"macro {label!r} -> {target}", flush=True)
+                        m = MACROS[i]
+                        text = m["text"] + (ENTER if m["submit"] else "")
+                        print(f"macro {m['label']!r}"
+                              f"{' + enter' if m['submit'] else ''} -> {target}",
+                              flush=True)
                         herdr("agent", "send", target, text)
 
             if pad_down and talk_slot is None and now - pad_down[1] >= HOLD_S:
@@ -880,9 +883,12 @@ def selftest():
     assert colour_for({}) == UNKNOWN
 
     assert len(MACROS) == MACRO_SLOTS, "one entry per macro pad"
-    assert not any(m[1].endswith("\r") for m in filter(None, MACROS)), \
-        "macros must not self-submit"
-    assert all(0 <= m[2] <= 127 for m in filter(None, MACROS)), "palette is 0-127"
+    # the text itself never carries a newline; submitting is the flag's job, so
+    # a pad cannot end up firing because of how someone typed it
+    assert not any(m["text"].endswith("\r") for m in filter(None, MACROS)), \
+        "submit is a flag, not a newline in the text"
+    assert all(0 <= m["colour"] <= 127 for m in filter(None, MACROS)), "palette is 0-127"
+    assert all(isinstance(m["submit"], bool) for m in filter(None, MACROS))
     assert len(set(MACRO_NOTES)) == len(MACRO_NOTES) == 64, "every pad, once"
     assert PLAY_CC not in TAB_CCS + SESSION_CCS, "play must not collide with a lit row"
     assert not set(SESSION_CCS) & set(TAB_CCS), "the two button rows must not overlap"

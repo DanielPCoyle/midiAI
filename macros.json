@@ -6,47 +6,47 @@
     },
     {
       "name": "Slash Command",
-      "colour": 126
+      "colour": 127
     }
   ],
   "pads": [
-    {
-      "label": "continue",
-      "text": "continue",
-      "colour": 125,
-      "tag": null
-    },
+    null,
     {
       "label": "run the",
       "text": "run the tests and report what fails",
       "colour": 125,
-      "tag": null
+      "tag": null,
+      "submit": false
     },
     null,
     {
       "label": "commit this",
       "text": "commit this",
       "colour": 125,
-      "tag": null
+      "tag": null,
+      "submit": false
     },
     {
       "label": "explain what",
       "text": "explain what you just did and why",
       "colour": 125,
-      "tag": null
+      "tag": null,
+      "submit": false
     },
     {
       "label": "stop and",
       "text": "stop and summarise where you are",
       "colour": 125,
-      "tag": null
+      "tag": null,
+      "submit": false
     },
     null,
     {
       "label": "show me",
       "text": "show me the diff",
       "colour": 125,
-      "tag": null
+      "tag": null,
+      "submit": false
     },
     null,
     null,
@@ -80,7 +80,13 @@
     null,
     null,
     null,
-    null,
+    {
+      "label": "continue",
+      "text": "continue",
+      "colour": 125,
+      "tag": null,
+      "submit": false
+    },
     null,
     null,
     null,
@@ -100,13 +106,15 @@
       "label": "/handoff",
       "text": "/handoff",
       "colour": 126,
-      "tag": "Slash Command"
+      "tag": null,
+      "submit": false
     },
     {
       "label": "/code-review",
       "text": "/code-review",
-      "colour": 126,
-      "tag": "git"
+      "colour": 127,
+      "tag": "Slash Command",
+      "submit": false
     },
     null,
     null,
