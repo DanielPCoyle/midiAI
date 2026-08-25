@@ -36,7 +36,8 @@ agent's directory. Add Track makes a worktree off it, named from whatever is
 typed in the prompt. Duplicate forks the current agent. Solo pins the screen.
 
 Convert runs /compact, New /clear, Quantize /model, Double Loop /effort and
-Metronome /mcp. Stop Clip sends escape. Undo clears what is typed. Arrows and
+Metronome /mcp. Stop Clip sends escape. Mute sends tab, which accepts an
+autocomplete. Undo clears what is typed. Arrows and
 the master encoder pass through as arrow keys. The tempo encoder scrolls; each
 of the eight encoders scrolls the agent above it, and touching one peeks at it.
 
@@ -100,7 +101,12 @@ ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mod
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
 
 UNDO_CC = 119                      # Undo -> backspace the prompt empty
-FREED_CCS = [60]                   # Mute, unmapped now: blank it or it stays lit
+MUTE_CC = 60                       # Mute -> tab, which is autocomplete:accept
+FREED_CCS = []                     # unmapped buttons: blank them or they stay lit
+
+# Raw keys, sent as-is. Separate from COMMAND_CCS because nothing here submits
+# and that table asserts everything in it does.
+KEY_CCS = {MUTE_CC: ("tab", "\t")}
 STOP_CC = 29                       # Stop Clip -> escape, interrupts the agent
 BACKSPACE, ESCAPE = "\x7f", "\x1b"
 
@@ -698,7 +704,7 @@ def run():
                 push.cc("stop", 0, [STOP_CC],
                         RED if (cur or {}).get("agent_status") == "working"
                         else (WHITE if target else BLACK))
-                for cc, (name, _) in COMMAND_CCS.items():
+                for cc, (name, _) in list(COMMAND_CCS.items()) + list(KEY_CCS.items()):
                     push.cc(name, 0, [cc], WHITE if target else BLACK)
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
                 push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
@@ -792,6 +798,11 @@ def run():
                     n = len(summary.get("pending") or "") + 16
                     print(f"undo -> {n} backspaces -> {target}", flush=True)
                     herdr("agent", "send", target, BACKSPACE * n)
+                elif (msg.type == "control_change" and msg.control in KEY_CCS
+                      and msg.value and target):
+                    name, key = KEY_CCS[msg.control]
+                    print(f"{name} -> {key!r} -> {target}", flush=True)
+                    herdr("agent", "send", target, key)
                 elif (msg.type == "control_change" and msg.control in COMMAND_CCS
                       and msg.value and target):
                     name, cmd = COMMAND_CCS[msg.control]
@@ -1019,6 +1030,8 @@ def selftest():
     assert len(slug("x" * 200)) == 60
 
     assert all(v.endswith("\r") for _, v in COMMAND_CCS.values())
+    assert not any(v.endswith("\r") for _, v in KEY_CCS.values()), "raw keys do not submit"
+    assert not set(KEY_CCS) & set(COMMAND_CCS), "a button belongs to one table"
 
     # a wrapped prompt is one buffer, not just its caret row
     assert prompt_text(["❯ hello"]) == "hello"
