@@ -33,7 +33,9 @@ Add Device splits and starts a new claude there in auto mode, in the current
 agent's directory. Add Track makes a worktree off it, named from whatever is
 typed in the prompt, or timestamped if that is empty.
 
-Convert runs /compact, New runs /clear, Quantize opens /model -- which is a
+Mute clears whatever is typed in the prompt and lights only when there is
+something to clear. Convert runs /compact, New runs /clear, Quantize opens
+/model -- which is a
 select widget, so the arrows and Play drive it. Delete closes the current
 agent's pane outright. It submits on press, unlike the macro
 row, because a button labelled Delete doing nothing until you press another
@@ -86,11 +88,15 @@ DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
 
-# Buttons that just type a command at the current agent and submit it.
+MUTE_CC = 60                       # Mute -> ctrl+l, chat:clearInput
+
+# Buttons that send a fixed string to the current agent. The newline is part of
+# the entry: not everything here submits.
 COMMAND_CCS = {
-    35: ("convert", "/compact"),
-    87: ("new", "/clear"),
-    116: ("quantize", "/model"),
+    35: ("convert", "/compact\r"),
+    87: ("new", "/clear\r"),
+    116: ("quantize", "/model\r"),
+    MUTE_CC: ("mute", "\x0c"),     # clears the prompt, submits nothing
 }
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
@@ -537,7 +543,9 @@ def run():
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
                 for cc, (name, _) in COMMAND_CCS.items():
-                    push.cc(name, 0, [cc], WHITE if target else BLACK)
+                    # mute only lights when there is actually something to clear
+                    on = bool(summary.get("pending")) if cc == MUTE_CC else bool(target)
+                    push.cc(name, 0, [cc], WHITE if on else BLACK)
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
                 push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
                 for s in range(SLOTS):              # bottom row changes job when asked
@@ -591,8 +599,8 @@ def run():
                 elif (msg.type == "control_change" and msg.control in COMMAND_CCS
                       and msg.value and target):
                     name, cmd = COMMAND_CCS[msg.control]
-                    print(f"{name} -> {cmd} -> {target}", flush=True)
-                    herdr("agent", "send", target, cmd + ENTER)
+                    print(f"{name} -> {cmd!r} -> {target}", flush=True)
+                    herdr("agent", "send", target, cmd)
                 elif (msg.type == "control_change" and msg.control == DELETE_CC
                       and msg.value and cur):
                     pane = cur.get("pane_id")
@@ -762,6 +770,10 @@ def selftest():
     assert slug("!!!") .startswith("push/")     # nothing usable -> timestamped
     assert slug("") .startswith("push/")
     assert len(slug("x" * 200)) == 60
+
+    assert COMMAND_CCS[MUTE_CC][1] == "\x0c"          # ctrl+l, no newline
+    assert not COMMAND_CCS[MUTE_CC][1].endswith("\r")  # must not submit
+    assert all(v.endswith("\r") for k, (_, v) in COMMAND_CCS.items() if k != MUTE_CC)
     print("ok")
 
 
