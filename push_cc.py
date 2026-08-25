@@ -13,8 +13,8 @@ dictate the rest of the sentence onto what it just typed. Hold Shift and tap one
 Hold Record and tap one to save
 whatever is in the prompt onto it. macros.json is hand-editable.
 
-Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
-3 focus, 4 shortcuts. White is the one you are on.
+Buttons above the display (CC 102-109) pick the view: 1 focus, 2 agents,
+3 usage, 4 shortcuts. White is the one you are on.
 
 The 960x160 screen names each column, so two checkouts of the same repo are
 told apart by the tail of their terminal id. Missing pyusb just means no
@@ -75,7 +75,9 @@ MACRO_ROWS = 8
 MACRO_NOTES = list(range(36, 100))
 MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
-VIEWS = ["agents", "usage", "focus", "macros"]
+# focus first: it is the one you actually watch, and view defaults to 0 so
+# it is also what comes up on start
+VIEWS = ["focus", "agents", "usage", "macros"]
 SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
