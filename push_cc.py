@@ -40,7 +40,12 @@ agent's directory. Add Track makes a worktree off it, named from whatever is
 typed in the prompt, or timestamped if that is empty.
 
 Stop Clip sends escape, which interrupts a working agent; it goes red while
-there is something to interrupt. Undo clears whatever is typed in the prompt
+there is something to interrupt. Hold Shift and tap an agent pad to close it, or a macro pad to record onto it.
+Solo pins the screen so a question elsewhere stops dragging it away. Duplicate
+forks the current agent into a second session on the same directory. Page
+left/right scroll a screenful.
+
+Undo clears whatever is typed in the prompt
 and lights only when there is something to clear. Convert runs /compact, New runs /clear, Quantize opens
 /model, Double Loop /effort and Metronome /mcp -- which is a
 select widget, so the arrows and Play drive it. Delete closes the current
@@ -91,6 +96,11 @@ TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
 VOLUME_CC = 79                     # master encoder -> up/down arrows at the agent
 ENC_CCS = list(range(71, 79))      # the 8 encoders, one over each agent column
 ENC_TOUCH = list(range(0, 8))      # touching one is a note, not a CC
+SHIFT_CC = 49                      # held modifier, the standard Push idiom
+SOLO_CC = 61                       # pin the screen so questions stop moving it
+DUPLICATE_CC = 88                  # fork the current agent into a new session
+PAGE_CCS = {62: -1, 63: 1}         # page left/right -> a screenful of scroll
+PAGE_LINES = 6                     # what fits in the focus view body
 MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
 UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
 
@@ -535,6 +545,7 @@ def run():
     shown, frame, view = None, None, 0
     current, summary, arming = 0, {}, False
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
+    shifted, pinned = False, False
     asking, next_sweep, was_asking = set(), 0.0, False
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
@@ -580,7 +591,7 @@ def run():
                     asking.discard(current)
 
                 # jump on the edge only, so navigating away does not fight you
-                if asking and not was_asking:
+                if asking and not was_asking and not pinned:
                     ask_slot = current if current in asking else sorted(asking)[0]
                     current, view = ask_slot, VIEWS.index("focus")
                     shown, scrolls[ask_slot] = None, 0
@@ -612,6 +623,10 @@ def run():
                         disp = None
 
                 push.cc("play", 0, [PLAY_CC], GREEN if target else BLACK)
+                push.cc("solo", 0, [SOLO_CC], WHITE if pinned else BLACK)
+                push.cc("dup", 0, [DUPLICATE_CC], GREEN if cur else BLACK)
+                for cc in PAGE_CCS:
+                    push.cc(f"page{cc}", 0, [cc], WHITE if cur else BLACK)
                 for cc in ARROW_CCS:
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if target else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
@@ -655,6 +670,14 @@ def run():
                         print(f"pad {slot} released, {sent} keys sent", flush=True)
                         talk_slot, pad_down = None, None
                     elif pad_down and pad_down[0] == slot:
+                        if shifted:
+                            pane = (by_id.get(slots[slot]) or {}).get("pane_id")
+                            print(f"shift+pad {slot} -> closing {pane}", flush=True)
+                            if pane:
+                                herdr("pane", "close", pane)
+                                slots.pop(slot, None)
+                            pad_down = None
+                            continue
                         herdr("agent", "focus", slots[slot])   # short press = focus
                         current, pad_down, shown = slot, None, None
                         scrolls[slot] = 0
@@ -727,6 +750,25 @@ def run():
                     seat = current if peek is None else peek
                     scrolls[seat] = max(0, scrolls.get(seat, 0) + turn(msg.value))
                     shown = None
+                elif msg.type == "control_change" and msg.control == SHIFT_CC:
+                    shifted = bool(msg.value)
+                elif (msg.type == "control_change" and msg.control == SOLO_CC
+                      and msg.value):
+                    pinned, shown = not pinned, None
+                    print(f"pinned = {pinned}", flush=True)
+                elif (msg.type == "control_change" and msg.control == DUPLICATE_CC
+                      and msg.value and cur):
+                    where = cur.get("cwd") or os.getcwd()
+                    print(f"duplicate -> second agent in {where}", flush=True)
+                    herdr("agent", "start", "claude", "--cwd", where,
+                          "--split", "down", "--focus",
+                          "--", "claude", "--permission-mode", "auto")
+                elif (msg.type == "control_change" and msg.control in PAGE_CCS
+                      and msg.value):
+                    seat = current if peek is None else peek
+                    scrolls[seat] = max(0, scrolls.get(seat, 0)
+                                        + PAGE_CCS[msg.control] * PAGE_LINES)
+                    shown = None
                 elif msg.type == "control_change" and msg.control in ENC_CCS:
                     # each knob scrolls the column beneath it, no switching needed
                     slot = ENC_CCS.index(msg.control)
@@ -739,7 +781,7 @@ def run():
                     herdr("agent", "send", target, ENTER)
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if arming:
+                    if arming or shifted:
                         text = (summary.get("pending") or "").strip()
                         MACROS[i] = (label_for(text), text) if text else None
                         save_macros(MACROS)
