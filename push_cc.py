@@ -8,7 +8,8 @@ Buttons under the display (CC 20-27) = up to 8 herdr agents, left to right.
   Page left/right step between them.
 
 The whole 8x8 pad grid (36-99) = shortcuts. Tap one to insert its text into
-the current agent; Play submits. Hold Record, or Shift, and tap one to save
+the current agent; Play submits. Hold one and it opens the mic instead, so you
+dictate the rest of the sentence onto what it just typed. Hold Record, or Shift, and tap one to save
 whatever is in the prompt onto it. macros.json is hand-editable.
 
 Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
@@ -569,6 +570,7 @@ def run():
     current, summary, arming = 0, {}, False
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
     shifted, pinned = False, False
+    macro_down, talk_src = None, None
     published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
     asking, pendings, next_sweep, was_asking = set(), {}, 0.0, False
@@ -731,9 +733,9 @@ def run():
                     elif msg.value:
                         if slots.get(slot):
                             pad_down = (slot, now)
-                    elif slot == talk_slot:
+                    elif slot == talk_slot and talk_src == "session":
                         print(f"pad {slot} released, {sent} keys sent", flush=True)
-                        talk_slot, pad_down = None, None
+                        talk_slot, talk_src, pad_down = None, None, None
                     elif pad_down and pad_down[0] == slot:
                         if shifted:
                             closing, shown = (slot, now + CONFIRM_S), None
@@ -847,6 +849,16 @@ def run():
                     elif target:
                         print(f"play -> enter -> {target}", flush=True)
                         herdr("agent", "send", target, ENTER)
+                elif (msg.type in ("note_on", "note_off") and msg.note in MACRO_NOTES
+                      and not (msg.type == "note_on" and msg.velocity)):
+                    i = MACRO_NOTES.index(msg.note)
+                    if macro_down and macro_down[0] == i:
+                        if talk_src == "macro":     # dictated onto it; let go
+                            print(f"pad {i} released, {sent} keys sent", flush=True)
+                            talk_slot, talk_src = None, None
+                        elif MACROS[i] and MACROS[i]["submit"] and target:
+                            herdr("agent", "send", target, ENTER)
+                        macro_down = None
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
                     if arming or shifted:
@@ -862,16 +874,23 @@ def run():
                               else f"pad {i} cleared", flush=True)
                     elif MACROS[i] and target:
                         m = MACROS[i]
-                        text = m["text"] + (ENTER if m["submit"] else "")
-                        print(f"macro {m['label']!r}"
-                              f"{' + enter' if m['submit'] else ''} -> {target}",
-                              flush=True)
-                        herdr("agent", "send", target, text)
+                        # the text goes in now so it reads back immediately, but
+                        # its newline waits for the release: a hold means you are
+                        # about to dictate the rest, and submitting first would
+                        # send half a thought
+                        print(f"macro {m['label']!r} -> {target}", flush=True)
+                        herdr("agent", "send", target, m["text"])
+                        macro_down = (i, now)
+
+            if (macro_down and talk_slot is None and target
+                    and now - macro_down[1] >= HOLD_S):
+                talk_slot, talk_src, next_key, sent = current, "macro", 0.0, 0
+                print(f"pad {macro_down[0]} held -> dictating onto it", flush=True)
 
             if pad_down and talk_slot is None and now - pad_down[1] >= HOLD_S:
                 # No focus call: Claude reads its own pty, so a background agent
                 # hears this while you keep watching another one.
-                talk_slot, next_key, sent = pad_down[0], 0.0, 0
+                talk_slot, talk_src, next_key, sent = pad_down[0], "session", 0.0, 0
                 current, shown = talk_slot, None
                 scrolls[talk_slot] = 0
                 print(f"pad {talk_slot} held -> talking to {slots[talk_slot]}", flush=True)
