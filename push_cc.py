@@ -103,10 +103,27 @@ ARM_CCS = (RECORD_CC, SELECT_CC)
 DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
+BROWSE_CC = 111                    # Browse -> this repo's pull requests, in a browser
 
 UNDO_CC = 119                      # Undo -> backspace the prompt empty
 MUTE_CC = 60                       # Mute -> tab, which is autocomplete:accept
 FREED_CCS = []                     # unmapped buttons: blank them or they stay lit
+
+# Hold Automate, tap a pad: arms that pad's row as a chain. Play runs it, Stop
+# discards it. Two gestures on purpose -- a chain is fire-and-forget by
+# definition, and this surface already learned that lesson the hard way.
+AUTOMATE_CC = 89
+CHAIN_GRACE_S = 5.0    # a step that never reports working finished between polls
+CHAIN_SETTLE = 2       # idle polls in a row before the next step goes in
+
+# The touchstrip is the only absolute control on the surface. An encoder is
+# relative and can only ever nudge; a strip you can slam straight to max.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+PITCH_SPAN = 8192 * 2               # mido pitchwheel runs -8192..8191
+# Confirmed against the hardware: the strip brackets its pitchbend with a touch
+# note, v127 finger on and v0 off, so the release is a real event and not a
+# timer we guessed at. Nothing is sent until that v0 arrives.
+STRIP_NOTE = 12
 
 # Raw keys, sent as-is. Separate from COMMAND_CCS because nothing here submits
 # and that table asserts everything in it does.
@@ -336,6 +353,77 @@ def step_slot(current, delta, slots):
     return live[0] if delta > 0 else live[-1]
 
 
+# ---------------------------------------------------------------- chains
+
+def chain_steps(macros, start):
+    """The pads from `start` rightward to the end of its row, empties dropped.
+
+    A row IS the chain. The grid already groups eight pads under one hand and
+    mapui already reorders them by dragging, so a sequence needs no storage of
+    its own -- and a pad's text lives in exactly one place, which a separate
+    sequence file would quietly duplicate."""
+    row_end = (start // 8 + 1) * 8
+    return [i for i in range(start, row_end) if macros[i]]
+
+
+def chain_step_done(saw_working, status, waited, idle_polls):
+    """True when the step just sent has finished.
+
+    Status lags the send: an agent still reads `idle` for a poll or two after
+    its enter lands. Advance on a bare `idle` and every pad in the row fires
+    into the same prompt at once. So wait to have seen `working` -- or for the
+    grace period, which covers a step that began and ended between two polls --
+    and only then count idle polls."""
+    if not (saw_working or waited >= CHAIN_GRACE_S):
+        return False
+    return status == "idle" and idle_polls >= CHAIN_SETTLE
+
+
+class Chain:
+    """One row of pads fired at one agent, in order, advancing as it finishes.
+
+    Pinned to the agent it started on, not to whatever is selected now: you
+    have to be able to walk away and watch another session while it runs,
+    which is most of the point of having eight of them."""
+
+    def __init__(self, steps, target, slot, name):
+        self.steps, self.target, self.slot, self.name = steps, target, slot, name
+        self.index, self.phase = 0, "armed"
+        self.sent_at, self.saw_working, self.idle_polls = 0.0, False, 0
+        self.done_at = 0.0
+
+    @property
+    def step(self):
+        return self.steps[self.index] if self.index < len(self.steps) else None
+
+    def fire(self, macros, now):
+        """Send the current step. Always submits, whatever the pad's own flag
+        says: a chain that stops for you to press enter is not a chain.
+
+        Skips pads that have gone empty since the chain was armed -- mapui
+        rewrites macros.json live, so the row can change underneath a run.
+        False when there is nothing left to send."""
+        while self.index < len(self.steps) and not macros[self.steps[self.index]]:
+            print(f"chain: pad {self.steps[self.index]} went empty, skipping",
+                  flush=True)
+            self.index += 1
+        if self.index >= len(self.steps):
+            return False
+        m = macros[self.step]
+        herdr("agent", "send", self.target, m["text"] + ENTER)
+        self.sent_at, self.saw_working, self.idle_polls = now, False, 0
+        print(f"chain {self.index + 1}/{len(self.steps)}: "
+              f"{m['label']!r} -> {self.target}", flush=True)
+        return True
+
+    def info(self, macros):
+        return {"agent": self.name, "slot": self.slot, "index": self.index,
+                "phase": self.phase,
+                "steps": [{"label": (macros[i] or {}).get("label", "?"),
+                           "colour": (macros[i] or {}).get("colour", BLUE)}
+                          for i in self.steps]}
+
+
 _model_cache = {}   # path -> (size, name). Model changes mid-session via /model.
 
 
@@ -367,6 +455,54 @@ def model_for(agent):
     name = short_model(found[-1].decode()) if found else ""
     _model_cache[path] = (size, name)
     return name
+
+
+def strip_pick(pitch, current):
+    """Level under the finger, or `current` when this is the strip's rest
+    position.
+
+    The strip springs back to exact centre and reports it as a bend BEFORE the
+    release note, so taking 0 at face value commits `high` wherever you
+    actually were -- observed on the hardware, every single time. 0 is the
+    rest value and never a choice: the middle band runs ~1600 either side of
+    it, so refusing one point of 3200 costs nothing you can feel."""
+    return current if pitch == 0 else effort_at(pitch)
+
+
+def effort_at(pitch):
+    """Strip position -> one of five levels. Absolute, so the bottom of the
+    strip is always `low` and the top always `max`, however you got there --
+    that is the whole reason this lives on the strip and not on a knob."""
+    frac = (pitch + PITCH_SPAN // 2) / PITCH_SPAN
+    return EFFORTS[min(len(EFFORTS) - 1, max(0, int(frac * len(EFFORTS))))]
+
+
+_effort_cache = {}   # path -> (size, level). /effort changes it mid-session.
+
+
+def effort_for(agent):
+    """The level the session is actually on, which is not the same as the one
+    we last asked for: it can be changed from the keyboard too, and a readout
+    that quietly reports our own last write would be worse than none."""
+    path = transcript(agent)
+    if not path:
+        return ""
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        return ""
+    hit = _effort_cache.get(path)
+    if hit and hit[0] == size:      # not grown, so the level cannot have moved
+        return hit[1]
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, size - TAIL_BYTES))
+            found = re.findall(rb'"effort":"([^"]+)"', f.read())
+    except OSError:
+        return ""
+    level = found[-1].decode() if found else ""
+    _effort_cache[path] = (size, level)
+    return level
 
 
 _usage_cache = {}   # path -> (offset, totals). Transcripts only ever append.
@@ -561,6 +697,7 @@ def focus_info(slot, agent, summary, scroll=0):
     return {"slot": slot,
             "name": os.path.basename(agent.get("cwd", "")) or "?",
             "model": model_for(agent),
+            "effort": effort_for(agent),
             "status": agent.get("agent_status"),
             **{k: summary.get(k, "") for k in ("act", "say", "pending")},
             "opts": summary.get("opts") or [], "sel": summary.get("sel"),
@@ -577,6 +714,7 @@ def panel_col(agent, pending=""):
     return {"name": os.path.basename(agent.get("cwd", "")) or "?",
             "status": agent.get("agent_status"),
             "model": model_for(agent),
+            "effort": effort_for(agent),
             "sub": agent.get("terminal_id", "")[-6:],
             "focused": bool(agent.get("focused")),
             "typed": pending,
@@ -668,6 +806,8 @@ def run():
     published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
     asking, pendings, next_sweep, was_asking = set(), {}, 0.0, False
+    chain, automating = None, False   # a row of pads queued at one agent
+    strip_level, strip_touch = None, False  # uncommitted until the finger lifts
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -728,8 +868,43 @@ def run():
                     print(f"question on slot {ask_slot} -> focus", flush=True)
                 was_asking = bool(asking)
 
+                if chain and chain.phase in ("running", "waiting"):
+                    a = by_id.get(chain.target)
+                    status = (a or {}).get("agent_status")
+                    if a is None:      # the agent it was pinned to went away
+                        print("chain: agent gone, stopping", flush=True)
+                        chain, shown = None, None
+                    # blocked pauses instead of advancing. The chain waiting on
+                    # an answer is the feature, not a case to engineer around --
+                    # the approve/deny rows do their ordinary job and it resumes.
+                    elif status == "blocked" or chain.slot in asking:
+                        if chain.phase != "waiting":
+                            chain.phase, shown = "waiting", None
+                            print(f"chain: waiting on you at step "
+                                  f"{chain.index + 1}", flush=True)
+                    else:
+                        if chain.phase == "waiting":
+                            chain.phase, shown = "running", None
+                        chain.saw_working |= status == "working"
+                        chain.idle_polls = (chain.idle_polls + 1
+                                            if status == "idle" else 0)
+                        if chain_step_done(chain.saw_working, status,
+                                           now - chain.sent_at, chain.idle_polls):
+                            chain.index += 1
+                            shown = None
+                            if not chain.fire(MACROS, now):
+                                chain.phase, chain.done_at = "done", now
+                                print("chain complete", flush=True)
+                elif chain and chain.phase == "done" and now - chain.done_at > CONFIRM_S:
+                    chain, shown = None, None   # let the screen go back to work
+
                 if disp:
-                    if previewing is not None:
+                    if strip_level:
+                        # outranks the chain: your finger is on the strip now
+                        state = ("effort", strip_level)
+                        drawn = (lambda l=strip_level:
+                                 disp_mod.render_effort(l, EFFORTS))
+                    elif previewing is not None:
                         m, idx = MACROS[previewing], MACRO_NOTES[previewing]
                         state = ("pad", previewing, repr(m))
                         drawn = (lambda mm=m, ii=idx: disp_mod.render_pad(mm, ii))
@@ -741,6 +916,17 @@ def run():
                         state = ("closing", slot_n, nm, left)
                         drawn = (lambda n=nm, i=slot_n, t=left:
                                  disp_mod.render_confirm(n, i, t))
+                    elif chain and chain.phase != "waiting":
+                        # below preview and confirm: an explicit question you
+                        # just asked outranks a chain running in the background.
+                        # And a WAITING chain gives the screen up entirely --
+                        # it is paused because the agent asked you something,
+                        # so covering that question with a list of steps hides
+                        # the one thing you have to act on. The pads still
+                        # blink red, which is what says the chain is holding.
+                        cinfo = chain.info(MACROS)
+                        state = ("chain", repr(cinfo))
+                        drawn = (lambda c=cinfo: disp_mod.render_chain(c))
                     elif VIEWS[view] == "focus":
                         info = focus_info(seat, cur, summary, scroll) if cur else None
                         state = (view, repr(info))
@@ -777,7 +963,13 @@ def run():
                     except Exception:
                         disp = None
 
-                push.cc("play", 0, [PLAY_CC], GREEN if target else BLACK)
+                # while a chain is armed Play means "run it", not "enter", and a
+                # button that changed jobs has to say so
+                armed = bool(chain and chain.phase == "armed")
+                push.cc("play", 0, [PLAY_CC],
+                        BLUE if armed else (GREEN if target else BLACK),
+                        PULSE if armed else STATIC)
+                push.cc("auto", 0, [AUTOMATE_CC], BRIGHT if chain else DIM)
                 push.cc("solo", 0, [SOLO_CC], WHITE if pinned else BLACK)
                 push.cc("dup", 0, [DUPLICATE_CC], GREEN if cur else BLACK)
                 for cc in PAGE_CCS:
@@ -799,13 +991,25 @@ def run():
                     push.cc(name, 0, [cc], WHITE if target else BLACK)
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
                 push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
+                push.cc("browse", 0, [BROWSE_CC], WHITE if cur else BLACK)
+                chain_at = {p: k for k, p in enumerate(chain.steps)} if chain else {}
                 for i in range(MACRO_SLOTS):        # bottom row changes job when asked
-                    row0 = i < SLOTS
-                    push.note("macro", i, MACRO_NOTES[i],
-                              RED if arming else
-                              (WHITE if row0 and i < len(opts) else
-                               (BLACK if opts and row0 else
-                                (MACROS[i]["colour"] if MACROS[i] else BLACK))))
+                    row0, anim = i < SLOTS, STATIC
+                    if i in chain_at:               # the chain owns its own pads
+                        k = chain_at[i]
+                        colour, anim = (
+                            (GREEN, STATIC) if chain.phase == "done" else
+                            (BLACK, STATIC) if k < chain.index else      # spent
+                            ((YELLOW, PULSE) if chain.phase == "running" else
+                             (RED, BLINK) if chain.phase == "waiting" else
+                             (BLUE, PULSE)) if k == chain.index else     # up next
+                            (MACROS[i]["colour"] if MACROS[i] else BLACK, STATIC))
+                    else:
+                        colour = (RED if arming else
+                                  (WHITE if row0 and i < len(opts) else
+                                   (BLACK if opts and row0 else
+                                    (MACROS[i]["colour"] if MACROS[i] else BLACK))))
+                    push.note("macro", i, MACRO_NOTES[i], colour, anim)
 
             for msg in inp.iter_pending():
                 if msg.type == "sysex":
@@ -819,7 +1023,14 @@ def run():
                 if debug and msg.type not in ("clock", "active_sensing"):
                     what = (f"CC {msg.control}={msg.value}" if msg.type == "control_change"
                             else f"note {msg.note} v{msg.velocity}"
-                            if msg.type in ("note_on", "note_off") else msg.type)
+                            if msg.type in ("note_on", "note_off")
+                            # the strip. 0 is its spring-back, called out as
+                            # rest so this line cannot imply a level that
+                            # strip_pick is in fact throwing away
+                            else f"pitch {msg.pitch} -> " + (
+                                "(rest)" if msg.pitch == 0
+                                else effort_at(msg.pitch))
+                            if msg.type == "pitchwheel" else msg.type)
                     print(f"  raw: {what}", flush=True)
                 if msg.type in ("note_on", "note_off") and msg.note in ENC_TOUCH:
                     slot = ENC_TOUCH.index(msg.note)
@@ -828,6 +1039,16 @@ def run():
                         peek, view, shown = slot, VIEWS.index("focus"), None
                     elif not touching and peek == slot:
                         peek, shown = None, None
+                elif msg.type in ("note_on", "note_off") and msg.note == STRIP_NOTE:
+                    strip_touch = msg.type == "note_on" and bool(msg.velocity)
+                    if not strip_touch and strip_level and target:
+                        # lifting off is the commit. /effort takes the level
+                        # inline, so there is no picker to drive blind.
+                        print(f"strip -> /effort {strip_level} -> {target}", flush=True)
+                        herdr("agent", "send", target,
+                              f"/effort {strip_level}{ENTER}")
+                    if not strip_touch:
+                        strip_level, shown = None, None
                 elif msg.type == "control_change" and msg.control in SESSION_CCS:
                     slot = SESSION_CCS.index(msg.control)
                     if closing and msg.value:
@@ -879,9 +1100,25 @@ def run():
                     print(f"add track -> worktree {branch!r} off {where}", flush=True)
                     herdr("worktree", "create", "--cwd", where,
                           "--branch", branch, "--focus")
+                elif (msg.type == "control_change" and msg.control == BROWSE_CC
+                      and msg.value and cur):
+                    where = cur.get("cwd") or os.getcwd()
+                    # Popen, not run: gh reaches the network, and a second of
+                    # blocking here costs the poll that keeps the screen from
+                    # blanking. gh's own complaints land in this log, which is
+                    # where you would go looking anyway.
+                    subprocess.Popen(["gh", "pr", "list", "--web"], cwd=where)
+                    print(f"browse -> pull requests for {where}", flush=True)
                 elif (msg.type == "control_change" and msg.control == STOP_CC
                       and msg.value):
-                    if closing:
+                    if chain:
+                        # mid-step, stop has to mean the agent too, or the chain
+                        # dies and the thing it started keeps running
+                        print(f"chain {chain.phase} -> discarded", flush=True)
+                        if chain.phase in ("running", "waiting"):
+                            herdr("agent", "send", chain.target, ESCAPE)
+                        chain, shown = None, None
+                    elif closing:
                         print("close cancelled", flush=True)
                         closing, shown = None, None
                     elif target:
@@ -956,9 +1193,26 @@ def run():
                     scrolls[slot] = max(0, scrolls.get(slot, 0) + turn(msg.value))
                     if slot in (current, peek):
                         shown = None
+                elif msg.type == "pitchwheel":
+                    # Only while a finger is genuinely on it, and never the
+                    # spring-back to centre -- see strip_pick.
+                    if strip_touch:
+                        level = strip_pick(msg.pitch, strip_level)
+                        if level != strip_level:
+                            strip_level, shown = level, None
+                elif (msg.type == "control_change" and msg.control == AUTOMATE_CC):
+                    automating = bool(msg.value)
+                    if automating:
+                        view, shown = VIEWS.index("macros"), None  # pick a row
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
                       and msg.value):
-                    if closing:                     # Play is yes to the question
+                    if chain and chain.phase == "armed":
+                        shown = None
+                        if chain.fire(MACROS, now):
+                            chain.phase = "running"
+                        else:                   # the whole row went empty
+                            chain.phase, chain.done_at = "done", now
+                    elif closing:                   # Play is yes to the question
                         slot = closing[0]
                         pane = (by_id.get(slots.get(slot)) or {}).get("pane_id")
                         print(f"confirmed -> closing {pane}", flush=True)
@@ -985,7 +1239,18 @@ def run():
                         macro_down = None
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if arming:
+                    if automating:
+                        steps = chain_steps(MACROS, i)
+                        if steps and target:
+                            chain = Chain(steps, target, current,
+                                          os.path.basename((cur or {}).get("cwd", ""))
+                                          or "?")
+                            shown = None
+                            print(f"chain armed: {len(steps)} steps from pad {i} "
+                                  f"-> {target}", flush=True)
+                        else:
+                            print(f"chain: nothing to run from pad {i}", flush=True)
+                    elif arming:
                         text = (summary.get("pending") or "").strip()
                         was = MACROS[i] or {}
                         MACROS[i] = {"label": label_for(text), "text": text,
@@ -1085,11 +1350,72 @@ def selftest():
     assert col["typed"] == "half a sentence", col
     assert 0.0 <= col["context"] <= 1.0, "context fraction stays in range"
     # every renderer reads by key, so a new field cannot break an old unpack
-    assert set(col) == {"name", "status", "model", "sub", "focused",
+    assert set(col) == {"name", "status", "model", "effort", "sub", "focused",
                         "typed", "context"}, col
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
     assert short_model("claude-sonnet-5") == "sonnet 5"
+
+    # a row is the chain: from a pad to the end of ITS row, never into the next
+    pads = [{"text": "t", "label": "t", "colour": BLUE, "tag": None,
+             "submit": False} for _ in range(MACRO_SLOTS)]
+    assert chain_steps(pads, 0) == list(range(0, 8)), "row 0 stops at 8"
+    assert chain_steps(pads, 5) == [5, 6, 7], "starts where you tapped"
+    assert chain_steps(pads, 8) == list(range(8, 16)), "row 1 is its own chain"
+    assert chain_steps(pads, 63) == [63], "last pad is a chain of one"
+    holes = list(pads)
+    holes[1] = holes[2] = None
+    assert chain_steps(holes, 0) == [0, 3, 4, 5, 6, 7], "empties drop out"
+    assert chain_steps([None] * MACRO_SLOTS, 0) == [], "an empty row is no chain"
+
+    # the whole point: a step is not done just because the agent still reads
+    # idle in the poll right after its enter landed
+    assert not chain_step_done(False, "idle", 0.1, 1), "idle before working is lag"
+    assert not chain_step_done(True, "idle", 9.0, 1), "one idle poll is not settled"
+    assert chain_step_done(True, "idle", 9.0, CHAIN_SETTLE), "working then settled idle"
+    assert not chain_step_done(True, "working", 9.0, 0), "still going"
+    # a step that began and ended between two polls never reported working
+    assert chain_step_done(False, "idle", CHAIN_GRACE_S, CHAIN_SETTLE), "grace covers it"
+    assert not chain_step_done(True, "blocked", 9.0, CHAIN_SETTLE), "blocked is not done"
+
+    ch = Chain([0, 1], "term_x", 3, "midiAI")
+    assert ch.phase == "armed" and ch.step == 0
+    ch.index = 2
+    assert ch.step is None, "past the end has no step"
+    # mapui can clear a pad while the chain that queued it is still running
+    ch = Chain([0, 1], "term_x", 3, "midiAI")
+    assert ch.fire([None] * MACRO_SLOTS, 0.0) is False, "an emptied row just ends"
+    assert ch.index == 2, "and it does not sit on a pad that is gone"
+    info = Chain([0, 1], "t", 0, "n").info(pads)
+    assert set(info) == {"agent", "slot", "steps", "index", "phase"}, info
+    assert len(info["steps"]) == 2 and set(info["steps"][0]) == {"label", "colour"}
+    assert AUTOMATE_CC not in TAB_CCS + SESSION_CCS + list(COMMAND_CCS)
+    assert AUTOMATE_CC not in (PLAY_CC, STOP_CC, SHIFT_CC) + ARM_CCS
+    assert BROWSE_CC not in TAB_CCS + SESSION_CCS + list(COMMAND_CCS)
+    assert BROWSE_CC not in (PLAY_CC, STOP_CC, SHIFT_CC, AUTOMATE_CC,
+                             ADD_DEVICE_CC, ADD_TRACK_CC, DELETE_CC) + ARM_CCS
+
+    # the strip is absolute: both ends must be reachable, and reachable at the
+    # very edge, or the two levels people most want are the two they cannot hit
+    assert STRIP_NOTE not in ENC_TOUCH + MACRO_NOTES, "the strip needs its own note"
+    # the spring-back: the strip reports exact centre as a bend just BEFORE its
+    # release note, so a naive read committed `high` from anywhere on the strip
+    assert strip_pick(0, "medium") == "medium", "rest must not overwrite a choice"
+    assert strip_pick(0, None) is None, "and it cannot invent one either"
+    assert strip_pick(-2688, "high") == "medium", "a real reading still moves it"
+    lvl = None                    # the exact sequence the hardware logged
+    for p in (-2496, -2624, -2688, -2624, 0):
+        lvl = strip_pick(p, lvl)
+    assert lvl == "medium", "lifting off commits where the finger was"
+    assert effort_at(-8192) == "low", "bottom of the strip"
+    assert effort_at(8191) == "max", "top of the strip"
+    assert effort_at(0) == EFFORTS[len(EFFORTS) // 2], "middle is the middle"
+    assert all(effort_at(p) in EFFORTS
+               for p in range(-8192, 8192, 97)), "no position falls off the list"
+    seen = [effort_at(p) for p in range(-8192, 8192, 13)]
+    assert set(seen) == set(EFFORTS), "every level has a reachable band"
+    # monotonic: sliding up must never step back down
+    assert seen == sorted(seen, key=EFFORTS.index), "the strip only goes one way"
 
     assert usage_col(None) is None
     # "input_tokens" must not also match the tail of cache_read_input_tokens

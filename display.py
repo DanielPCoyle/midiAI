@@ -189,6 +189,9 @@ def render_focus(info):
     d.text((44, 11), s, font=f, fill=(240, 240, 240))
     d.text((352, 16), info.get("model", ""), font=font(16), fill=(150, 175, 215))
     d.text((352 + 130, 16), info.get("status", "") or "", font=font(16), fill=rgb)
+    eff = info.get("effort", "")
+    if eff:                          # secondary to the model, not a headline
+        d.text((352 + 260, 17), eff, font=font(14), fill=(120, 120, 120))
     d.line([(10, 40), (WIDTH - 10, 40)], fill=(50, 50, 50))
 
     opts = info.get("opts") or []
@@ -317,6 +320,123 @@ def render_macros(macros, arming=False):
     return img
 
 
+CHAIN_PHASE = {
+    "armed":   ((74, 134, 208), "PLAY to run  ·  STOP to discard"),
+    "running": ((224, 208, 44), "running  ·  STOP to abort"),
+    "waiting": ((240, 60, 60), "waiting on you  ·  answer on the pads"),
+    "done":    ((60, 208, 90), "chain complete"),
+}
+
+
+def render_chain(chain):
+    """A chain is a queue of prompts fired at one agent in sequence, so the
+    thing worth seeing at a glance is not any single step but where you are
+    in the line: what already ran, what's live, what's still queued. Cells
+    are sized off COL_W the way render_macros sizes its grid -- one row of
+    the same 120px units instead of eight."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    swatches = {127: (224, 60, 60), 3: (224, 138, 44), 8: (224, 208, 44),
+                126: (60, 208, 90), 125: (74, 134, 208), 122: (230, 230, 230)}
+    steps = chain.get("steps") or []
+    n = len(steps)
+    index = chain.get("index", 0)
+    accent, hint = CHAIN_PHASE.get(chain.get("phase"), CHAIN_PHASE["armed"])
+
+    # header: who, which slot (1-based for humans), how far through the queue
+    d.rectangle([10, 8, 30, 28], fill=accent)
+    d.text((14, 10), str(chain.get("slot", 0) + 1), font=font(14), fill=(0, 0, 0))
+    s, f = fit(d, chain.get("agent", "?"), 260, 20)
+    d.text((38, 9), s, font=f, fill=(235, 235, 235))
+    ctr, cf = fit(d, f"step {min(index, max(n - 1, 0)) + 1}/{n}", 160, 16)
+    d.text((WIDTH - 16 - d.textlength(ctr, font=cf), 11), ctr, font=cf, fill=(150, 150, 150))
+    d.line([(10, 34), (WIDTH - 10, 34)], fill=(50, 50, 50))
+
+    # the row of steps, left to right in run order
+    top, bottom = 42, HEIGHT - 26
+    for i, step in enumerate(steps[:8]):
+        x = i * COL_W
+        hue = swatches.get(step["colour"], (150, 175, 215))
+        if i < index:                                     # already fired
+            fill, txt, outline = tuple(c // 3 for c in hue), (100, 100, 100), None
+        elif i == index:                                   # live right now
+            fill = tuple(min(255, c + 40) for c in hue)
+            txt, outline = (250, 250, 250), accent
+        else:                                               # still queued
+            fill, txt, outline = hue, (185, 185, 185), None
+        d.rectangle([x + 3, top, x + COL_W - 4, bottom], outline=(38, 38, 38))
+        d.rectangle([x + 3, top, x + COL_W - 4, top + 5], fill=fill)
+        if outline:
+            d.rectangle([x + 3, top, x + COL_W - 4, bottom], outline=outline, width=2)
+        s, ff = fit(d, step["label"], COL_W - 16, 15)
+        d.text((x + 9, top + 16), s, font=ff, fill=txt)
+
+    # footer: what phase this is, and what the transport/pads do about it
+    d.rectangle([0, HEIGHT - 22, WIDTH, HEIGHT], fill=(16, 16, 16))
+    d.rectangle([10, HEIGHT - 18, 24, HEIGHT - 4], fill=accent)
+    s, f = fit(d, hint, WIDTH - 44, 15)
+    d.text((32, HEIGHT - 19), s, font=f, fill=accent)
+    return img
+
+
+_EFFORT_RAMP = ((74, 134, 208), (60, 176, 160), (60, 208, 90),
+                (224, 208, 44), (224, 60, 60))          # cool -> hot
+
+
+def _effort_hue(i, n):
+    """Interpolated, not keyed by name, so the ramp stays monotonic even if
+    the level count ever changes -- len(levels) stays the source of truth."""
+    if n <= 1:
+        return _EFFORT_RAMP[-1]
+    frac = i / (n - 1) * (len(_EFFORT_RAMP) - 1)
+    lo = int(frac)
+    hi = min(lo + 1, len(_EFFORT_RAMP) - 1)
+    t = frac - lo
+    return tuple(int(_EFFORT_RAMP[lo][k] + (_EFFORT_RAMP[hi][k] - _EFFORT_RAMP[lo][k]) * t)
+                 for k in range(3))
+
+
+EFFORT_ABBR = {"low": "LOW", "medium": "MED", "high": "HIGH", "xhigh": "XH", "max": "MAX"}
+
+
+def render_effort(level, levels):
+    """Live overlay while a finger is still on the touchstrip -- nothing has
+    been sent yet, lifting off is what commits. So the only job here is
+    making the pick unmistakable from across a desk: a horizontal ladder in
+    strip order, low on the left and max on the right, so the screen agrees
+    with the hand. Everything else stays visible but obviously secondary."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    n = max(1, len(levels))
+    cw = WIDTH // n
+    sel = levels.index(level) if level in levels else -1   # unknown -> nothing picked
+
+    d.text((8, 2), "EFFORT", font=font(11), fill=(80, 80, 80))
+    top, bottom = 18, HEIGHT - 30
+    for i, lvl in enumerate(levels):
+        x = i * cw
+        hue = _effort_hue(i, n)
+        if i == sel:
+            bright = tuple(min(255, c + 30) for c in hue)
+            d.rectangle([x + 5, top, x + cw - 6, bottom], fill=bright)
+            s, f = fit(d, lvl, cw - 20, 32)
+            tw = d.textlength(s, font=f)
+            d.text((x + (cw - tw) / 2, top + (bottom - top - f.size) / 2),
+                   s, font=f, fill=(15, 15, 15))
+        else:
+            dim = tuple(c // 3 for c in hue)
+            d.rectangle([x + 5, top, x + cw - 6, bottom], outline=dim)
+            s, f = fit(d, lvl, cw - 24, 15)
+            tw = d.textlength(s, font=f)
+            d.text((x + (cw - tw) / 2, top + (bottom - top - f.size) / 2),
+                   s, font=f, fill=dim)
+
+    s, f = fit(d, "lift off to set", WIDTH - 20, 14)
+    tw = d.textlength(s, font=f)
+    d.text(((WIDTH - tw) / 2, HEIGHT - 20), s, font=f, fill=(140, 140, 140))
+    return img
+
+
 def render_usage(cols):
     """cols: 8 entries of (name, out_tokens, ctx_tokens, focused), None if empty."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
@@ -410,8 +530,14 @@ def render(cols, prefer=None):
         d.text((x + 30, 17), t, font=f, fill=(95, 95, 95))
         t, f = fit(d, status or "?", COL_W - 20, 19)
         d.text((x + 10, 78), t, font=f, fill=rgb)
-        t, f = fit(d, model, COL_W - 20, 16)
+        t, f = fit(d, model, COL_W - 46, 16)
         d.text((x + 10, 102), t, font=f, fill=(150, 175, 215))
+        eff = col.get("effort", "")
+        if eff:                 # tight column: abbreviate, stay decipherable
+            tag = EFFORT_ABBR.get(eff, eff[:2].upper())
+            s, ef = fit(d, tag, 34, 12)
+            d.text((x + COL_W - 12 - d.textlength(s, font=ef), 104), s, font=ef,
+                   fill=(110, 110, 110))
         if typed:               # someone is mid-sentence in this one
             d.rectangle([x + 6, HEIGHT - 30, x + COL_W - 8, HEIGHT - 6],
                         fill=(18, 24, 34))

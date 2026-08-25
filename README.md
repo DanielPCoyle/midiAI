@@ -11,7 +11,9 @@ without touching the keyboard.
 | **Row 2** | 84–91 | approve — sends `y`, lit only while that agent is blocked |
 | **Row 3** | 76–83 | deny — sends `n`, same guard |
 | **Bottom row** | 36–43 | macros — insert canned text, no submit |
-| **Play** | CC 85 | enter — submits, to the focused agent |
+| **Play** | CC 85 | enter — submits, to the focused agent · runs an armed chain |
+| **Automate** | CC 89 | hold, tap a pad: arms that pad's row as a chain |
+| **Touchstrip** | pitchbend | slide to set reasoning effort, `low` → `max` |
 | **Buttons above screen** | CC 102–109 | pick a view: 1 agents, 2 usage |
 | **Buttons below screen** | CC 20–27 | white marks the focused agent |
 
@@ -53,6 +55,50 @@ you do not know it.
 
 Press the Push's **User** button too: in Live mode its MIDI goes to port 1 and
 this sees nothing.
+
+## Chains
+
+A **row is a chain**. Hold **Automate** and tap a pad: everything from that pad
+rightward to the end of its row is queued, in order, empties skipped. The pads
+light up, the screen lists the steps, and nothing has happened yet — **Play**
+runs it, **Stop** throws it away.
+
+Two gestures, deliberately. A chain is fire-and-forget by definition, and the
+macro pads already learned this lesson: you get to read what is about to run
+before it runs.
+
+Steps advance on the agent's own status, not a timer. The catch is that status
+lags the send — an agent still reports `idle` for a poll or two after its enter
+lands, so advancing on a bare `idle` fires the whole row into one prompt. A step
+is done once we have seen it go `working` and then sit `idle` for two polls
+running. A step that starts and finishes between polls is caught by a grace
+period instead.
+
+`blocked` **pauses** the chain rather than advancing it. The agent asked you
+something; the approve/deny rows do their ordinary job and the chain picks up
+where it left off. A pipeline that stops and asks is the point, not a case to
+engineer around.
+
+The chain pins to the agent it started on, so you can walk away and watch
+another session while it runs — which is most of the reason there are eight.
+Stop mid-step sends escape to that agent too, or the chain dies while the thing
+it started keeps going.
+
+## Effort on the touchstrip
+
+The strip is the only **absolute** control on the surface — an encoder is
+relative and can only nudge, a strip you can slam straight to `max`. It maps to
+Claude Code's five reasoning levels, bottom to top: `low`, `medium`, `high`,
+`xhigh`, `max`.
+
+Nothing is sent while you slide. The screen shows the level under your finger
+and lifting off is what commits it, as `/effort <level>` — which takes the level
+inline, so there is no picker widget to drive blind.
+
+What the screen reports is read back out of the session's own transcript, where
+each message records its `effort`. Not the last value we wrote: the level can be
+changed from the keyboard too, and a readout that only ever echoes our own
+writes would be worse than none.
 
 ## How the voice works
 
