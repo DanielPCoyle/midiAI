@@ -42,6 +42,7 @@ of the eight encoders scrolls the agent above it, and touching one peeks at it.
   python3 push_cc.py --list      dump agents, no hardware needed
   python3 push_cc.py --selftest  pure-logic asserts, no hardware needed
   python3 push_cc.py --debug     log every control you press, with its number
+  python3 mapui.py               edit the 64 pads in a browser, live
 """
 import json
 import os
@@ -184,6 +185,21 @@ def save_macros(macros):
 
 
 MACROS = load_macros()
+_macros_mtime = 0.0
+
+
+def reload_macros():
+    """Pick up edits from mapui.py without a restart. Cheap: one stat a poll."""
+    global _macros_mtime
+    try:
+        mtime = os.path.getmtime(MACRO_FILE)
+    except OSError:
+        return False
+    if mtime == _macros_mtime:
+        return False
+    _macros_mtime = mtime
+    MACROS[:] = load_macros()
+    return True
 
 
 # ---------------------------------------------------------------- herdr
@@ -542,6 +558,9 @@ def run():
                 summary = pane_summary(cur)
                 opts = summary.get("opts") or []
                 target = slots.get(current) or focused
+                if reload_macros():
+                    shown = None
+                    print("macros reloaded", flush=True)
                 if closing and now >= closing[1]:
                     print("close request expired", flush=True)
                     closing, shown = None, None
