@@ -14,11 +14,16 @@ focused. They do not submit -- you read it, then hit Play.
 
 Play (CC 85) = enter, sent to the focused agent. Lit green when there is one.
 
+The 960x160 screen names each column, so two checkouts of the same repo are
+telling apart by the tail of their terminal id. Missing pyusb just means no
+screen; the pads carry on.
+
   python3 push_cc.py             run it (Push must be in User mode)
   python3 push_cc.py --list      dump agents, no hardware needed
   python3 push_cc.py --selftest  pure-logic asserts, no hardware needed
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -118,6 +123,17 @@ def blocked_agent(slot, slots, by_id):
     return a if a and a.get("agent_status") == "blocked" else None
 
 
+def panel_col(agent):
+    """One screen column. Two agents can share a repo name, so show a tail of
+    the terminal id -- that is the thing that actually tells them apart."""
+    if agent is None:
+        return None
+    return (os.path.basename(agent.get("cwd", "")) or "?",
+            agent.get("agent_status"),
+            agent.get("terminal_id", "")[-6:],
+            bool(agent.get("focused")))
+
+
 def colour_for(agent):
     if agent is None:
         return EMPTY
@@ -172,6 +188,17 @@ class Push:
         self.cc("play", 0, [PLAY_CC], BLACK)
 
 
+def screen():
+    """The 960x160 panel, or None if it is unavailable. Never fatal: the pads
+    are the product, the screen is the label on it."""
+    try:
+        import display
+        return display, display.Display()
+    except Exception as e:                      # no pyusb, no libusb, device busy
+        print(f"no display ({e}); pads still work", file=sys.stderr)
+        return None, None
+
+
 def run():
     import mido
 
@@ -188,9 +215,11 @@ def run():
     push.blank()
     out.send(mido.Message("start"))  # spec: animations don't run until a start arrives
 
+    disp_mod, disp = screen()
     debug = "--debug" in sys.argv
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
     by_id, focused = {}, None
+    shown, frame = None, None
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -214,6 +243,14 @@ def run():
                     push.note("macro", s, MACRO_NOTES[s],
                               BLUE if s < len(MACROS) else BLACK)
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
+                if disp:
+                    cols = tuple(panel_col(by_id.get(slots.get(s))) for s in range(SLOTS))
+                    if cols != shown:               # re-render on change only
+                        shown, frame = cols, disp_mod.render(cols)
+                    try:
+                        disp.show(frame)            # every poll: it blanks after ~2s
+                    except Exception:
+                        disp = None
                 push.cc("play", 0, [PLAY_CC], GREEN if focused else BLACK)
 
             for msg in inp.iter_pending():
@@ -264,6 +301,11 @@ def run():
     finally:
         push.painted.clear()
         push.blank()
+        if disp:
+            try:
+                disp.blank()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------- checks
@@ -302,6 +344,11 @@ def selftest():
     assert not any(t.endswith("\r") for _, t in MACROS), "macros must not self-submit"
     assert len({n for n in PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES}) == 32
     assert PLAY_CC not in TAB_CCS + MARK_CCS, "play must not collide with a lit row"
+
+    assert panel_col(None) is None
+    col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "blocked",
+                     "terminal_id": "term_659ce899ee9293", "focused": True})
+    assert col == ("bugcast", "blocked", "ee9293", True), col
     print("ok")
 
 
