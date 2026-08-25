@@ -255,8 +255,35 @@ def reload_macros():
 # ---------------------------------------------------------------- herdr
 
 def herdr(*args):
+    """herdr reports failure as a JSON error on stdout with exit 0, so a helper
+    that only returns stdout swallows it. Add Device was failing silently for
+    hours that way."""
     out = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=10)
-    return out.stdout.strip()
+    text = out.stdout.strip()
+    if '"error"' in text:
+        try:
+            err = json.loads(text)["error"]
+            print(f"herdr {args[0]} {args[1]}: {err.get('code')}: "
+                  f"{err.get('message', '')[:120]}", file=sys.stderr, flush=True)
+        except (json.JSONDecodeError, KeyError, IndexError):
+            print(f"herdr {' '.join(args[:2])}: {text[:160]}", file=sys.stderr, flush=True)
+    elif out.stderr.strip():
+        print(f"herdr {' '.join(args[:2])}: {out.stderr.strip()[:160]}",
+              file=sys.stderr, flush=True)
+    return text
+
+
+def start_agent(where, split="right"):
+    """A new claude in `where`. herdr insists agent names are unique, so take
+    the directory's name and number it rather than reusing one."""
+    base = os.path.basename(where.rstrip("/")) or "agent"
+    for n in range(1, 21):
+        name = base if n == 1 else f"{base}-{n}"
+        out = herdr("agent", "start", name, "--cwd", where, "--split", split,
+                    "--focus", "--", "claude", "--permission-mode", "auto")
+        if "agent_name_taken" not in out:
+            return name
+    return None
 
 
 def agents():
@@ -771,10 +798,8 @@ def run():
                 elif (msg.type == "control_change" and msg.control == ADD_DEVICE_CC
                       and msg.value):
                     where = (cur or {}).get("cwd") or os.getcwd()
-                    print(f"add device -> new claude (auto) in {where}", flush=True)
-                    herdr("agent", "start", "claude", "--cwd", where,
-                          "--split", "right", "--focus",
-                          "--", "claude", "--permission-mode", "auto")
+                    name = start_agent(where, "right")
+                    print(f"add device -> {name or 'FAILED'} in {where}", flush=True)
                 elif (msg.type == "control_change" and msg.control == ADD_TRACK_CC
                       and msg.value):
                     where = (cur or {}).get("cwd") or os.getcwd()
@@ -841,10 +866,8 @@ def run():
                 elif (msg.type == "control_change" and msg.control == DUPLICATE_CC
                       and msg.value and cur):
                     where = cur.get("cwd") or os.getcwd()
-                    print(f"duplicate -> second agent in {where}", flush=True)
-                    herdr("agent", "start", "claude", "--cwd", where,
-                          "--split", "down", "--focus",
-                          "--", "claude", "--permission-mode", "auto")
+                    name = start_agent(where, "down")
+                    print(f"duplicate -> {name or 'FAILED'} in {where}", flush=True)
                 elif (msg.type == "control_change" and msg.control in PAGE_CCS
                       and msg.value):
                     current = step_slot(current, PAGE_CCS[msg.control], slots)
