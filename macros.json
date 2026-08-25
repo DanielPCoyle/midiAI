@@ -15,6 +15,10 @@
     {
       "name": "Testing",
       "colour": 8
+    },
+    {
+      "name": "Planning",
+      "colour": 122
     }
   ],
   "pads": [
@@ -60,21 +64,19 @@
       "submit": true
     },
     {
-      "label": "E2E",
+      "label": "E2E Current Feat",
       "text": "Run e2e tests in the browser on the current feature being developed.",
       "colour": 8,
       "tag": "Testing",
       "submit": false
     },
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
+    {
+      "label": "Bugcast Follower",
+      "text": "/bugcast-follower",
+      "colour": 8,
+      "tag": "Testing",
+      "submit": true
+    },
     null,
     null,
     null,
@@ -123,6 +125,20 @@
     null,
     null,
     {
+      "label": "/graphify",
+      "text": "/graphify",
+      "colour": 127,
+      "tag": "Slash Command",
+      "submit": false
+    },
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    {
       "label": "/handoff",
       "text": "/handoff",
       "colour": 127,
@@ -145,8 +161,26 @@
     },
     null,
     null,
-    null,
-    null,
-    null
+    {
+      "label": "/plan-then-delegate",
+      "text": "/plan-then-delegate",
+      "colour": 122,
+      "tag": "Planning",
+      "submit": false
+    },
+    {
+      "label": "/way-finder",
+      "text": "/way-finder",
+      "colour": 122,
+      "tag": "Planning",
+      "submit": false
+    },
+    {
+      "label": "/grill-me",
+      "text": "/grill-me",
+      "colour": 122,
+      "tag": "Planning",
+      "submit": false
+    }
   ]
 }

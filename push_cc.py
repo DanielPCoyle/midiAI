@@ -111,6 +111,7 @@ FREED_CCS = []                     # unmapped buttons: blank them or they stay l
 KEY_CCS = {MUTE_CC: ("tab", "\t")}
 STOP_CC = 29                       # Stop Clip -> escape, interrupts the agent
 BACKSPACE, ESCAPE = "\x7f", "\x1b"
+DELETE_FWD = "\x1b[3~"            # forward delete, for text past the cursor
 
 # Buttons that send a fixed string to the current agent. The newline is part of
 # the entry: not everything here submits.
@@ -821,10 +822,13 @@ def run():
                       and msg.value and target):
                     # ctrl+l never reaches Claude and ctrl+u only kills the row
                     # the cursor is on, so a wrapped prompt survives both.
-                    # Backspacing is dumb, depends on no keybinding, and works.
+                    # Deleting is dumb, depends on no keybinding, and works --
+                    # but only behind the cursor, so go forwards first. Together
+                    # they empty the buffer from wherever the cursor happens to
+                    # be sitting, which "clear" has to mean.
                     n = len(summary.get("pending") or "") + 16
-                    print(f"undo -> {n} backspaces -> {target}", flush=True)
-                    herdr("agent", "send", target, BACKSPACE * n)
+                    print(f"undo -> clearing {n} either side -> {target}", flush=True)
+                    herdr("agent", "send", target, DELETE_FWD * n + BACKSPACE * n)
                 elif (msg.type == "control_change" and msg.control in KEY_CCS
                       and msg.value and target):
                     name, key = KEY_CCS[msg.control]
