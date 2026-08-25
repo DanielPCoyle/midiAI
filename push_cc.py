@@ -10,7 +10,7 @@ Buttons under the display (CC 20-27) = up to 8 herdr agents, left to right.
 The whole 8x8 pad grid (36-99) = shortcuts. Tap one to insert its text into
 the current agent; Play submits. Hold one and it opens the mic instead, so you
 dictate the rest of the sentence onto what it just typed. Hold Shift and tap one to read what it does without running it.
-Hold Record and tap one to save
+Hold Record or Select and tap one to save
 whatever is in the prompt onto it. macros.json is hand-editable.
 
 Buttons above the display (CC 102-109) pick the view: 1 focus, 2 agents,
@@ -98,6 +98,8 @@ UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
 # in text -- and second-guessing that from here only ever gets it wrong.
 ARROW_CCS = {44: "\x1b[D", 45: "\x1b[C", 46: UP, 47: DOWN}
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
+SELECT_CC = 48                     # Select does the same; either hand can reach one
+ARM_CCS = (RECORD_CC, SELECT_CC)
 DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
@@ -620,6 +622,8 @@ class Push:
             self.note("macro", i, MACRO_NOTES[i], BLACK)
         self.cc("play", 0, [PLAY_CC], BLACK)
         self.cc("shift", 0, [SHIFT_CC], BLACK)
+        for i, cc in enumerate(ARM_CCS):
+            self.cc(f"arm{i}", 0, [cc], BLACK)
         for i in range(len(FREED_CCS)):
             self.cc("freed", i, FREED_CCS, BLACK)
 
@@ -660,6 +664,7 @@ def run():
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
     shifted, pinned = False, False
     macro_down, talk_src, previewing = None, None, None
+    held = {cc: False for cc in ARM_CCS}
     published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
     asking, pendings, next_sweep, was_asking = set(), {}, 0.0, False
@@ -774,7 +779,8 @@ def run():
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if target else BLACK)
                 # a mapped button that never lights reads as a dead one
                 push.cc("shift", 0, [SHIFT_CC], BRIGHT if shifted else DIM)
-                push.cc("rec", 0, [RECORD_CC], RED if arming else DIM)
+                for i, cc in enumerate(ARM_CCS):
+                    push.cc(f"arm{i}", 0, [cc], RED if arming else DIM)
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
                 push.cc("undo", 0, [UNDO_CC],
                         WHITE if summary.get("pending") else BLACK)
@@ -899,9 +905,11 @@ def run():
                       and msg.value and cur):
                     closing, shown = (current, now + CONFIRM_S), None
                     print(f"delete -> confirm close slot {current}?", flush=True)
-                elif msg.type == "control_change" and msg.control == RECORD_CC:
-                    arming, shown = bool(msg.value), None
-                    if arming:
+                elif msg.type == "control_change" and msg.control in ARM_CCS:
+                    held[msg.control] = bool(msg.value)
+                    was, arming = arming, any(held.values())
+                    shown = None
+                    if arming and not was:
                         view = VIEWS.index("macros")   # show what you would overwrite
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
                       and msg.value and target):
