@@ -81,7 +81,7 @@ def fit(draw, text, width, size):
 
 
 def render(cols):
-    """cols: 8 entries of (name, status, sub, focused) or None for an empty slot."""
+    """cols: 8 entries of (name, status, model, sub, focused), None if empty."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
     for i, col in enumerate(cols):
@@ -92,7 +92,7 @@ def render(cols):
             t, f = fit(d, str(i + 1), COL_W - 16, 18)
             d.text((x + 10, 10), t, font=f, fill=(45, 45, 45))
             continue
-        name, status, sub, focused = col
+        name, status, model, sub, focused = col
         rgb = STATUS_RGB.get(status, STATUS_RGB[None])
         if focused:                                   # the one your keyboard is in
             d.rectangle([x + 3, 3, x + COL_W - 4, HEIGHT - 4], outline=rgb, width=2)
@@ -101,9 +101,11 @@ def render(cols):
         t, f = fit(d, name, COL_W - 20, 22)
         d.text((x + 10, 46), t, font=f, fill=(235, 235, 235))
         t, f = fit(d, status or "?", COL_W - 20, 19)
-        d.text((x + 10, 88), t, font=f, fill=rgb)
-        t, f = fit(d, sub, COL_W - 20, 14)
-        d.text((x + 10, 122), t, font=f, fill=(120, 120, 120))
+        d.text((x + 10, 80), t, font=f, fill=rgb)
+        t, f = fit(d, model, COL_W - 20, 16)
+        d.text((x + 10, 106), t, font=f, fill=(150, 175, 215))
+        t, f = fit(d, sub, COL_W - 20, 13)
+        d.text((x + 10, 130), t, font=f, fill=(105, 105, 105))
     return img
 
 

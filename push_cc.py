@@ -24,6 +24,7 @@ screen; the pads carry on.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -38,6 +39,7 @@ PORT_NAME = "Ableton Push 2 User Port"
 PTT_KEY = " "
 REPEAT_S = 0.06  # must stay under Claude's 120ms release timer
 HOLD_S = 0.25    # pad down longer than this is a hold, not a tap
+TAIL_BYTES = 256 * 1024   # transcripts run to megabytes; only the end matters
 POLL_S = 0.5
 SLOTS = 8
 
@@ -123,6 +125,41 @@ def blocked_agent(slot, slots, by_id):
     return a if a and a.get("agent_status") == "blocked" else None
 
 
+_model_cache = {}   # path -> (size, name). Model changes mid-session via /model.
+
+
+def short_model(raw):
+    """claude-haiku-4-5-20251001 -> haiku 4.5"""
+    name = re.sub(r"-\d{8}$", "", raw.removeprefix("claude-"))
+    fam, _, ver = name.partition("-")
+    return f"{fam} {ver.replace('-', '.')}".strip()
+
+
+def model_for(agent):
+    """herdr does not track the model, but the session's own transcript does."""
+    sid = (agent.get("agent_session") or {}).get("value")
+    if not sid:
+        return ""
+    path = os.path.expanduser(
+        f"~/.claude/projects/{agent.get('cwd', '').replace('/', '-')}/{sid}.jsonl")
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        return ""
+    hit = _model_cache.get(path)
+    if hit and hit[0] == size:          # file has not grown, model cannot have changed
+        return hit[1]
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, size - TAIL_BYTES))
+            found = re.findall(rb'"model":"([^"]+)"', f.read())
+    except OSError:
+        return ""
+    name = short_model(found[-1].decode()) if found else ""
+    _model_cache[path] = (size, name)
+    return name
+
+
 def panel_col(agent):
     """One screen column. Two agents can share a repo name, so show a tail of
     the terminal id -- that is the thing that actually tells them apart."""
@@ -130,6 +167,7 @@ def panel_col(agent):
         return None
     return (os.path.basename(agent.get("cwd", "")) or "?",
             agent.get("agent_status"),
+            model_for(agent),
             agent.get("terminal_id", "")[-6:],
             bool(agent.get("focused")))
 
@@ -348,7 +386,10 @@ def selftest():
     assert panel_col(None) is None
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "blocked",
                      "terminal_id": "term_659ce899ee9293", "focused": True})
-    assert col == ("bugcast", "blocked", "ee9293", True), col
+    assert col == ("bugcast", "blocked", "", "ee9293", True), col
+    assert short_model("claude-opus-5") == "opus 5"
+    assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
+    assert short_model("claude-sonnet-5") == "sonnet 5"
     print("ok")
 
 
