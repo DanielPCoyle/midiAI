@@ -9,7 +9,8 @@ Row 2 (84-91) approve / row 3 (76-83) deny, per column. Lit only while that
 agent is blocked, and ignored otherwise, so a stray press cannot answer a
 prompt that is not there.
 
-Bottom row (36-43) = MACROS, sent to whichever agent herdr reports focused.
+Bottom row (36-43) = MACROS, inserted into whichever agent herdr reports
+focused. They do not submit -- you read it, then press enter.
 
   python3 push_cc.py             run it (Push must be in User mode)
   python3 push_cc.py --list      dump agents, no hardware needed
@@ -58,17 +59,18 @@ EMPTY = (BLACK, STATIC)
 # ever send these while herdr reports the agent blocked.
 YES, NO = "y", "n"
 
-# Bottom row, left to right. Each submits, because a macro that needs a second
-# keystroke is not a macro. Edit freely; anything past 8 is ignored.
+# Bottom row, left to right. These INSERT and do not submit: the only way to
+# learn a pad is to press it, and a surface you explore by touching must not
+# fire irreversible things on contact. Hit enter yourself once you have read it.
 MACROS = [
-    ("continue",   "continue\r"),
-    ("tests",      "run the tests and report what fails\r"),
-    ("review",     "/code-review\r"),
-    ("commit",     "commit this\r"),
-    ("why",        "explain what you just did and why\r"),
-    ("recap",      "stop and summarise where you are\r"),
-    ("handoff",    "/handoff\r"),
-    ("diff",       "show me the diff\r"),
+    ("continue",   "continue"),
+    ("tests",      "run the tests and report what fails"),
+    ("review",     "/code-review"),
+    ("commit",     "commit this"),
+    ("why",        "explain what you just did and why"),
+    ("recap",      "stop and summarise where you are"),
+    ("handoff",    "/handoff"),
+    ("diff",       "show me the diff"),
 ]
 
 
@@ -287,7 +289,7 @@ def selftest():
     assert answer(0, YES, slots, by_id) is False       # never sends to a non-blocked agent
 
     assert len(MACROS) <= SLOTS, "bottom row only has 8 pads"
-    assert all(t.endswith("\r") for _, t in MACROS), "a macro must submit"
+    assert not any(t.endswith("\r") for _, t in MACROS), "macros must not self-submit"
     assert len({n for n in PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES}) == 32
     print("ok")
 
