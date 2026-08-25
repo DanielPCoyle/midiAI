@@ -242,6 +242,36 @@ def render_confirm(name, slot, seconds):
     return img
 
 
+def render_pad(macro, index):
+    """What one pad does, asked for before committing to finding out."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    swatch = {127: (224, 60, 60), 3: (224, 138, 44), 8: (224, 208, 44),
+              126: (60, 208, 90), 125: (74, 134, 208), 122: (230, 230, 230)}
+    hue = swatch.get((macro or {}).get("colour", 125), (150, 175, 215))
+    d.rectangle([0, 0, 6, HEIGHT], fill=hue if macro else (50, 50, 50))
+    d.text((20, 12), f"pad {index}", font=font(13), fill=(110, 110, 110))
+    if not macro:
+        d.text((20, 60), "empty", font=font(34), fill=(70, 70, 70))
+        return img
+    s, f = fit(d, macro["label"], WIDTH - 340, 26)
+    d.text((20, 32), s, font=f, fill=hue)
+    tags = []
+    if macro.get("tag"):
+        tags.append(macro["tag"])
+    tags.append("submits on tap" if macro.get("submit") else "waits for Play")
+    d.text((WIDTH - 320, 36), "  \u00b7  ".join(tags), font=font(15),
+           fill=(130, 130, 130))
+    bf = font(22)
+    lines = wrap(d, macro["text"], WIDTH - 44, bf, 3)
+    if len(lines) >= 3:
+        bf = font(17)
+        lines = wrap(d, macro["text"], WIDTH - 44, bf, 4)
+    for j, line in enumerate(lines):
+        d.text((20, 70 + j * (bf.size + 5)), line, font=bf, fill=(232, 232, 232))
+    return img
+
+
 def render_macros(macros, arming=False):
     """All 64 pads. Drawn the way the grid sits under your hands: note 36 is
     bottom-left on the Push, so it is bottom-left here too. Getting that

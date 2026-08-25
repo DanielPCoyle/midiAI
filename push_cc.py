@@ -9,7 +9,8 @@ Buttons under the display (CC 20-27) = up to 8 herdr agents, left to right.
 
 The whole 8x8 pad grid (36-99) = shortcuts. Tap one to insert its text into
 the current agent; Play submits. Hold one and it opens the mic instead, so you
-dictate the rest of the sentence onto what it just typed. Hold Record, or Shift, and tap one to save
+dictate the rest of the sentence onto what it just typed. Hold Shift and tap one to read what it does without running it.
+Hold Record and tap one to save
 whatever is in the prompt onto it. macros.json is hand-editable.
 
 Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
@@ -570,7 +571,7 @@ def run():
     current, summary, arming = 0, {}, False
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
     shifted, pinned = False, False
-    macro_down, talk_src = None, None
+    macro_down, talk_src, previewing = None, None, None
     published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
     asking, pendings, next_sweep, was_asking = set(), {}, 0.0, False
@@ -635,7 +636,11 @@ def run():
                 was_asking = bool(asking)
 
                 if disp:
-                    if closing:
+                    if previewing is not None:
+                        m, idx = MACROS[previewing], MACRO_NOTES[previewing]
+                        state = ("pad", previewing, repr(m))
+                        drawn = (lambda mm=m, ii=idx: disp_mod.render_pad(mm, ii))
+                    elif closing:
                         agent = by_id.get(slots.get(closing[0]))
                         nm = os.path.basename((agent or {}).get("cwd", "")) or "?"
                         left = max(0, int(closing[1] - now))
@@ -852,6 +857,8 @@ def run():
                 elif (msg.type in ("note_on", "note_off") and msg.note in MACRO_NOTES
                       and not (msg.type == "note_on" and msg.velocity)):
                     i = MACRO_NOTES.index(msg.note)
+                    if previewing == i:
+                        previewing, shown = None, None
                     if macro_down and macro_down[0] == i:
                         if talk_src == "macro":     # dictated onto it; let go
                             print(f"pad {i} released, {sent} keys sent", flush=True)
@@ -861,7 +868,7 @@ def run():
                         macro_down = None
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if arming or shifted:
+                    if arming:
                         text = (summary.get("pending") or "").strip()
                         was = MACROS[i] or {}
                         MACROS[i] = {"label": label_for(text), "text": text,
@@ -872,6 +879,10 @@ def run():
                         shown = None
                         print(f"pad {i} <- {text!r}" if text
                               else f"pad {i} cleared", flush=True)
+                    elif shifted:
+                        # ask what a pad does without finding out the hard way
+                        previewing, shown = i, None
+                        print(f"shift+pad {i} -> preview", flush=True)
                     elif MACROS[i] and target:
                         m = MACROS[i]
                         # the text goes in now so it reads back immediately, but
