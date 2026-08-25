@@ -88,7 +88,8 @@ DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
 
-MUTE_CC = 60                       # Mute -> ctrl+l, chat:clearInput
+MUTE_CC = 60                       # Mute -> backspace the prompt empty
+BACKSPACE = "\x7f"
 
 # Buttons that send a fixed string to the current agent. The newline is part of
 # the entry: not everything here submits.
@@ -96,7 +97,6 @@ COMMAND_CCS = {
     35: ("convert", "/compact\r"),
     87: ("new", "/clear\r"),
     116: ("quantize", "/model\r"),
-    MUTE_CC: ("mute", "\x0c"),     # clears the prompt, submits nothing
 }
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
@@ -331,6 +331,28 @@ _OPT_RE = re.compile(r"^\s*(❯|>)?\s*(\d+)\.\s+(.+?)\s*$")
 UP, DOWN = "\x1b[A", "\x1b[B"
 
 
+def prompt_text(lines):
+    """The whole input buffer, not just its first row.
+
+    A long prompt wraps, and the continuation rows are indented under the
+    caret. Reading only the caret row truncates it, which quietly shortened
+    every macro recorded and every branch name slugged from it."""
+    start = next((i for i in range(len(lines) - 1, -1, -1)
+                  if lines[i].lstrip().startswith("❯")), None)
+    if start is None:
+        return ""
+    first = lines[start].lstrip()[1:]
+    parts = [first.strip()]
+    for line in lines[start + 1:]:
+        stripped = line.strip()
+        if not line.startswith((" ", "\t")) or not stripped:
+            break
+        if set(stripped) <= set("─━") or stripped[0] in "⏵✔⏸":   # rule or footer
+            break
+        parts.append(stripped)
+    return " ".join(x for x in parts if x).strip()
+
+
 def turn(value):
     """Push encoders are relative: 1..63 clockwise, 127..65 anticlockwise."""
     return value if value < 64 else value - 128
@@ -350,7 +372,7 @@ def pane_summary(agent):
     except (json.JSONDecodeError, KeyError, OSError, subprocess.SubprocessError):
         return {}
     body = [l for l in lines if not set(l.strip()) <= set("─━ ")]   # drop rules
-    opts, say, act, pending, sel = [], "", "", "", None
+    opts, say, act, sel = [], "", "", None
     for line in lines:
         m = _OPT_RE.match(line)
         if m and not line.lstrip().startswith(("⏺", "✻")):
@@ -361,8 +383,7 @@ def pane_summary(agent):
             say, opts, sel = line[1:].strip(), [], None   # new answer, stale choice
         elif line.startswith("✻"):
             act = line[1:].strip()
-        elif line.lstrip().startswith("❯"):
-            pending = line.lstrip()[1:].strip()
+    pending = prompt_text(lines)
     return {"say": say, "act": act, "opts": opts, "sel": sel,
             "lines": body, "pending": "" if opts else pending}
 
@@ -542,10 +563,10 @@ def run():
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
+                push.cc("mute", 0, [MUTE_CC],
+                        WHITE if summary.get("pending") else BLACK)
                 for cc, (name, _) in COMMAND_CCS.items():
-                    # mute only lights when there is actually something to clear
-                    on = bool(summary.get("pending")) if cc == MUTE_CC else bool(target)
-                    push.cc(name, 0, [cc], WHITE if on else BLACK)
+                    push.cc(name, 0, [cc], WHITE if target else BLACK)
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
                 push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
                 for s in range(SLOTS):              # bottom row changes job when asked
@@ -596,6 +617,14 @@ def run():
                     print(f"add track -> worktree {branch!r} off {where}", flush=True)
                     herdr("worktree", "create", "--cwd", where,
                           "--branch", branch, "--focus")
+                elif (msg.type == "control_change" and msg.control == MUTE_CC
+                      and msg.value and target):
+                    # ctrl+l never reaches Claude and ctrl+u only kills the row
+                    # the cursor is on, so a wrapped prompt survives both.
+                    # Backspacing is dumb, depends on no keybinding, and works.
+                    n = len(summary.get("pending") or "") + 16
+                    print(f"mute -> {n} backspaces -> {target}", flush=True)
+                    herdr("agent", "send", target, BACKSPACE * n)
                 elif (msg.type == "control_change" and msg.control in COMMAND_CCS
                       and msg.value and target):
                     name, cmd = COMMAND_CCS[msg.control]
@@ -771,9 +800,16 @@ def selftest():
     assert slug("") .startswith("push/")
     assert len(slug("x" * 200)) == 60
 
-    assert COMMAND_CCS[MUTE_CC][1] == "\x0c"          # ctrl+l, no newline
-    assert not COMMAND_CCS[MUTE_CC][1].endswith("\r")  # must not submit
-    assert all(v.endswith("\r") for k, (_, v) in COMMAND_CCS.items() if k != MUTE_CC)
+    assert all(v.endswith("\r") for _, v in COMMAND_CCS.values())
+
+    # a wrapped prompt is one buffer, not just its caret row
+    assert prompt_text(["❯ hello"]) == "hello"
+    assert prompt_text(["❯ run the tests and report what",
+                        "  failscontinue",
+                        "──────────",
+                        "  ⏵⏵ auto mode on"]) == "run the tests and report what failscontinue"
+    assert prompt_text(["❯ /clear", "  ⏵⏵ footer", "❯ later"]) == "later"  # last caret wins
+    assert prompt_text(["nothing here"]) == ""
     print("ok")
 
 
