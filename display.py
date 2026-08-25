@@ -80,24 +80,66 @@ def fit(draw, text, width, size):
     return text, f
 
 
+def human(n):
+    """45231 -> 45.2k. Screen columns are 120px; four digits is all that fits."""
+    for lim, suf in ((1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if n >= lim:
+            return f"{n / lim:.1f}{suf}"
+    return str(int(n))
+
+
+def _column(d, i, rgb, focused):
+    """Shared chrome: divider, focus ring, numbered swatch."""
+    x = i * COL_W
+    if i:
+        d.line([(x, 8), (x, HEIGHT - 8)], fill=(45, 45, 45))
+    if focused:
+        d.rectangle([x + 3, 3, x + COL_W - 4, HEIGHT - 4], outline=rgb, width=2)
+    d.rectangle([x + 8, 12, x + 26, 30], fill=rgb)
+    d.text((x + 12, 13), str(i + 1), font=font(15), fill=(0, 0, 0))
+    return x
+
+
+def render_usage(cols):
+    """cols: 8 entries of (name, out_tokens, ctx_tokens, focused), None if empty."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.text((8, 2), "USAGE", font=font(12), fill=(90, 90, 90))
+    for i, col in enumerate(cols):
+        if not col:
+            x = i * COL_W
+            if i:
+                d.line([(x, 8), (x, HEIGHT - 8)], fill=(45, 45, 45))
+            continue
+        name, out, ctx, focused = col
+        rgb = (150, 175, 215)
+        x = _column(d, i, rgb, focused)
+        s, f = fit(d, name, COL_W - 34, 15)
+        d.text((x + 32, 14), s, font=f, fill=(200, 200, 200))
+        d.text((x + 10, 48), "out", font=font(13), fill=(100, 100, 100))
+        s, f = fit(d, human(out), COL_W - 20, 30)
+        d.text((x + 10, 62), s, font=f, fill=(235, 235, 235))
+        d.text((x + 10, 104), "context", font=font(13), fill=(100, 100, 100))
+        s, f = fit(d, human(ctx), COL_W - 20, 22)
+        d.text((x + 10, 120), s, font=f, fill=rgb)
+    return img
+
+
 def render(cols):
     """cols: 8 entries of (name, status, model, sub, focused), None if empty."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
     for i, col in enumerate(cols):
         x = i * COL_W
-        if i:
-            d.line([(x, 8), (x, HEIGHT - 8)], fill=(45, 45, 45))
         if not col:
+            if i:
+                d.line([(x, 8), (x, HEIGHT - 8)], fill=(45, 45, 45))
             t, f = fit(d, str(i + 1), COL_W - 16, 18)
             d.text((x + 10, 10), t, font=f, fill=(45, 45, 45))
             continue
         name, status, model, sub, focused = col
         rgb = STATUS_RGB.get(status, STATUS_RGB[None])
-        if focused:                                   # the one your keyboard is in
-            d.rectangle([x + 3, 3, x + COL_W - 4, HEIGHT - 4], outline=rgb, width=2)
-        d.rectangle([x + 8, 12, x + 26, 30], fill=rgb)
-        d.text((x + 12, 13), str(i + 1), font=font(15), fill=(0, 0, 0))
+        _column(d, i, rgb, focused)
         t, f = fit(d, name, COL_W - 20, 22)
         d.text((x + 10, 46), t, font=f, fill=(235, 235, 235))
         t, f = fit(d, status or "?", COL_W - 20, 19)

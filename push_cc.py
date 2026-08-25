@@ -15,8 +15,12 @@ focused. They do not submit -- you read it, then hit Play.
 Play (CC 85) = enter, sent to the focused agent. Lit green when there is one.
 
 The 960x160 screen names each column, so two checkouts of the same repo are
-telling apart by the tail of their terminal id. Missing pyusb just means no
+told apart by the tail of their terminal id. Missing pyusb just means no
 screen; the pads carry on.
+
+Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage.
+White is the one you are on. Usage counts tokens, not money -- nothing here
+knows your plan, and an invented cost is worse than no cost.
 
   python3 push_cc.py             run it (Push must be in User mode)
   python3 push_cc.py --list      dump agents, no hardware needed
@@ -47,7 +51,8 @@ PAD_NOTES = list(range(92, 100))     # top pad row, left -> right = agents
 APPROVE_NOTES = list(range(84, 92))  # row below: answer that agent's prompt yes
 DENY_NOTES = list(range(76, 84))     # row below that: answer no
 MACRO_NOTES = list(range(36, 44))    # bottom row: canned prompts
-TAB_CCS = list(range(102, 110))    # buttons above the display
+TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
+VIEWS = ["agents", "usage"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 
@@ -137,11 +142,9 @@ def short_model(raw):
 
 def model_for(agent):
     """herdr does not track the model, but the session's own transcript does."""
-    sid = (agent.get("agent_session") or {}).get("value")
-    if not sid:
+    path = transcript(agent)
+    if not path:
         return ""
-    path = os.path.expanduser(
-        f"~/.claude/projects/{agent.get('cwd', '').replace('/', '-')}/{sid}.jsonl")
     try:
         size = os.stat(path).st_size
     except OSError:
@@ -158,6 +161,63 @@ def model_for(agent):
     name = short_model(found[-1].decode()) if found else ""
     _model_cache[path] = (size, name)
     return name
+
+
+_usage_cache = {}   # path -> (offset, totals). Transcripts only ever append.
+_USAGE_FIELDS = {
+    "out": rb'"output_tokens":(\d+)',
+    # a leading quote is load-bearing: cache_read_input_tokens ends in the same
+    # letters, and without it every cache read would be counted twice.
+    "inp": rb'"input_tokens":(\d+)',
+    "cread": rb'"cache_read_input_tokens":(\d+)',
+    "cwrite": rb'"cache_creation_input_tokens":(\d+)',
+}
+
+
+def transcript(agent):
+    sid = (agent.get("agent_session") or {}).get("value")
+    if not sid:
+        return None
+    return os.path.expanduser(
+        f"~/.claude/projects/{agent.get('cwd', '').replace('/', '-')}/{sid}.jsonl")
+
+
+def usage_for(agent):
+    """Token totals for this session, accumulated incrementally.
+
+    A full re-scan is 2MB a session and we poll twice a second, so only the
+    bytes appended since last time are parsed."""
+    path = transcript(agent)
+    try:
+        size = os.stat(path).st_size if path else 0
+    except OSError:
+        return {}
+    off, tot = _usage_cache.get(path, (0, {k: 0 for k in _USAGE_FIELDS}))
+    if size < off:                       # truncated or replaced; start over
+        off, tot = 0, {k: 0 for k in _USAGE_FIELDS}
+    if size > off:
+        try:
+            with open(path, "rb") as f:
+                f.seek(off)
+                chunk = f.read()
+        except OSError:
+            return tot
+        cut = chunk.rfind(b"\n") + 1    # never parse a half-written line
+        if cut:
+            for key, pat in _USAGE_FIELDS.items():
+                tot[key] += sum(int(m) for m in re.findall(pat, chunk[:cut]))
+            _usage_cache[path] = (off + cut, tot)
+    return tot
+
+
+def usage_col(agent):
+    if agent is None:
+        return None
+    u = usage_for(agent)
+    return (os.path.basename(agent.get("cwd", "")) or "?",
+            u.get("out", 0),
+            u.get("cread", 0) + u.get("inp", 0) + u.get("cwrite", 0),
+            bool(agent.get("focused")))
 
 
 def panel_col(agent):
@@ -257,7 +317,7 @@ def run():
     debug = "--debug" in sys.argv
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
     by_id, focused = {}, None
-    shown, frame = None, None
+    shown, frame, view = None, None, 0
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -271,7 +331,8 @@ def run():
                     a = by_id.get(slots.get(s))
                     colour, anim = colour_for(a)
                     push.pad(s, *((RED, STATIC) if s == talk_slot else (colour, anim)))
-                    push.cc("tab", s, TAB_CCS, colour if a else BLACK)
+                    push.cc("tab", s, TAB_CCS,
+                            WHITE if s == view else (BLUE if s < len(VIEWS) else BLACK))
                     push.cc("mark", s, MARK_CCS,
                             WHITE if a and a.get("focused") else BLACK)
                     # approve/deny light only when there is something to answer
@@ -282,9 +343,13 @@ def run():
                               BLUE if s < len(MACROS) else BLACK)
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
                 if disp:
-                    cols = tuple(panel_col(by_id.get(slots.get(s))) for s in range(SLOTS))
+                    build, draw = (
+                        (panel_col, disp_mod.render) if VIEWS[view] == "agents"
+                        else (usage_col, disp_mod.render_usage))
+                    cols = (view,) + tuple(build(by_id.get(slots.get(s)))
+                                           for s in range(SLOTS))
                     if cols != shown:               # re-render on change only
-                        shown, frame = cols, disp_mod.render(cols)
+                        shown, frame = cols, draw(cols[1:])
                     try:
                         disp.show(frame)            # every poll: it blanks after ~2s
                     except Exception:
@@ -312,6 +377,12 @@ def run():
                     answer(APPROVE_NOTES.index(msg.note), YES, slots, by_id)
                 elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
                     answer(DENY_NOTES.index(msg.note), NO, slots, by_id)
+                elif (msg.type == "control_change" and msg.control in TAB_CCS
+                      and msg.value):
+                    i = TAB_CCS.index(msg.control)
+                    if i < len(VIEWS):
+                        view, shown = i, None       # force a redraw
+                        print(f"view -> {VIEWS[i]}", flush=True)
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
                       and msg.value and focused):
                     print(f"play -> enter -> {focused}", flush=True)
@@ -390,6 +461,15 @@ def selftest():
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
     assert short_model("claude-sonnet-5") == "sonnet 5"
+
+    assert usage_col(None) is None
+    # "input_tokens" must not also match the tail of cache_read_input_tokens
+    line = (b'{"usage":{"input_tokens":2,"cache_creation_input_tokens":699,'
+            b'"cache_read_input_tokens":199412,"output_tokens":1017}}\n')
+    import re as _re
+    assert [int(m) for m in _re.findall(_USAGE_FIELDS["inp"], line)] == [2]
+    assert [int(m) for m in _re.findall(_USAGE_FIELDS["cread"], line)] == [199412]
+    assert [int(m) for m in _re.findall(_USAGE_FIELDS["out"], line)] == [1017]
     print("ok")
 
 
