@@ -23,6 +23,9 @@ Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
 tempo encoder scrolls that view back through the agent's output; 0 is always
 the live tail, and changing agent snaps back to it.
 
+Arrows: left/right step between live agents, up/down move the highlighted
+option when one is actually being offered.
+
 When the current agent is asking something, the bottom row turns white and
 answers it instead of inserting macros.
 White is the one you are on. Usage counts tokens, not money -- nothing here
@@ -62,6 +65,7 @@ VIEWS = ["agents", "usage", "focus"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
+ARROW_CCS = {44: "left", 45: "right", 46: "up", 47: "down"}
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
@@ -130,6 +134,16 @@ def assign(live, slots):
             break  # ponytail: 9th+ agent is invisible. 8 pads, 8 agents.
         slots[free] = tid
     return slots
+
+
+def step_slot(current, delta, slots):
+    """Next occupied slot, wrapping. Empty pads are not worth stopping on."""
+    live = sorted(s for s in slots if slots[s])
+    if not live:
+        return current
+    if current in live:
+        return live[(live.index(current) + delta) % len(live)]
+    return live[0] if delta > 0 else live[-1]
 
 
 def blocked_agent(slot, slots, by_id):
@@ -433,6 +447,10 @@ def run():
                         disp = None
 
                 push.cc("play", 0, [PLAY_CC], GREEN if target else BLACK)
+                for cc, arrow in ARROW_CCS.items():
+                    lit = (bool(slots) if arrow in ("left", "right")
+                           else summary.get("sel") is not None)
+                    push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
                 for s in range(SLOTS):              # bottom row changes job when asked
                     push.note("macro", s, MACRO_NOTES[s],
                               WHITE if s < len(opts) else
@@ -466,6 +484,18 @@ def run():
                     if i < len(VIEWS):
                         view, shown = i, None       # force a redraw
                         print(f"view -> {VIEWS[i]}", flush=True)
+                elif (msg.type == "control_change" and msg.control in ARROW_CCS
+                      and msg.value):
+                    arrow = ARROW_CCS[msg.control]
+                    if arrow in ("left", "right"):
+                        current, shown, scroll = step_slot(
+                            current, 1 if arrow == "right" else -1, slots), None, 0
+                        print(f"-> slot {current} ({slots.get(current)})", flush=True)
+                    elif summary.get("sel") is not None and target:
+                        # A real select widget: up/down are confirm:previous and
+                        # confirm:next there. In prose, up is history:previous and
+                        # would recall an old prompt, so it stays inert.
+                        herdr("agent", "send", target, UP if arrow == "up" else DOWN)
                 elif msg.type == "control_change" and msg.control == TEMPO_CC:
                     scroll, shown = max(0, scroll - turn(msg.value)), None
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
@@ -579,6 +609,13 @@ def selftest():
     assert turn(1) == 1 and turn(3) == 3        # clockwise
     assert turn(127) == -1 and turn(125) == -3  # anticlockwise, two's complement
     assert turn(63) == 63 and turn(64) == -64   # the wrap point
+
+    live = {0: "x", 2: "z", 5: "w"}
+    assert step_slot(0, 1, live) == 2           # skips the empty pads
+    assert step_slot(5, 1, live) == 0           # wraps
+    assert step_slot(0, -1, live) == 5
+    assert step_slot(3, 1, live) == 0           # not on a live slot -> first
+    assert step_slot(0, 1, {}) == 0             # nothing live -> stay put
     print("ok")
 
 
