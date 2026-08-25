@@ -23,8 +23,9 @@ Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
 tempo encoder scrolls that view back through the agent's output; 0 is always
 the live tail, and changing agent snaps back to it.
 
-Arrows: left/right step between live agents. Up/down move the highlighted
-option when one is being offered, and scroll the focus view when none is.
+Arrows go straight through as arrow keys, so they mean whatever Claude means
+by them in that moment. Tap a pad to change agent, turn the tempo encoder to
+scroll.
 
 When any agent starts asking something the screen jumps to the focus view on
 it, once, on the edge -- navigate away and it will not drag you back. Its pad
@@ -86,9 +87,13 @@ VIEWS = ["agents", "usage", "focus", "macros"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
-ARROW_CCS = {44: "left", 45: "right", 46: "up", 47: "down"}
+UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
+
+# Straight through to the agent as real arrow keys. Claude already decides what
+# they mean in context -- caret in a dialog, history at an empty prompt, cursor
+# in text -- and second-guessing that from here only ever gets it wrong.
+ARROW_CCS = {44: "\x1b[D", 45: "\x1b[C", 46: UP, 47: DOWN}
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
-SCROLL_STEP = 3                    # lines per arrow press; the encoder does fine work
 DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
@@ -337,7 +342,6 @@ def usage_col(agent):
 # choose there, you arrow to it and press enter. Prose options carry no caret,
 # and the digit is simply the reply you type. The caret is the discriminator.
 _OPT_RE = re.compile(r"^\s*(❯|>)?\s*(\d+)\.\s+(.+?)\s*$")
-UP, DOWN = "\x1b[A", "\x1b[B"
 
 
 def prompt_text(lines):
@@ -596,14 +600,8 @@ def run():
                         disp = None
 
                 push.cc("play", 0, [PLAY_CC], GREEN if target else BLACK)
-                for cc, arrow in ARROW_CCS.items():
-                    if arrow in ("left", "right"):
-                        lit = bool(slots)
-                    elif summary.get("sel") is not None:
-                        lit = True              # answering
-                    else:
-                        lit = VIEWS[view] == "focus"    # scrolling
-                    push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
+                for cc in ARROW_CCS:
+                    push.cc(f"arrow{cc}", 0, [cc], WHITE if target else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
                 push.cc("mute", 0, [MUTE_CC],
@@ -694,20 +692,8 @@ def run():
                     if arming:
                         view = VIEWS.index("macros")   # show what you would overwrite
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
-                      and msg.value):
-                    arrow = ARROW_CCS[msg.control]
-                    if arrow in ("left", "right"):
-                        current, shown, scroll = step_slot(
-                            current, 1 if arrow == "right" else -1, slots), None, 0
-                        print(f"-> slot {current} ({slots.get(current)})", flush=True)
-                    elif summary.get("sel") is not None and target:
-                        # A real select widget: up/down are confirm:previous and
-                        # confirm:next there. In prose, up is history:previous and
-                        # would recall an old prompt, so we never forward it.
-                        herdr("agent", "send", target, UP if arrow == "up" else DOWN)
-                    else:                       # nothing to answer -> scroll instead
-                        scroll, shown = max(0, scroll + (
-                            SCROLL_STEP if arrow == "up" else -SCROLL_STEP)), None
+                      and msg.value and target):
+                    herdr("agent", "send", target, ARROW_CCS[msg.control])
                 elif msg.type == "control_change" and msg.control == TEMPO_CC:
                     # clockwise winds back through history, anticlockwise returns
                     # to the live tail at 0 -- same sense as the up arrow
