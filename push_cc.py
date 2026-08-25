@@ -447,19 +447,26 @@ def pane_summary(agent, depth=SCRAPE_LINES):
             "lines": body, "pending": "" if opts else pending}
 
 
-def sweep_questions(slots, by_id, current):
-    """Which slots are waiting on a human.
+def sweep_panes(slots, by_id, current):
+    """Which slots are waiting on a human, and what each is part-way through
+    typing.
 
-    Not agent_status: an agent asking a prose question stays idle, so herdr
-    never reports it. Only the pane knows."""
-    asking = set()
+    Not agent_status for the first: an agent asking a prose question stays
+    idle, so herdr never reports it. Only the pane knows. The typing comes off
+    the same read, so it costs nothing to keep."""
+    asking, pendings = set(), {}
     for slot, tid in slots.items():
         if slot == current or not tid:
             continue
         agent = by_id.get(tid)
-        if agent and pane_summary(agent, SWEEP_LINES).get("opts"):
+        if not agent:
+            continue
+        summary = pane_summary(agent, SWEEP_LINES)
+        if summary.get("opts"):
             asking.add(slot)
-    return asking
+        if summary.get("pending"):
+            pendings[slot] = summary["pending"]
+    return asking, pendings
 
 
 def focus_info(slot, agent, summary, scroll=0):
@@ -472,7 +479,7 @@ def focus_info(slot, agent, summary, scroll=0):
             "lines": summary.get("lines") or [], "scroll": scroll}
 
 
-def panel_col(agent):
+def panel_col(agent, pending=""):
     """One screen column. Two agents can share a repo name, so show a tail of
     the terminal id -- that is the thing that actually tells them apart."""
     if agent is None:
@@ -481,7 +488,8 @@ def panel_col(agent):
             agent.get("agent_status"),
             model_for(agent),
             agent.get("terminal_id", "")[-6:],
-            bool(agent.get("focused")))
+            bool(agent.get("focused")),
+            pending)
 
 
 def colour_for(agent):
@@ -563,7 +571,7 @@ def run():
     shifted, pinned = False, False
     published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
-    asking, next_sweep, was_asking = set(), 0.0, False
+    asking, pendings, next_sweep, was_asking = set(), {}, 0.0, False
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -610,7 +618,7 @@ def run():
 
                 if now >= next_sweep:
                     next_sweep = now + SWEEP_S
-                    asking = sweep_questions(slots, by_id, current)
+                    asking, pendings = sweep_panes(slots, by_id, current)
                 if opts:
                     asking.add(current)
                 else:
@@ -646,7 +654,12 @@ def run():
                         build, draw = ((panel_col, disp_mod.render)
                                        if VIEWS[view] == "agents"
                                        else (usage_col, disp_mod.render_usage))
-                        cols = tuple(build(by_id.get(slots.get(s))) for s in range(SLOTS))
+                        typed = dict(pendings)
+                        typed[seat] = summary.get("pending", "")
+                        cols = tuple(
+                            build(by_id.get(slots.get(s)), typed.get(s, ""))
+                            if build is panel_col else build(by_id.get(slots.get(s)))
+                            for s in range(SLOTS))
                         state = (view, cols)
                         drawn = lambda: draw(cols)
                     if state != shown:              # re-render on change only
@@ -918,7 +931,10 @@ def selftest():
     assert panel_col(None) is None
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "blocked",
                      "terminal_id": "term_659ce899ee9293", "focused": True})
-    assert col == ("bugcast", "blocked", "", "ee9293", True), col
+    assert col == ("bugcast", "blocked", "", "ee9293", True, ""), col
+    col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
+                     "terminal_id": "t", "focused": False}, "half a sentence")
+    assert col[-1] == "half a sentence", col
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
     assert short_model("claude-sonnet-5") == "sonnet 5"
