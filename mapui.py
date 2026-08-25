@@ -52,7 +52,7 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
   <input type=checkbox id=arm onchange=arm()>
   <label for=arm>Run on click</label>
   <span id=live>no session</span>
-  <span class=n>off: clicking edits &middot; on: clicking fires at the Push's session</span>
+  <span class=n>clicking always selects for editing &middot; armed, it also fires at the Push's session</span>
 </div>
 <h1>Shortcut pads &mdash; laid out as they sit on the Push
   <span class=n style="margin-left:10px">drag a pad onto another to swap them</span></h1>
@@ -98,7 +98,9 @@ function draw(){
     d.innerHTML='<div class=n>'+(36+i)+(m&&m.submit?' <span style=color:#6eaa6e>\u23ce</span>':'')
                 +'</div>'+(m?escapeHtml(m.label):'');
     if(m) d.style.borderLeft='4px solid '+hexFor(m.colour);
-    d.onclick=()=>$('arm').checked ? fire(i) : pick(i);
+    // armed still selects: firing a pad and then wanting to edit it is the
+    // common case, and having to disarm first would be a nuisance
+    d.onclick=()=>{ pick(i); if($('arm').checked) fire(i); };
     d.draggable=!!m;                       // an empty pad has nothing to carry
     d.ondragstart=e=>{ from=i; d.classList.add('drag');
                        e.dataTransfer.effectAllowed='move'; };
