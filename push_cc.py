@@ -664,7 +664,7 @@ def run():
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
     shifted, pinned = False, False
     macro_down, talk_src, previewing = None, None, None
-    held = {cc: False for cc in ARM_CCS}
+    arm_held = {cc: False for cc in ARM_CCS}   # not `held`: a local below took it
     published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
     asking, pendings, next_sweep, was_asking = set(), {}, 0.0, False
@@ -823,10 +823,10 @@ def run():
                     print(f"  raw: {what}", flush=True)
                 if msg.type in ("note_on", "note_off") and msg.note in ENC_TOUCH:
                     slot = ENC_TOUCH.index(msg.note)
-                    held = msg.type == "note_on" and msg.velocity
-                    if held and slots.get(slot):
+                    touching = msg.type == "note_on" and msg.velocity
+                    if touching and slots.get(slot):
                         peek, view, shown = slot, VIEWS.index("focus"), None
-                    elif not held and peek == slot:
+                    elif not touching and peek == slot:
                         peek, shown = None, None
                 elif msg.type == "control_change" and msg.control in SESSION_CCS:
                     slot = SESSION_CCS.index(msg.control)
@@ -913,8 +913,8 @@ def run():
                     closing, shown = (current, now + CONFIRM_S), None
                     print(f"delete -> confirm close slot {current}?", flush=True)
                 elif msg.type == "control_change" and msg.control in ARM_CCS:
-                    held[msg.control] = bool(msg.value)
-                    was, arming = arming, any(held.values())
+                    arm_held[msg.control] = bool(msg.value)
+                    was, arming = arming, any(arm_held.values())
                     shown = None
                     if arming and not was:
                         view = VIEWS.index("macros")   # show what you would overwrite
