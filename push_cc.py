@@ -9,7 +9,7 @@ Row 2 (84-91) approve / row 3 (76-83) deny, per column. Lit only while that
 agent is blocked, and ignored otherwise, so a stray press cannot answer a
 prompt that is not there.
 
-Bottom row (36-43) = MACROS, inserted into whichever agent herdr reports
+Rows 1-4 (36-67) = MACROS, inserted into whichever agent herdr reports
 focused. They do not submit -- you read it, then hit Play.
 
 Play (CC 85) = enter, sent to the focused agent. Lit green when there is one.
@@ -87,7 +87,13 @@ SLOTS = 8
 PAD_NOTES = list(range(92, 100))     # top pad row, left -> right = agents
 APPROVE_NOTES = list(range(84, 92))  # row below: answer that agent's prompt yes
 DENY_NOTES = list(range(76, 84))     # row below that: answer no
-MACRO_NOTES = list(range(36, 44))    # bottom row: canned prompts
+# Four rows, bottom-up. No bank switching: a mode you have to remember you are
+# in is worse than pads you can simply see.
+MACRO_ROWS = 4
+MACRO_NOTES = [n for row in range(MACRO_ROWS)
+               for n in range(36 + row * 8, 44 + row * 8)]
+MACRO_SLOTS = len(MACRO_NOTES)
+ANSWER_NOTES = MACRO_NOTES[:SLOTS]   # options answer on the bottom row only
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 VIEWS = ["agents", "usage", "focus", "macros"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
@@ -184,7 +190,7 @@ def load_macros():
     except (OSError, json.JSONDecodeError):
         raw = DEFAULT_MACROS
     out = []
-    for entry in (raw or [])[:SLOTS]:
+    for entry in (raw or [])[:MACRO_SLOTS]:
         if not entry:
             out.append(None)
         elif isinstance(entry, str):
@@ -192,7 +198,7 @@ def load_macros():
         else:
             text = entry.get("text", "")
             out.append((entry.get("label") or label_for(text), text) if text else None)
-    return out + [None] * (SLOTS - len(out))
+    return out + [None] * (MACRO_SLOTS - len(out))
 
 
 def save_macros(macros):
@@ -503,9 +509,10 @@ class Push:
             self.pad(s, BLACK, STATIC)
             self.note("ok", s, APPROVE_NOTES[s], BLACK)
             self.note("no", s, DENY_NOTES[s], BLACK)
-            self.note("macro", s, MACRO_NOTES[s], BLACK)
             self.cc("tab", s, TAB_CCS, BLACK)
             self.cc("mark", s, MARK_CCS, BLACK)
+        for i in range(MACRO_SLOTS):
+            self.note("macro", i, MACRO_NOTES[i], BLACK)
         self.cc("play", 0, [PLAY_CC], BLACK)
         for i in range(len(FREED_CCS)):
             self.cc("freed", i, FREED_CCS, BLACK)
@@ -641,12 +648,13 @@ def run():
                     push.cc(name, 0, [cc], WHITE if target else BLACK)
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
                 push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
-                for s in range(SLOTS):              # bottom row changes job when asked
-                    push.note("macro", s, MACRO_NOTES[s],
+                for i in range(MACRO_SLOTS):        # bottom row changes job when asked
+                    row0 = i < SLOTS
+                    push.note("macro", i, MACRO_NOTES[i],
                               RED if arming else
-                              (WHITE if s < len(opts) else
-                               (BLACK if opts else
-                                (BLUE if MACROS[s] else BLACK))))
+                              (WHITE if row0 and i < len(opts) else
+                               (BLACK if opts and row0 else
+                                (BLUE if MACROS[i] else BLACK))))
 
             for msg in inp.iter_pending():
                 if debug and msg.type not in ("clock", "active_sensing"):
@@ -788,7 +796,7 @@ def run():
                         shown = None
                         print(f"pad {i} <- {text!r}" if text
                               else f"pad {i} cleared", flush=True)
-                    elif opts and target:
+                    elif opts and target and msg.note in ANSWER_NOTES:
                         if i < len(opts):           # answering, not typing
                             num, label = opts[i]
                             sel = summary.get("sel")
@@ -862,9 +870,11 @@ def selftest():
     assert blocked_agent(7, slots, by_id) is None      # empty slot -> no
     assert answer(0, YES, slots, by_id) is False       # never sends to a non-blocked agent
 
-    assert len(MACROS) <= SLOTS, "bottom row only has 8 pads"
-    assert not any(t.endswith("\r") for _, t in MACROS), "macros must not self-submit"
-    assert len({n for n in PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES}) == 32
+    assert len(MACROS) == MACRO_SLOTS, "one entry per macro pad"
+    assert not any(t.endswith("\r") for _, t in filter(None, MACROS)), \
+        "macros must not self-submit"
+    assert len(set(PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES)) == \
+        len(PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES), "pads overlap"
     assert PLAY_CC not in TAB_CCS + MARK_CCS, "play must not collide with a lit row"
 
     assert panel_col(None) is None
@@ -906,7 +916,10 @@ def selftest():
     assert label_for("/handoff") == "/handoff"
     assert label_for("run the tests and report what fails") == "run the"
     assert len(label_for("supercalifragilistic expialidocious")) == 14
-    assert len(load_macros()) == SLOTS          # always exactly one per pad
+    assert len(load_macros()) == MACRO_SLOTS   # always exactly one per pad
+    assert len(MACRO_NOTES) == len(set(MACRO_NOTES)) == MACRO_ROWS * SLOTS
+    assert max(MACRO_NOTES) < min(DENY_NOTES), "macros must not reach the deny row"
+    assert ANSWER_NOTES == list(range(36, 44))
 
     assert slug("Fix The Parser") == "fix-the-parser"
     assert slug("feat/thing") == "feat/thing"
