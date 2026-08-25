@@ -10,7 +10,9 @@ agent is blocked, and ignored otherwise, so a stray press cannot answer a
 prompt that is not there.
 
 Bottom row (36-43) = MACROS, inserted into whichever agent herdr reports
-focused. They do not submit -- you read it, then press enter.
+focused. They do not submit -- you read it, then hit Play.
+
+Play (CC 85) = enter, sent to the focused agent. Lit green when there is one.
 
   python3 push_cc.py             run it (Push must be in User mode)
   python3 push_cc.py --list      dump agents, no hardware needed
@@ -40,6 +42,7 @@ DENY_NOTES = list(range(76, 84))     # row below that: answer no
 MACRO_NOTES = list(range(36, 44))    # bottom row: canned prompts
 TAB_CCS = list(range(102, 110))    # buttons above the display
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
+PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
@@ -58,6 +61,7 @@ EMPTY = (BLACK, STATIC)
 # Claude's Confirmation context binds y/enter to yes and escape/n to no. We only
 # ever send these while herdr reports the agent blocked.
 YES, NO = "y", "n"
+ENTER = "\r"
 
 # Bottom row, left to right. These INSERT and do not submit: the only way to
 # learn a pad is to press it, and a surface you explore by touching must not
@@ -165,6 +169,7 @@ class Push:
             self.note("macro", s, MACRO_NOTES[s], BLACK)
             self.cc("tab", s, TAB_CCS, BLACK)
             self.cc("mark", s, MARK_CCS, BLACK)
+        self.cc("play", 0, [PLAY_CC], BLACK)
 
 
 def run():
@@ -209,6 +214,7 @@ def run():
                     push.note("macro", s, MACRO_NOTES[s],
                               BLUE if s < len(MACROS) else BLACK)
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
+                push.cc("play", 0, [PLAY_CC], GREEN if focused else BLACK)
 
             for msg in inp.iter_pending():
                 if debug and msg.type not in ("clock", "active_sensing"):
@@ -231,6 +237,10 @@ def run():
                     answer(APPROVE_NOTES.index(msg.note), YES, slots, by_id)
                 elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
                     answer(DENY_NOTES.index(msg.note), NO, slots, by_id)
+                elif (msg.type == "control_change" and msg.control == PLAY_CC
+                      and msg.value and focused):
+                    print(f"play -> enter -> {focused}", flush=True)
+                    herdr("agent", "send", focused, ENTER)
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
                     if i < len(MACROS) and focused:
@@ -291,6 +301,7 @@ def selftest():
     assert len(MACROS) <= SLOTS, "bottom row only has 8 pads"
     assert not any(t.endswith("\r") for _, t in MACROS), "macros must not self-submit"
     assert len({n for n in PAD_NOTES + APPROVE_NOTES + DENY_NOTES + MACRO_NOTES}) == 32
+    assert PLAY_CC not in TAB_CCS + MARK_CCS, "play must not collide with a lit row"
     print("ok")
 
 
