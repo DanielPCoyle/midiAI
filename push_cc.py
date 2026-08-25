@@ -19,7 +19,9 @@ told apart by the tail of their terminal id. Missing pyusb just means no
 screen; the pads carry on.
 
 Buttons above the display (CC 102-109) pick the view: 1 agents, 2 usage,
-3 focus (one agent, what it is doing, and any question it is asking).
+3 focus (one agent, what it is doing, and any question it is asking). The
+tempo encoder scrolls that view back through the agent's output; 0 is always
+the live tail, and changing agent snaps back to it.
 
 When the current agent is asking something, the bottom row turns white and
 answers it instead of inserting macros.
@@ -59,6 +61,8 @@ TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 VIEWS = ["agents", "usage", "focus"]
 MARK_CCS = list(range(20, 28))     # buttons directly above the pads -> focus marker
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
+TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
+SCRAPE_LINES = "400"               # how far back the focus view can scroll
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
@@ -232,6 +236,11 @@ _OPT_RE = re.compile(r"^\s*(❯|>)?\s*(\d+)\.\s+(.+?)\s*$")
 UP, DOWN = "\x1b[A", "\x1b[B"
 
 
+def turn(value):
+    """Push encoders are relative: 1..63 clockwise, 127..65 anticlockwise."""
+    return value if value < 64 else value - 128
+
+
 def pane_summary(agent):
     """What this agent is doing, scraped from its rendered pane.
 
@@ -240,10 +249,12 @@ def pane_summary(agent):
     if not agent:
         return {}
     try:
-        raw = json.loads(herdr("agent", "read", agent["terminal_id"], "--lines", "40"))
+        raw = json.loads(herdr("agent", "read", agent["terminal_id"],
+                               "--lines", SCRAPE_LINES))
         lines = raw["result"]["read"]["text"].splitlines()
     except (json.JSONDecodeError, KeyError, OSError, subprocess.SubprocessError):
         return {}
+    body = [l for l in lines if not set(l.strip()) <= set("─━ ")]   # drop rules
     opts, say, act, pending, sel = [], "", "", "", None
     for line in lines:
         m = _OPT_RE.match(line)
@@ -258,16 +269,17 @@ def pane_summary(agent):
         elif line.lstrip().startswith("❯"):
             pending = line.lstrip()[1:].strip()
     return {"say": say, "act": act, "opts": opts, "sel": sel,
-            "pending": "" if opts else pending}
+            "lines": body, "pending": "" if opts else pending}
 
 
-def focus_info(slot, agent, summary):
+def focus_info(slot, agent, summary, scroll=0):
     return {"slot": slot,
             "name": os.path.basename(agent.get("cwd", "")) or "?",
             "model": model_for(agent),
             "status": agent.get("agent_status"),
             **{k: summary.get(k, "") for k in ("act", "say", "pending")},
-            "opts": summary.get("opts") or [], "sel": summary.get("sel")}
+            "opts": summary.get("opts") or [], "sel": summary.get("sel"),
+            "lines": summary.get("lines") or [], "scroll": scroll}
 
 
 def panel_col(agent):
@@ -368,7 +380,7 @@ def run():
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
     by_id, focused = {}, None
     shown, frame, view = None, None, 0
-    current, summary, next_scrape = 0, {}, 0.0
+    current, summary, scroll = 0, {}, 0
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -402,7 +414,7 @@ def run():
 
                 if disp:
                     if VIEWS[view] == "focus":
-                        info = focus_info(current, cur, summary) if cur else None
+                        info = focus_info(current, cur, summary, scroll) if cur else None
                         state = (view, repr(info))
                         drawn = (lambda: disp_mod.render_focus(info)) if info else (
                             lambda: disp_mod.render((None,) * SLOTS))
@@ -443,7 +455,7 @@ def run():
                         talk_slot, pad_down = None, None
                     elif pad_down and pad_down[0] == slot:
                         herdr("agent", "focus", slots[slot])   # short press = focus
-                        current, pad_down, shown = slot, None, None
+                        current, pad_down, shown, scroll = slot, None, None, 0
                 elif msg.type == "note_on" and msg.velocity and msg.note in APPROVE_NOTES:
                     answer(APPROVE_NOTES.index(msg.note), YES, slots, by_id)
                 elif msg.type == "note_on" and msg.velocity and msg.note in DENY_NOTES:
@@ -454,6 +466,8 @@ def run():
                     if i < len(VIEWS):
                         view, shown = i, None       # force a redraw
                         print(f"view -> {VIEWS[i]}", flush=True)
+                elif msg.type == "control_change" and msg.control == TEMPO_CC:
+                    scroll, shown = max(0, scroll - turn(msg.value)), None
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
                       and msg.value and target):
                     print(f"play -> enter -> {target}", flush=True)
@@ -481,7 +495,7 @@ def run():
                 # No focus call: Claude reads its own pty, so a background agent
                 # hears this while you keep watching another one.
                 talk_slot, next_key, sent = pad_down[0], 0.0, 0
-                current, shown = talk_slot, None
+                current, shown, scroll = talk_slot, None, 0
                 print(f"pad {talk_slot} held -> talking to {slots[talk_slot]}", flush=True)
 
             if talk_slot is not None and now >= next_key:
@@ -561,6 +575,10 @@ def selftest():
     assert _OPT_RE.match("❯ commit the fix") is None   # typed text, not a choice
     assert _OPT_RE.match("❯ 1. Yes").group(1) == "❯"    # widget: caret present
     assert _OPT_RE.match("  2. No, exit").group(1) is None      # prose: none
+
+    assert turn(1) == 1 and turn(3) == 3        # clockwise
+    assert turn(127) == -1 and turn(125) == -3  # anticlockwise, two's complement
+    assert turn(63) == 63 and turn(64) == -64   # the wrap point
     print("ok")
 
 

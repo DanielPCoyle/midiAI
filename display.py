@@ -124,6 +124,30 @@ def wrap(d, text, width, f, rows):
     return out
 
 
+def flow(d, lines, width, f):
+    """Terminal lines are ~200 chars; 960px fits far fewer. Re-wrap, keeping
+    blank lines as spacing but never letting them stack up."""
+    out = []
+    for raw in lines:
+        text = raw.rstrip()
+        if not text.strip():
+            if out and out[-1]:
+                out.append("")
+            continue
+        indent = "  " if raw.startswith(("  ", "\t")) else ""
+        piece = ""
+        for word in text.split():
+            trial = f"{piece} {word}".strip()
+            if piece and d.textlength(indent + trial, font=f) > width:
+                out.append(indent + piece)
+                piece = word
+            else:
+                piece = trial
+        if piece:
+            out.append(indent + piece)
+    return out
+
+
 def render_focus(info):
     """One agent, full width. info: slot, name, model, status, act, say,
     pending, opts. With opts present this becomes the answer screen."""
@@ -151,15 +175,32 @@ def render_focus(info):
         d.text((WIDTH - 210, 20), "bottom row answers", font=font(13), fill=(120, 120, 120))
         return img
 
-    if info.get("act"):
-        s, f = fit(d, info["act"], WIDTH - 24, 17)
-        d.text((12, 46), s, font=f, fill=(150, 150, 150))
-    body, bf = info.get("say", ""), font(17)
-    for i, line in enumerate(wrap(d, body, WIDTH - 24, bf, 3)):
-        d.text((12, 70 + i * 21), line, font=bf, fill=(228, 228, 228))
-    if info.get("pending"):
+    pending = info.get("pending")
+    bottom = HEIGHT - (22 if pending else 0)
+    bf = font(15)
+    rows = (bottom - 46) // 17
+    body = flow(d, info.get("lines") or [], WIDTH - 30, bf)
+
+    # scroll counts lines back from the newest, so 0 is always the live tail
+    scroll = max(0, min(info.get("scroll", 0), max(0, len(body) - rows)))
+    end = len(body) - scroll
+    for i, line in enumerate(body[max(0, end - rows):end]):
+        grey = 150 if line.startswith(("  ", "\t")) else 228
+        d.text((12, 46 + i * 17), line, font=bf, fill=(grey,) * 3)
+
+    if len(body) > rows:                       # scrollbar, right edge
+        span = bottom - 46
+        h = max(12, int(span * rows / len(body)))
+        y = 46 + int((span - h) * (1 - scroll / max(1, len(body) - rows)))
+        d.rectangle([WIDTH - 6, 46, WIDTH - 4, bottom], fill=(38, 38, 38))
+        d.rectangle([WIDTH - 6, y, WIDTH - 4, y + h],
+                    fill=(150, 175, 215) if scroll else (80, 80, 80))
+    if scroll:
+        d.text((WIDTH - 150, 16), f"-{scroll} lines", font=font(13), fill=(150, 175, 215))
+
+    if pending:
         d.rectangle([0, HEIGHT - 22, WIDTH, HEIGHT], fill=(18, 24, 34))
-        s, f = fit(d, "> " + info["pending"], WIDTH - 24, 15)
+        s, f = fit(d, "> " + pending, WIDTH - 24, 15)
         d.text((12, HEIGHT - 19), s, font=f, fill=(150, 175, 215))
     return img
 
