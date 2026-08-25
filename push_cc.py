@@ -33,7 +33,9 @@ Add Device splits and starts a new claude there in auto mode, in the current
 agent's directory. Add Track makes a worktree off it, named from whatever is
 typed in the prompt, or timestamped if that is empty.
 
-Delete runs /clear on the current agent. It submits on press, unlike the macro
+Convert runs /compact, New runs /clear, Quantize opens /model -- which is a
+select widget, so the arrows and Play drive it. Delete closes the current
+agent's pane outright. It submits on press, unlike the macro
 row, because a button labelled Delete doing nothing until you press another
 one is worse than the thing it guards against.
 
@@ -80,9 +82,16 @@ TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
 ARROW_CCS = {44: "left", 45: "right", 46: "up", 47: "down"}
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
 SCROLL_STEP = 3                    # lines per arrow press; the encoder does fine work
-DELETE_CC = 118                    # Delete -> /clear on the current agent
+DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
+
+# Buttons that just type a command at the current agent and submit it.
+COMMAND_CCS = {
+    35: ("convert", "/compact"),
+    87: ("new", "/clear"),
+    116: ("quantize", "/model"),
+}
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 
@@ -526,7 +535,9 @@ def run():
                         lit = VIEWS[view] == "focus"    # scrolling
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if lit else BLACK)
                 push.cc("rec", 0, [RECORD_CC], RED if arming else BLACK)
-                push.cc("del", 0, [DELETE_CC], RED if target else BLACK)
+                push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
+                for cc, (name, _) in COMMAND_CCS.items():
+                    push.cc(name, 0, [cc], WHITE if target else BLACK)
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
                 push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
                 for s in range(SLOTS):              # bottom row changes job when asked
@@ -577,10 +588,19 @@ def run():
                     print(f"add track -> worktree {branch!r} off {where}", flush=True)
                     herdr("worktree", "create", "--cwd", where,
                           "--branch", branch, "--focus")
-                elif (msg.type == "control_change" and msg.control == DELETE_CC
+                elif (msg.type == "control_change" and msg.control in COMMAND_CCS
                       and msg.value and target):
-                    print(f"delete -> /clear -> {target}", flush=True)
-                    herdr("agent", "send", target, "/clear" + ENTER)
+                    name, cmd = COMMAND_CCS[msg.control]
+                    print(f"{name} -> {cmd} -> {target}", flush=True)
+                    herdr("agent", "send", target, cmd + ENTER)
+                elif (msg.type == "control_change" and msg.control == DELETE_CC
+                      and msg.value and cur):
+                    pane = cur.get("pane_id")
+                    print(f"delete -> closing pane {pane} ({target})", flush=True)
+                    if pane:
+                        herdr("pane", "close", pane)
+                        slots.pop(current, None)    # do not paint a dead slot
+                        current, shown, scroll = step_slot(current, 1, slots), None, 0
                 elif msg.type == "control_change" and msg.control == RECORD_CC:
                     arming, shown = bool(msg.value), None
                     if arming:
