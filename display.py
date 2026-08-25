@@ -300,8 +300,51 @@ def render_usage(cols):
     return img
 
 
-def render(cols):
-    """cols: 8 entries of (name, status, model, sub, focused, typed), None."""
+def render_typing(cols, who):
+    """Someone is mid-sentence. Their words are worth more of the glass than
+    eight cards nobody is reading, so the cards shrink to a strip."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    strip = 44
+    for i, col in enumerate(cols):
+        x = i * COL_W
+        if i:
+            d.line([(x, 6), (x, strip - 6)], fill=(40, 40, 40))
+        if not col:
+            continue
+        name, status, _model, _sub, _focused, typed = col
+        rgb = STATUS_RGB.get(status, STATUS_RGB[None])
+        lit = i == who
+        d.rectangle([x + 8, 10, x + 24, 26], fill=rgb if lit else tuple(c // 3 for c in rgb))
+        d.text((x + 12, 11), str(i + 1), font=font(13), fill=(0, 0, 0))
+        s, f = fit(d, name, COL_W - 36, 13)
+        d.text((x + 30, 12), s, font=f, fill=(210, 210, 210) if lit else (95, 95, 95))
+        if typed and not lit:          # someone else is typing too
+            d.rectangle([x + 8, 30, x + COL_W - 10, 33], fill=(70, 95, 130))
+    d.line([(0, strip), (WIDTH, strip)], fill=(48, 48, 48))
+
+    col = cols[who]
+    d.text((16, strip + 8), f"{who + 1}. {col[0]}", font=font(13), fill=(110, 110, 110))
+    body, bf = col[5], font(30)
+    lines = wrap(d, body, WIDTH - 40, bf, 2)
+    if len(lines) < 2 or d.textlength(body, font=bf) > (WIDTH - 40) * 2:
+        bf = font(22)                  # long ones get smaller rather than clipped
+        lines = wrap(d, body, WIDTH - 40, bf, 3)
+    for j, line in enumerate(lines):
+        d.text((20, strip + 28 + j * (bf.size + 6)), line, font=bf, fill=(235, 235, 235))
+    return img
+
+
+def render(cols, prefer=None):
+    """cols: 8 entries of (name, status, model, sub, focused, typed), None.
+
+    Hands the glass over to whoever is typing, because a half-written prompt
+    is the only thing here that changes while you watch it."""
+    typing = [i for i, c in enumerate(cols) if c and c[5]]
+    if typing:
+        # the one you are on wins: if you are typing, that is what you meant
+        who = prefer if prefer in typing else typing[0]
+        return render_typing(cols, who)
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
     for i, col in enumerate(cols):

@@ -660,8 +660,9 @@ def run():
                             build(by_id.get(slots.get(s)), typed.get(s, ""))
                             if build is panel_col else build(by_id.get(slots.get(s)))
                             for s in range(SLOTS))
-                        state = (view, cols)
-                        drawn = lambda: draw(cols)
+                        state = (view, cols, seat)
+                        drawn = ((lambda: draw(cols, seat)) if draw is disp_mod.render
+                                 else (lambda: draw(cols)))
                     if state != shown:              # re-render on change only
                         shown, frame = state, drawn()
                     try:
