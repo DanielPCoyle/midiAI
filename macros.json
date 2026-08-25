@@ -22,6 +22,14 @@
     }
   ],
   "pads": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
     {
       "label": "commit this",
       "text": "commit this",
@@ -45,15 +53,13 @@
     },
     null,
     null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
+    {
+      "label": "Drift Diff Check",
+      "text": "Based on the current Diff, review the ADRs for any document drifts.",
+      "colour": 125,
+      "tag": null,
+      "submit": false
+    },
     null,
     null,
     {
@@ -87,8 +93,20 @@
     null,
     null,
     null,
-    null,
-    null,
+    {
+      "label": "Notebook LM (Day)",
+      "text": "Make a notebook LM audio overview of the work done today.",
+      "colour": 125,
+      "tag": null,
+      "submit": false
+    },
+    {
+      "label": "Notebook LM (Branch)",
+      "text": "Make a notebook LM audio overview of the work done on this branch.",
+      "colour": 125,
+      "tag": null,
+      "submit": false
+    },
     null,
     {
       "label": "continue",
