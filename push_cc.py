@@ -26,6 +26,10 @@ the live tail, and changing agent snaps back to it.
 Arrows: left/right step between live agents. Up/down move the highlighted
 option when one is being offered, and scroll the focus view when none is.
 
+When any agent starts asking something the screen jumps to the focus view on
+it, once, on the edge -- navigate away and it will not drag you back. Its pad
+blinks red, which herdr's status alone would never tell you.
+
 When the current agent is asking something, the bottom row turns white and
 answers it instead of inserting macros.
 
@@ -36,7 +40,7 @@ typed in the prompt, or timestamped if that is empty.
 Stop Clip sends escape, which interrupts a working agent; it goes red while
 there is something to interrupt. Mute clears whatever is typed in the prompt
 and lights only when there is something to clear. Convert runs /compact, New runs /clear, Quantize opens
-/model -- which is a
+/model and Double Loop /effort -- which is a
 select widget, so the arrows and Play drive it. Delete closes the current
 agent's pane outright. It submits on press, unlike the macro
 row, because a button labelled Delete doing nothing until you press another
@@ -99,9 +103,12 @@ COMMAND_CCS = {
     35: ("convert", "/compact\r"),
     87: ("new", "/clear\r"),
     116: ("quantize", "/model\r"),
+    117: ("dbloop", "/effort\r"),   # like /model, a widget the arrows can drive
 }
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
+SWEEP_LINES = "40"                 # enough to spot a question at the foot of a pane
+SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
@@ -360,7 +367,7 @@ def turn(value):
     return value if value < 64 else value - 128
 
 
-def pane_summary(agent):
+def pane_summary(agent, depth=SCRAPE_LINES):
     """What this agent is doing, scraped from its rendered pane.
 
     herdr exposes status but not content, and the pane is the only place the
@@ -369,7 +376,7 @@ def pane_summary(agent):
         return {}
     try:
         raw = json.loads(herdr("agent", "read", agent["terminal_id"],
-                               "--lines", SCRAPE_LINES))
+                               "--lines", depth))
         lines = raw["result"]["read"]["text"].splitlines()
     except (json.JSONDecodeError, KeyError, OSError, subprocess.SubprocessError):
         return {}
@@ -388,6 +395,21 @@ def pane_summary(agent):
     pending = prompt_text(lines)
     return {"say": say, "act": act, "opts": opts, "sel": sel,
             "lines": body, "pending": "" if opts else pending}
+
+
+def sweep_questions(slots, by_id, current):
+    """Which slots are waiting on a human.
+
+    Not agent_status: an agent asking a prose question stays idle, so herdr
+    never reports it. Only the pane knows."""
+    asking = set()
+    for slot, tid in slots.items():
+        if slot == current or not tid:
+            continue
+        agent = by_id.get(tid)
+        if agent and pane_summary(agent, SWEEP_LINES).get("opts"):
+            asking.add(slot)
+    return asking
 
 
 def focus_info(slot, agent, summary, scroll=0):
@@ -499,6 +521,7 @@ def run():
     by_id, focused = {}, None
     shown, frame, view = None, None, 0
     current, summary, scroll, arming = 0, {}, 0, False
+    asking, next_sweep, was_asking = set(), 0.0, False
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -511,6 +534,8 @@ def run():
                 for s in range(SLOTS):
                     a = by_id.get(slots.get(s))
                     colour, anim = colour_for(a)
+                    if s in asking:
+                        colour, anim = RED, BLINK    # herdr cannot see this one
                     push.pad(s, *((RED, STATIC) if s == talk_slot else (colour, anim)))
                     push.cc("tab", s, TAB_CCS,
                             WHITE if s == view else (BLUE if s < len(VIEWS) else BLACK))
@@ -529,6 +554,22 @@ def run():
                 summary = pane_summary(cur)
                 opts = summary.get("opts") or []
                 target = slots.get(current) or focused
+
+                if now >= next_sweep:
+                    next_sweep = now + SWEEP_S
+                    asking = sweep_questions(slots, by_id, current)
+                if opts:
+                    asking.add(current)
+                else:
+                    asking.discard(current)
+
+                # jump on the edge only, so navigating away does not fight you
+                if asking and not was_asking:
+                    ask_slot = current if current in asking else sorted(asking)[0]
+                    current, view = ask_slot, VIEWS.index("focus")
+                    shown, scroll = None, 0
+                    print(f"question on slot {ask_slot} -> focus", flush=True)
+                was_asking = bool(asking)
 
                 if disp:
                     if VIEWS[view] == "focus":
