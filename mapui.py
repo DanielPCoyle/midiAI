@@ -82,7 +82,7 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
   </div>
 </aside>
 <script>
-let macros=[], labels=[], sel=null, from=null;
+let macros=[], labels=[], sel=null, from=null, cells=[];
 // Approximate only. The Push has its own 128-entry palette and the browser
 // cannot see it; these swatches are a guide, the index is the truth.
 const PALETTE=[["red",127,"#e03c3c"],["orange",3,"#e08a2c"],["yellow",8,"#e0d02c"],
@@ -91,7 +91,7 @@ const hexFor=c=>(PALETTE.find(p=>p[1]===c)||[,,"#4a86d0"])[2];
 const $=id=>document.getElementById(id);
 // note 36 is bottom-left on the Push, so the top screen row is the top pad row
 function draw(){
-  const g=$('grid'); g.innerHTML='';
+  const g=$('grid'); g.innerHTML=''; cells=[];
   for(let r=7;r>=0;r--) for(let c=0;c<8;c++){
     const i=r*8+c, m=macros[i], d=document.createElement('div');
     d.className='pad'+(m?' set':'')+(i===sel?' sel':'');
@@ -100,7 +100,7 @@ function draw(){
     if(m) d.style.borderLeft='4px solid '+hexFor(m.colour);
     // armed still selects: firing a pad and then wanting to edit it is the
     // common case, and having to disarm first would be a nuisance
-    d.onclick=()=>{ pick(i); if($('arm').checked) fire(i); };
+    d.onclick=()=>{ select(i); if($('arm').checked) fire(i); };
     d.draggable=!!m;                       // an empty pad has nothing to carry
     d.ondragstart=e=>{ from=i; d.classList.add('drag');
                        e.dataTransfer.effectAllowed='move'; };
@@ -108,7 +108,10 @@ function draw(){
     d.ondragover=e=>{ if(from!==null&&from!==i){ e.preventDefault(); d.classList.add('over'); } };
     d.ondragleave=()=>d.classList.remove('over');
     d.ondrop=e=>{ e.preventDefault(); if(from===null||from===i) return; swap(from,i); };
-    g.appendChild(d);
+    // hovering while armed moves the selection outright, so what the panel
+    // shows and what a save would write can never disagree
+    d.onmouseenter=()=>{ if($('arm').checked) select(i); };
+    cells[i]=d; g.appendChild(d);
   }
 }
 const escapeHtml=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -136,9 +139,16 @@ async function target(){
 }
 setInterval(target, 2000); target();
 
-function pick(i){ sel=i; const m=macros[i]||{label:'',text:''};
+function showPad(i){ const m=macros[i]||{label:'',text:''};
   $('cur').textContent=(36+i); $('label').value=m.label||''; $('text').value=m.text||'';
-  $('tag').value=m.tag||''; $('submit').checked=!!m.submit; draw(); }
+  $('tag').value=m.tag||''; $('submit').checked=!!m.submit; }
+
+// no redraw: rebuilding the grid under the cursor would fight the hover
+function select(i){
+  if(sel!==null && cells[sel]) cells[sel].classList.remove('sel');
+  sel=i; if(cells[i]) cells[i].classList.add('sel'); showPad(i); }
+
+function pick(i){ select(i); draw(); }
 
 function drawLabels(){
   const opts=['<option value="">(none)</option>'].concat(
