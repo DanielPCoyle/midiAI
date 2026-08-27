@@ -122,8 +122,8 @@ def ctx_bar(d, x, y, w, frac, h=3):
 # button and the button itself are the same colour. Unselected labels are the
 # same hue dimmed -- on the glass, unlike the buttons, a hue does have one.
 VIEW_RGB = {"focus": (235, 235, 240), "agents": (110, 150, 240),
-            "tests": (60, 220, 90), "macros": (240, 150, 50),
-            "prs": (240, 205, 60), "usage": (240, 80, 80)}
+            "tests": (60, 220, 90), "prs": (240, 205, 60),
+            "usage": (240, 80, 80)}
 
 
 def view_strip(img, names, current):

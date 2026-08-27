@@ -79,10 +79,12 @@ MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 # focus first: it is the one you actually watch, and view defaults to 0 so
 # it is also what comes up on start
-VIEWS = ["focus", "agents", "tests", "macros", "prs", "usage"]
+VIEWS = ["focus", "agents", "tests", "prs", "usage"]
 # a view with more than one mode: its own button cycles them, Left/Right too.
 # One button per subject beats two buttons for two halves of one question.
-VIEW_MODES = {"usage": 3}
+# the shortcuts grid is the focus view's second mode: it is the same subject
+# -- the session you are driving -- shown as what you can say to it
+VIEW_MODES = {"focus": 2, "usage": 3}
 SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
@@ -201,7 +203,7 @@ PALETTE = [("red", RED), ("orange", 3), ("yellow", YELLOW), ("green", GREEN),
 # twin to fall back on, and the label strip already boxes the one you are on.
 # display.VIEW_RGB carries the same assignment in screen colours; change both.
 VIEW_CC = {"focus": WHITE, "agents": BLUE, "tests": GREEN,
-           "macros": 3, "prs": YELLOW, "usage": RED}
+           "prs": YELLOW, "usage": RED}
 DEFAULT_LABELS = [{"name": "prompt", "colour": BLUE}]
 STATIC, PULSE, BLINK = 0, 9, 14
 
@@ -1671,7 +1673,7 @@ def run():
     chain, automating = None, False   # a row of pads queued at one agent
     strip_level, strip_touch = None, False  # uncommitted until the finger lifts
     moving = None        # None off, -1 waiting for a pad, >=0 the pad in hand
-    mode = 0             # which mode of the usage view; its own button walks them
+    view_mode = {}       # view name -> which of its modes; its own button walks them
     test_path, test_run, titems = [], None, []   # where you are in the tree
     # the exact text the last macro inserted. Compared rather than remembered
     # as a flag: type one character onto it and it stops matching, which is
@@ -1687,7 +1689,7 @@ def run():
             sub = subs[idx] if idx < len(subs) else None
             if sub:
                 subfocus = ((cur or {}).get("terminal_id"), sub["id"])
-                view, shown = VIEWS.index("focus"), None
+                show("focus", 0)
                 scrolls[current] = 0
                 print(f"confirmed -> focus subagent {nm!r}", flush=True)
         else:
@@ -1700,6 +1702,14 @@ def run():
             if current == slot:
                 current = step_slot(current, 1, slots)
         confirm, shown = None, None
+
+    def show(name, m=None):
+        """Go to a view, and to one of its modes when the reason to go there
+        is about a particular one."""
+        nonlocal view, shown
+        view, shown = VIEWS.index(name), None
+        if m is not None:
+            view_mode[name] = m
 
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
@@ -1798,8 +1808,8 @@ def run():
                 # jump on the edge only, so navigating away does not fight you
                 if asking and not was_asking and not pinned:
                     ask_slot = current if current in asking else sorted(asking)[0]
-                    current, view = ask_slot, VIEWS.index("focus")
-                    shown, scrolls[ask_slot] = None, 0
+                    current, scrolls[ask_slot] = ask_slot, 0
+                    show("focus", 0)
                     print(f"question on slot {ask_slot} -> focus", flush=True)
                 was_asking = bool(asking)
 
@@ -1833,6 +1843,7 @@ def run():
                 elif chain and chain.phase == "done" and now - chain.done_at > CONFIRM_S:
                     chain, shown = None, None   # let the screen go back to work
 
+                mode = view_mode.get(VIEWS[view], 0)
                 if disp:
                     if strip_level:
                         # outranks the chain: your finger is on the strip now
@@ -1860,6 +1871,11 @@ def run():
                         cinfo = chain.info(MACROS)
                         state = ("chain", repr(cinfo))
                         drawn = (lambda c=cinfo: disp_mod.render_chain(c))
+                    elif VIEWS[view] == "focus" and mode == 1:
+                        cols = tuple(MACROS)
+                        state = (view, "macros", cols, arming, moving)
+                        drawn = (lambda c=cols, a=arming, m=moving:
+                                 disp_mod.render_macros(c, a, m))
                     elif VIEWS[view] == "focus" and any(
                             subfocus and x["id"] == subfocus[1] for x in subs):
                         # the focus view, pointed at a subagent instead of the
@@ -1915,11 +1931,6 @@ def run():
                                              scope_packages(tpkgs, test_path, True))}
                         state = (view, repr(tinfo))
                         drawn = (lambda i=tinfo: disp_mod.render_tests(i))
-                    elif VIEWS[view] == "macros":
-                        cols = tuple(MACROS)
-                        state = (view, cols, arming, moving)
-                        drawn = (lambda c=cols, a=arming, m=moving:
-                                 disp_mod.render_macros(c, a, m))
                     else:
                         cols = tuple(panel_col(by_id.get(slots.get(s)))
                                      for s in range(SLOTS))
@@ -1995,7 +2006,7 @@ def run():
                 # their pads regardless: an armed chain, a pad in hand, Record
                 # held, and a question waiting are all live state, and a
                 # question in particular answers from wherever you are.
-                lit_macros = VIEWS[view] in ("focus", "macros")
+                lit_macros = VIEWS[view] == "focus"
                 testing = VIEWS[view] == "tests"
                 # the agents view puts the agents themselves on the pads. No
                 # answer-pad exception: a question drags you to the focus view
@@ -2064,7 +2075,8 @@ def run():
                     slot = ENC_TOUCH.index(msg.note)
                     touching = msg.type == "note_on" and msg.velocity
                     if touching and slots.get(slot):
-                        peek, view, shown = slot, VIEWS.index("focus"), None
+                        peek = slot
+                        show("focus", 0)
                     elif not touching and peek == slot:
                         peek, shown = None, None
                 elif msg.type in ("note_on", "note_off") and msg.note == STRIP_NOTE:
@@ -2110,14 +2122,17 @@ def run():
                       and msg.value):
                     i = TAB_CCS.index(msg.control)
                     if i < len(VIEWS):
-                        modes = VIEW_MODES.get(VIEWS[i], 1)
+                        name, modes = VIEWS[i], VIEW_MODES.get(VIEWS[i], 1)
                         # already here: the same button walks that view's modes,
-                        # so one button owns one subject however deep it goes
-                        mode = (mode + 1) % modes if i == view else mode % modes
+                        # so one button owns one subject however deep it goes.
+                        # Each view keeps its own place -- one counter shared
+                        # between them meant leaving one moved the other.
+                        if i == view:
+                            view_mode[name] = (view_mode.get(name, 0) + 1) % modes
                         view, shown = i, None       # force a redraw
-                        print(f"view -> {VIEWS[i]}" +
-                              (f" {mode + 1}/{modes}" if modes > 1 else ""),
-                              flush=True)
+                        print(f"view -> {name}" +
+                              (f" {view_mode.get(name, 0) + 1}/{modes}"
+                               if modes > 1 else ""), flush=True)
                 elif (msg.type == "control_change" and msg.control == ADD_DEVICE_CC
                       and msg.value):
                     where = (cur or {}).get("cwd") or os.getcwd()
@@ -2187,7 +2202,8 @@ def run():
                 elif (msg.type == "control_change" and msg.control == SELECT_CC
                       and msg.value):
                     if moving is None:
-                        moving, view = -1, VIEWS.index("macros")  # show the grid
+                        moving = -1
+                        show("focus", 1)                  # show the grid
                         print("move on -> tap a pad to pick it up", flush=True)
                     else:
                         moving = None
@@ -2198,7 +2214,7 @@ def run():
                     was, arming = arming, any(arm_held.values())
                     shown = None
                     if arming and not was:
-                        view = VIEWS.index("macros")   # show what you would overwrite
+                        show("focus", 1)      # show what you would overwrite
                 elif (msg.type == "control_change" and msg.control == BACK_CC
                       and msg.value and VIEWS[view] == "tests" and test_path):
                     test_path, shown = test_path[:-1], None
@@ -2212,9 +2228,10 @@ def run():
                           f"{len(chain.steps)} steps", flush=True)
                 elif (msg.type == "control_change" and msg.control in PICK_CCS
                       and msg.value and VIEW_MODES.get(VIEWS[view], 1) > 1):
-                    modes = VIEW_MODES[VIEWS[view]]
-                    mode, shown = (mode + PICK_CCS[msg.control]) % modes, None
-                    print(f"{VIEWS[view]} -> mode {mode + 1}/{modes}", flush=True)
+                    name, modes = VIEWS[view], VIEW_MODES[VIEWS[view]]
+                    at = (view_mode.get(name, 0) + PICK_CCS[msg.control]) % modes
+                    view_mode[name], shown = at, None
+                    print(f"{name} -> mode {at + 1}/{modes}", flush=True)
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
                       and msg.value and target):
                     herdr("agent", "send", target, ARROW_CCS[msg.control])
@@ -2276,7 +2293,7 @@ def run():
                     # just does not land.
                     automating, shown = not automating, None
                     if automating:
-                        view = VIEWS.index("macros")   # the rows to choose from
+                        show("focus", 1)               # the rows to choose from
                         print("automate on -> tap a pad to arm its row",
                               flush=True)
                     else:

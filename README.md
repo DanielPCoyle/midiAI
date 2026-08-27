@@ -14,7 +14,7 @@ without touching the keyboard.
 | **Play** | CC 85 | enter — submits, to the focused agent · runs an armed chain |
 | **Automate** | CC 89 | hold, tap a pad: arms that pad's row as a chain |
 | **Touchstrip** | pitchbend | slide to set reasoning effort, `low` → `max` |
-| **Buttons above screen** | CC 102–109 | pick a view — labelled on the screen above it; press the one you are on to walk its modes |
+| **Buttons above screen** | CC 102–109 | pick a view — each with its own colour, named on the screen above it; press the one you are on to walk its modes |
 | **Buttons below screen** | CC 20–27 | the sessions: tap = focus · hold = talk · named on the screen above them |
 | **Solo** | CC 61 | pin: stop the surface following herdr's focus, and stop questions pulling it |
 
@@ -37,6 +37,12 @@ Pad colour follows herdr's `agent_status`:
 
 960×160, and not MIDI — a bulk USB endpoint of its own (`0x2982:0x1967`,
 interface 0, endpoint `0x01`).
+
+**focus** is one session, full width: its TLDR at rest, the raw pane when you
+scroll, the question and its options when it asks one. Its second mode is the
+shortcuts grid — the same subject, the session you are driving, shown as what
+you can say to it. Record, Select and Automate all put you there, because
+that is the mode their pads live in.
 
 **agents** names every column: repo, status, model, and a tail of the terminal
 id. That last one earns its space — two checkouts of one repo show the same
