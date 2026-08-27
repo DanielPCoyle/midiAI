@@ -118,6 +118,14 @@ def ctx_bar(d, x, y, w, frac, h=3):
         d.rectangle([x, y, x + max(1, int(w * frac)), y + h], fill=hue)
 
 
+# The screen half of push_cc.VIEW_CC: one hue per view, so the label above a
+# button and the button itself are the same colour. Unselected labels are the
+# same hue dimmed -- on the glass, unlike the buttons, a hue does have one.
+VIEW_RGB = {"focus": (235, 235, 240), "agents": (110, 150, 240),
+            "tests": (60, 220, 90), "macros": (240, 150, 50),
+            "prs": (240, 205, 60), "usage": (240, 80, 80)}
+
+
 def view_strip(img, names, current):
     """names: list of view names, in button order, up to 8 (e.g.
               ["focus", "agents", "usage", "plan", "macros"])
@@ -142,7 +150,8 @@ def view_strip(img, names, current):
             d.rectangle([x, 0, x + COL_W - 1, STRIP_H - 1], fill=(48, 70, 96))
         s, f = fit(d, name, COL_W - 8, 12)
         tw = d.textlength(s, font=f)
-        colour = (230, 235, 240) if active else (100, 100, 100)
+        rgb = VIEW_RGB.get(name, (200, 200, 200))
+        colour = rgb if active else tuple(int(c * 0.42) for c in rgb)
         d.text((x + (COL_W - tw) / 2, (STRIP_H - f.size) / 2 - 1), s, font=f,
                fill=colour)
     return img

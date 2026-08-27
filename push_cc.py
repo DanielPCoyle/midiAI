@@ -189,16 +189,19 @@ BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
 DIM, BRIGHT = 20, 127
 BLUE = 125  # ponytail: not in the spec's guaranteed set; worst case it is the
             # wrong hue, which costs nothing. Swap if it reads badly.
-# The view picker marks its selection by brightness, not hue. Blue for the
-# unselected ones lost: 125 is a saturated (0,0,255) and 122 a grey-white
-# (204,204,204), so through the small slots above the display the ones you had
-# not chosen were the ones that stood out.
 TAB_DIM = 124   # (20,20,20): present, clearly not the one
 
 # Palette indices the Push 2 spec guarantees, plus the blue above. Any 0-127
 # index works on the hardware; these are the ones worth offering by name.
 PALETTE = [("red", RED), ("orange", 3), ("yellow", YELLOW), ("green", GREEN),
            ("blue", BLUE), ("white", WHITE)]
+# A hue per view, on its button and on its label -- six views, and six palette
+# indices this hardware is known to render honestly. Selection is the
+# animation rather than the brightness: an arbitrary palette index has no dim
+# twin to fall back on, and the label strip already boxes the one you are on.
+# display.VIEW_RGB carries the same assignment in screen colours; change both.
+VIEW_CC = {"focus": WHITE, "agents": BLUE, "tests": GREEN,
+           "macros": 3, "prs": YELLOW, "usage": RED}
 DEFAULT_LABELS = [{"name": "prompt", "colour": BLUE}]
 STATIC, PULSE, BLINK = 0, 9, 14
 
@@ -1736,8 +1739,9 @@ def run():
                         colour, anim = WHITE, STATIC  # the one you are driving
                     push.cc("session", s, SESSION_CCS, colour, anim)
                     push.cc("tab", s, TAB_CCS,
-                            WHITE if s == view else
-                            (TAB_DIM if s < len(VIEWS) else BLACK))
+                            VIEW_CC.get(VIEWS[s], TAB_DIM)
+                            if s < len(VIEWS) else BLACK,
+                            PULSE if s == view else STATIC)
                 # the legend for the eight buttons under the glass
                 seats = tuple((agent_name(a), a.get("agent_status"))
                               if (a := by_id.get(slots.get(s))) else None
@@ -2518,6 +2522,10 @@ def selftest():
     del _model_tok["/fake"]
     assert len(VIEWS) <= len(TAB_CCS), "a button per view"
     assert set(VIEW_MODES) <= set(VIEWS), "a mode count for a view that is gone"
+    import display as _disp
+    assert set(VIEW_CC) == set(VIEWS) == set(_disp.VIEW_RGB), \
+        "every view names a button colour and a label colour"
+    assert len(set(VIEW_CC.values())) == len(VIEW_CC), "two views, one hue"
 
     # subagents live on disk: their log is what they said, and the parent's
     # transcript is the only thing that says whether one has come back
