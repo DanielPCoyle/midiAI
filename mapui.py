@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Edit the Push's 64 shortcut pads in a browser. Writes the real macros.json,
-which push_cc.py re-reads on change, so edits land on the pads live.
+"""The midiAI API for the Push 2: macros.json read/write, the live surface
+mirror, and pad firing. The editor UI itself is the Expo app in ./app --
+this file only serves the data it needs.
 
-    python3 mapui.py        then open http://localhost:8765
+    python3 mapui.py        then, in app/, npx expo start
+    python3 mapui.py --lan  binds 0.0.0.0 so an iPad on the LAN can reach it
 """
+import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
-import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import push_cc
@@ -58,257 +61,13 @@ def relaunch():
     time.sleep(2.5)
     return push_state()
 
-PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
-<style>
- :root{color-scheme:dark}
- body{background:#0b0b0d;color:#e6e6e6;font:14px/1.4 ui-monospace,Menlo,monospace;
-      margin:0;padding:24px;display:flex;gap:24px;flex-wrap:wrap}
- h1{font-size:15px;font-weight:600;margin:0 0 14px;color:#9aa}
- #grid{display:grid;grid-template-columns:repeat(8,88px);gap:6px}
- .pad{height:52px;border:1px solid #2a2a30;border-radius:6px;background:#141419;
-      padding:5px 6px;cursor:pointer;overflow:hidden;font-size:11px;color:#cfd6e4}
- .pad:hover{border-color:#4a4a58}
- .pad.set{background:#16202e;border-color:#3d5a80}
- .pad.sel{outline:2px solid #7aa2d2;outline-offset:1px}
- .pad.over{border-color:#7aa2d2;background:#1d2733}
- .pad.drag{opacity:.35}
- .pad[draggable=true]{user-select:none}
- .n{color:#555c66;font-size:9px}
- aside{width:330px}
- label{display:block;margin:12px 0 4px;color:#9aa;font-size:12px}
- input,textarea{width:100%;box-sizing:border-box;background:#141419;color:#e6e6e6;
-   border:1px solid #2a2a30;border-radius:5px;padding:7px;font:inherit}
- textarea{height:120px;resize:vertical}
- button{margin-top:12px;margin-right:8px;background:#3d5a80;color:#fff;border:0;
-   border-radius:5px;padding:8px 14px;font:inherit;cursor:pointer}
- button.ghost{background:#2a2a30}
- #msg{margin-top:10px;color:#7fb37f;height:16px;font-size:12px}
- #bar{display:flex;align-items:center;gap:10px;margin-bottom:14px;font-size:12px}
- #bar input{width:auto}
- #live{padding:3px 8px;border-radius:4px;background:#20262e;color:#8a93a0}
- #live.on{background:#3a2020;color:#e08a8a}
- body.armed .pad{cursor:crosshair}
- body.armed .pad.set:hover{border-color:#e08a8a;background:#241a1a}
- .row{display:flex;align-items:center;gap:8px;margin-top:12px}
- .row input{width:auto}
- .row label{margin:0}
- /* the mirror: the Push's own screen, with its two button rows where they
-    physically sit -- above the glass and below it */
- #push{width:746px;margin-bottom:18px}
- /* the frame is the whole 960x160, label bands and all; the crop hides them
-    because the rows above and below are those labels, as buttons. Sized from
-    the band heights the surface reports, so it cannot drift from display.py */
- #glass{width:746px;overflow:hidden;background:#000;border-radius:3px;
-        aspect-ratio:960/136}
- #screen{width:100%;display:block;margin-top:-1.25%}
- .btnrow{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin:4px 0}
- .btn{height:22px;border:1px solid #24242a;border-radius:4px;background:#101014;
-      font:10px/20px ui-monospace,Menlo,monospace;text-align:center;cursor:pointer;
-      overflow:hidden;white-space:nowrap;padding:0 2px;color:#6b6b74}
- .btn:hover{border-color:#4a4a58}
- .btn.on{border-color:currentColor;background:#1b1b22}
- .btn.off{cursor:default;color:#33333a}
-</style>
-<div>
-<h1>The Push's screen &mdash; live
-  <span class=n style="margin-left:10px">the buttons sit where they sit on the
-  hardware &middot; click one and the Push follows</span></h1>
-<div id=push>
-  <div id=tabs class=btnrow></div>
-  <div id=glass><img id=screen alt="Push display"></div>
-  <div id=seats class=btnrow></div>
-</div>
-<div id=bar>
-  <input type=checkbox id=arm onchange=arm()>
-  <label for=arm>Run on click</label>
-  <span id=live>no session</span>
-  <button id=reconn onclick=reconnect() style="margin:0;padding:4px 10px">Reconnect Push</button>
-  <span id=pushstate class=n></span>
-  <span class=n>clicking always selects for editing &middot; armed, it also fires at the Push's session</span>
-</div>
-<h1>Shortcut pads &mdash; laid out as they sit on the Push
-  <span class=n style="margin-left:10px">drag a pad onto another to swap them</span></h1>
-<div id=grid></div></div>
-<aside>
-  <h1>Pad <span id=cur>-</span></h1>
-  <label>Label <span class=n>(shown on the Push screen)</span></label>
-  <input id=label maxlength=24>
-  <label>Text <span class=n>(inserted into the prompt)</span></label>
-  <textarea id=text></textarea>
-  <label>Colour label</label>
-  <select id=tag></select>
-  <div class=row>
-    <input type=checkbox id=submit>
-    <label for=submit>Auto submit <span class=n>(press enter on tap)</span></label>
-  </div>
-  <button onclick=save()>Save</button>
-  <button class=ghost onclick=clearPad()>Clear pad</button>
-  <div id=msg></div>
 
-  <h1 style="margin-top:22px">Colour labels</h1>
-  <div id=labels></div>
-  <div style="display:flex;gap:6px;margin-top:8px">
-    <input id=lname placeholder="name" style="flex:1">
-    <select id=lcol></select>
-    <button onclick=addLabel() style="margin:0">Add</button>
-  </div>
-</aside>
-<script>
-let macros=[], labels=[], sel=null, from=null, cells=[];
-// Approximate only. The Push has its own 128-entry palette and the browser
-// cannot see it; these swatches are a guide, the index is the truth.
-const PALETTE=[["red",127,"#e03c3c"],["orange",3,"#e08a2c"],["yellow",8,"#e0d02c"],
-               ["green",126,"#3cd05a"],["blue",125,"#4a86d0"],["white",122,"#e6e6e6"]];
-const hexFor=c=>(PALETTE.find(p=>p[1]===c)||[,,"#4a86d0"])[2];
-const $=id=>document.getElementById(id);
-// note 36 is bottom-left on the Push, so the top screen row is the top pad row
-function draw(){
-  const g=$('grid'); g.innerHTML=''; cells=[];
-  for(let r=7;r>=0;r--) for(let c=0;c<8;c++){
-    const i=r*8+c, m=macros[i], d=document.createElement('div');
-    d.className='pad'+(m?' set':'')+(i===sel?' sel':'');
-    d.innerHTML='<div class=n>'+(36+i)+(m&&m.submit?' <span style=color:#6eaa6e>\u23ce</span>':'')
-                +'</div>'+(m?escapeHtml(m.label):'');
-    if(m) d.style.borderLeft='4px solid '+hexFor(m.colour);
-    // armed still selects: firing a pad and then wanting to edit it is the
-    // common case, and having to disarm first would be a nuisance
-    d.onclick=()=>{ select(i); if($('arm').checked) fire(i); };
-    d.draggable=!!m;                       // an empty pad has nothing to carry
-    d.ondragstart=e=>{ from=i; d.classList.add('drag');
-                       e.dataTransfer.effectAllowed='move'; };
-    d.ondragend=()=>{ from=null; draw(); };
-    d.ondragover=e=>{ if(from!==null&&from!==i){ e.preventDefault(); d.classList.add('over'); } };
-    d.ondragleave=()=>d.classList.remove('over');
-    d.ondrop=e=>{ e.preventDefault(); if(from===null||from===i) return; swap(from,i); };
-    // hovering while armed moves the selection outright, so what the panel
-    // shows and what a save would write can never disagree
-    d.onmouseenter=()=>{ if($('arm').checked) select(i); };
-    cells[i]=d; g.appendChild(d);
-  }
-}
-const escapeHtml=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-// Swap rather than overwrite: dropping onto an occupied pad must never be a
-// way to lose what was already there.
-function swap(a,b){
-  const t=macros[a]; macros[a]=macros[b]; macros[b]=t;
-  if(sel===a) sel=b; else if(sel===b) sel=a;
-  from=null; put(); }
-
-function arm(){ document.body.classList.toggle('armed', $('arm').checked); }
-async function fire(i){
-  if(!macros[i]) return;
-  const r=await fetch('/fire',{method:'POST',body:JSON.stringify({index:i})});
-  const t=await r.text();
-  note(r.ok?('sent \u2014 '+t):('not sent \u2014 '+t)); }
-
-async function target(){
-  try{
-    const t=await (await fetch('/target')).json();
-    const el=$('live');
-    el.textContent = t.name ? (t.name+(t.status?' \u00b7 '+t.status:'')) : 'no session';
-    el.className = t.name ? 'on' : '';
-    const p=$('pushstate');
-    p.textContent = t.why || '';
-    p.style.color = t.ok ? '#6eaa6e' : '#e08a8a';
-  }catch(e){}
-}
-async function reconnect(){
-  const b=$('reconn'); b.disabled=true; b.textContent='Reconnecting\u2026';
-  try{
-    const r=await fetch('/relaunch',{method:'POST'});
-    const s=await r.json();
-    note(s.ok ? 'reconnected' : ('still down \u2014 '+s.why));
-  }catch(e){ note('relaunch failed'); }
-  b.disabled=false; b.textContent='Reconnect Push'; target(); }
-setInterval(target, 2000); target();
-
-function showPad(i){ const m=macros[i]||{label:'',text:''};
-  $('cur').textContent=(36+i); $('label').value=m.label||''; $('text').value=m.text||'';
-  $('tag').value=m.tag||''; $('submit').checked=!!m.submit; }
-
-// no redraw: rebuilding the grid under the cursor would fight the hover
-function select(i){
-  if(sel!==null && cells[sel]) cells[sel].classList.remove('sel');
-  sel=i; if(cells[i]) cells[i].classList.add('sel'); showPad(i); }
-
-function pick(i){ select(i); draw(); }
-
-function drawLabels(){
-  const opts=['<option value="">(none)</option>'].concat(
-    labels.map(l=>'<option value="'+escapeHtml(l.name)+'">'+escapeHtml(l.name)+'</option>'));
-  $('tag').innerHTML=opts.join('');
-  $('lcol').innerHTML=PALETTE.map(p=>'<option value="'+p[1]+'">'+p[0]+'</option>').join('');
-  $('labels').innerHTML=labels.map((l,i)=>
-    '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">'+
-    '<span style="width:14px;height:14px;border-radius:3px;background:'+hexFor(l.colour)+'"></span>'+
-    '<span style="flex:1">'+escapeHtml(l.name)+'</span>'+
-    '<button class=ghost style="margin:0;padding:2px 8px" onclick="delLabel('+i+')">x</button></div>'
-  ).join('') || '<span class=n>none yet</span>';
-}
-function addLabel(){
-  const name=$('lname').value.trim(); if(!name) return note('name it first');
-  if(labels.some(l=>l.name===name)) return note('that name is taken');
-  labels.push({name,colour:+$('lcol').value}); $('lname').value=''; put(); }
-function delLabel(i){
-  const gone=labels[i].name;
-  labels.splice(i,1);
-  macros.forEach(m=>{ if(m&&m.tag===gone){ m.tag=null; } });   // no orphan tags
-  put(); }
-async function save(){
-  if(sel===null) return note('pick a pad first');
-  const text=$('text').value.trim();
-  const tag=$('tag').value||null;
-  const lab=labels.find(l=>l.name===tag);
-  macros[sel]= text ? {label:($('label').value.trim()||text.split(/\\s+/).slice(0,2).join(' ')),
-                       text, tag, colour: lab?lab.colour:125,
-                       submit: $('submit').checked} : null;
-  await put(); }
-async function clearPad(){ if(sel===null) return note('pick a pad first');
-  macros[sel]=null; $('label').value=''; $('text').value=''; await put(); }
-async function put(){
-  const r=await fetch('/macros',{method:'POST',
-    body:JSON.stringify({labels,pads:macros})});
-  note(r.ok?'saved \\u2014 live on the Push':'save failed'); draw(); drawLabels(); }
-function note(t){ $('msg').textContent=t; setTimeout(()=>$('msg').textContent='',2500); }
-// The mirror draws nothing of its own: push_cc saves the frame it just sent
-// to the Push, and this shows that file. Two drawings of one screen would
-// drift the day someone edits only one of them.
-const SEAT_RGB={idle:'#3cd05a',working:'#f0c828',blocked:'#f03c3c'};
-let seen=null;
-function press(what){ fetch('/press',{method:'POST',body:JSON.stringify(what)}); }
-function drawSurface(s){
-  const rgb=c=>'rgb('+c.join(',')+')';
-  if(s.bands&&s.size){                     // crop the label bands off the top
-    const [t,b]=s.bands, [w,h]=s.size;     // and bottom: the buttons say it
-    $('glass').style.aspectRatio=w+'/'+(h-t-b);
-    $('screen').style.marginTop=(-100*t/w)+'%';
-  }
-  $('tabs').innerHTML=s.views.map((v,i)=>{
-    const on=i===s.view, m=s.modes[i]>1?' '+((s.at||[])[i]+1||1)+'/'+s.modes[i]:'';
-    return '<div class="btn'+(on?' on':'')+'" style="color:'+rgb(s.colours[i])+
-           (on?'':';opacity:.55')+'" onclick="press({tab:'+i+'})">'+
-           escapeHtml(v)+m+'</div>';
-  }).concat(Array(8-s.views.length).fill('<div class="btn off"></div>')).join('');
-  $('seats').innerHTML=s.seats.map((seat,i)=>{
-    if(!seat) return '<div class="btn off">'+(i+1)+'</div>';
-    const on=i===s.current;
-    return '<div class="btn'+(on?' on':'')+'" style="color:'+
-           (SEAT_RGB[seat[1]]||'#8a8a92')+(on?'':';opacity:.6')+
-           '" onclick="press({seat:'+i+'})">'+escapeHtml(seat[0])+'</div>';
-  }).join('');
-}
-async function mirror(){
-  try{
-    const s=await (await fetch('/surface')).json();
-    if(!s.views) return;
-    if(s.stamp!==seen){ seen=s.stamp;
-      $('screen').src='/frame.png?t='+s.stamp; drawSurface(s); }
-  }catch(e){}
-}
-mirror(); setInterval(mirror,400);
-fetch('/macros').then(r=>r.json()).then(d=>{
-  labels=d.labels||[]; macros=d.pads||[]; draw(); drawLabels(); });
-</script>"""
+API_NOTE = (
+    "midiAI API for the Push 2.\n"
+    "\n"
+    "The UI is the Expo app in ./app -- run `npx expo start` there and open\n"
+    "it in Expo Go on the iPad, or `npx expo start --web` for a browser.\n"
+)
 
 
 def read_target():
@@ -321,11 +80,17 @@ def read_target():
 
 
 class Handler(BaseHTTPRequestHandler):
+    # the app runs from Metro or Expo Go, never this origin, so every
+    # response needs this or the browser build just can't read it
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+
     def _send(self, code, body, ctype):
         body = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
@@ -334,8 +99,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self._cors()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self):
         if self.path.startswith("/frame.png"):
@@ -358,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"labels": labels, "pads": macros}),
                        "application/json")
         else:
-            self._send(200, PAGE, "text/html; charset=utf-8")
+            self._send(200, API_NOTE, "text/plain")
 
     def do_POST(self):
         if self.path == "/fire":
@@ -429,8 +203,28 @@ class Handler(BaseHTTPRequestHandler):
         pass                                   # ponytail: no request spam
 
 
+def local_ip():
+    """The LAN-facing address, without sending anything: connect() on a UDP
+    socket just picks a route and never puts a packet on the wire."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
 if __name__ == "__main__":
-    url = f"http://localhost:{PORT}"
-    print(f"editing {push_cc.MACRO_FILE}\n{url}")
-    webbrowser.open(url)
-    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--lan", action="store_true",
+                        help="bind 0.0.0.0 so an iPad on the LAN can reach this")
+    args = parser.parse_args()
+    host = "0.0.0.0" if args.lan else "127.0.0.1"
+    print(f"serving {push_cc.MACRO_FILE}")
+    if args.lan:
+        print(f"http://{local_ip()}:{PORT}  <- point the iPad's Expo Go here")
+        print("WARNING: bound to the LAN. Anything on this network can now "
+              "type into the agent sessions this drives.")
+    else:
+        print(f"http://localhost:{PORT}")
+    HTTPServer((host, PORT), Handler).serve_forever()

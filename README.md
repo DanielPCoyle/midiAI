@@ -72,23 +72,36 @@ walked with its own view button or Left/Right: the plan's own limit bars, then
 tokens by model, then output and context tokens per agent. Tokens, not money:
 an invented cost is worse than no cost.
 
-## The browser mirror
+## The app
 
-`mapui.py` shows the Push's screen live, with the two button rows where they
-physically sit — the view picker above the glass, the sessions below it — and
-clicking one presses it. The mirror renders nothing of its own: push_cc saves
-the frame it just sent to the Push and the page shows that file. Two drawings
-of one screen drift apart the day someone edits only one of them.
+The UI is a React Native app (Expo) in `app/`, laid out for an iPad in
+landscape: the Push's own screen across the top with its two button rows where
+they physically sit, the 64 pads below it, and the pad editor down the right.
+Everything on it drives the real controller — tapping a view button here
+presses that button there.
 
-The two label bands are cropped out of the mirror — the rows above and below
-the glass *are* those labels, as buttons, and the page should not say a thing
-twice. The crop is sized from the band heights the surface reports, so it
-cannot drift from display.py.
+The screen is mirrored, not re-drawn. `push_cc.py` saves the frame it just
+sent to the Push and the app shows that image: two drawings of one screen
+drift apart the day someone edits only one of them. Its two label bands are
+cropped off, because the rows above and below the glass *are* those labels, as
+buttons. A tap comes back through a file the poll loop already watches and
+lands in `tap_tab` / `tap_seat`, the same functions a physical press lands in,
+so the two cannot come to mean different things.
 
-A click goes back through the same file the poll loop already watches, so it
-lands where a physical press lands — a click and a press cannot come to mean
-two different things. It keeps working with the screen unplugged: the
-renderers are pure PIL and only `disp.show()` needs the device.
+    python3 mapui.py --lan          on the Mac: the API, reachable on the LAN
+    cd app && npx expo start        then open it in Expo Go on the iPad
+
+`--lan` is the part to be deliberate about: this endpoint types into live
+Claude Code sessions, so anything on that network can too. Without it the
+server stays on 127.0.0.1 and only `npx expo start --web` — the same app in a
+browser on the Mac — can reach it.
+
+The iPad does not have to be told where the Mac is. Expo Go loads the bundle
+from it, so `Constants.expoConfig.hostUri` already holds the address; the host
+field at the top is only there for when that guess is wrong.
+
+It keeps working with the Push's screen unplugged: the renderers are pure PIL
+and only `disp.show()` needs the device.
 
 ## Run
 
@@ -199,6 +212,10 @@ the whole record/transcribe/submit path and there is no seam to read it first.
     brew install sox libusb
     python3 -m venv .venv
     .venv/bin/pip install mido python-rtmidi pyusb pillow numpy
+
+The app, once:
+
+    cd app && npm install
 
 `voiceEnabled: true` in `~/.claude/settings.json`. No `keybindings.json` — we
 drive `space`, which is Claude's stock binding, so every session already has
