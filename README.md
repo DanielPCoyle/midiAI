@@ -100,6 +100,21 @@ The iPad does not have to be told where the Mac is. Expo Go loads the bundle
 from it, so `Constants.expoConfig.hostUri` already holds the address; the host
 field at the top is only there for when that guess is wrong.
 
+The header says *why*, not just whether. `push_state` in `mapui.py` already
+knows the difference between push_cc being down, the Push being off USB, and
+the Push sitting in Live mode, so the app prints that sentence — the light it
+replaced went green whenever a surface file existed on disk, which a dead
+push_cc leaves behind. **reconnect**, beside it, restarts push_cc: the one
+move that fixes all three. It lights up the moment there is something to fix
+and greys out when the API itself is what is missing, because nothing can
+restart a server that is not running.
+
+Every control that is not a pad is drawn as one of the Push's own buttons: a
+matte near-black key with a thin LED bar low on its face, dark when the button
+is off and glowing its colour when it is on. The hardware puts the light there
+rather than in the button, so the row above the screen reads the same whether
+you are looking at the desk or at the iPad.
+
 It keeps working with the Push's screen unplugged: the renderers are pure PIL
 and only `disp.show()` needs the device.
 

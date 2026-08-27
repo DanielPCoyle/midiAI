@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
-  Pressable,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -11,11 +10,12 @@ import {
   View,
 } from 'react-native';
 
-import { baseFor, defaultHost, getJSON, post } from './src/api';
+import { baseFor, defaultHost, getJSON, PORT, post } from './src/api';
 import Inspector from './src/Inspector';
 import PadGrid from './src/PadGrid';
+import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
-import { C, S, SEAT_HEX } from './src/theme';
+import { C, KEY, S, SEAT_HEX } from './src/theme';
 
 const SURFACE_MS = 400; // the screen mirror; anything slower reads as laggy
 const TARGET_MS = 2500; // which session is selected, and whether push_cc is up
@@ -24,11 +24,13 @@ export default function App() {
   const [host, setHost] = useState(defaultHost);
   const [surface, setSurface] = useState({});
   const [target, setTarget] = useState({});
+  const [api, setApi] = useState(true); // did mapui.py answer at all
   const [macros, setMacros] = useState([]);
   const [labels, setLabels] = useState([]);
   const [sel, setSel] = useState(null);
   const [moving, setMoving] = useState(null);
   const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [ready, setReady] = useState(false);
   const base = baseFor(host);
@@ -37,7 +39,7 @@ export default function App() {
   const say = useCallback((text) => {
     setNote(text);
     clearTimeout(noteAt.current);
-    noteAt.current = setTimeout(() => setNote(''), 2500);
+    noteAt.current = setTimeout(() => setNote(''), 3000);
   }, []);
 
   const loadMacros = useCallback(async () => {
@@ -80,9 +82,13 @@ export default function App() {
     const tick = async () => {
       try {
         const t = await getJSON(base, '/target');
-        if (live) setTarget(t || {});
+        if (!live) return;
+        setTarget(t || {});
+        setApi(true);
       } catch (e) {
-        if (live) setTarget({});
+        if (!live) return;
+        setTarget({});
+        setApi(false);
       }
     };
     tick();
@@ -92,6 +98,13 @@ export default function App() {
       clearInterval(id);
     };
   }, [base]);
+
+  // The pads load once, and used to stay a spinner forever if the API happened
+  // to be down at that moment. `target` is a fresh object every tick, so this
+  // retries on the poll clock and stops the moment they land.
+  useEffect(() => {
+    if (api && !ready) loadMacros();
+  }, [api, ready, target, loadMacros]);
 
   const putMacros = useCallback(
     async (pads, labs) => {
@@ -111,6 +124,26 @@ export default function App() {
     (what) => post(base, '/press', what).catch(() => say('the Push did not answer')),
     [base, say]
   );
+
+  // push_cc holds the MIDI and USB handles, so reconnecting means restarting
+  // it -- mapui.py already does that, and answers with why the Push is or is
+  // not talking rather than just whether it is.
+  const reconnect = useCallback(async () => {
+    setBusy(true);
+    say('restarting push_cc…');
+    try {
+      const state = JSON.parse(await post(base, '/relaunch', {}));
+      setTarget((prev) => ({ ...prev, ...state }));
+      setApi(true);
+      say(state.why || 'restarted');
+      loadMacros();
+    } catch (e) {
+      setApi(false);
+      say(`no answer from ${host}:${PORT}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [base, host, loadMacros, say]);
 
   // One tap, three meanings, in the order that cannot surprise you: a pad in
   // your hand lands, an armed pad fires, and otherwise you are just picking
@@ -173,7 +206,13 @@ export default function App() {
     [labels, macros, putMacros]
   );
 
-  const live = !!surface.views;
+  // Three states, not two. A surface file left on disk by a push_cc that has
+  // since died would keep an "is it live" light green forever, so the answer
+  // comes from push_state -- which also knows the difference between the
+  // process being down, the Push being off USB, and it sitting in Live mode.
+  const live = api && !!target.ok;
+  const why = api ? target.why || 'waiting for push_cc' : `no answer from ${host}:${PORT}`;
+  const dot = live ? SEAT_HEX.idle : api ? SEAT_HEX.blocked : C.faint;
   const seat = target.name ? `${target.name} · ${target.status || '?'}` : 'no session';
 
   return (
@@ -181,28 +220,47 @@ export default function App() {
       <StatusBar barStyle="light-content" />
       <View style={styles.header}>
         <Text style={styles.title}>midiAI</Text>
-        <View style={[styles.dot, { backgroundColor: live ? SEAT_HEX.idle : C.faint }]} />
-        <Text style={styles.seat}>{seat}</Text>
 
-        <Pressable
-          onPress={() => setArmed((a) => !a)}
-          style={[styles.toggle, armed && styles.toggleOn]}>
-          <Text style={[styles.toggleText, armed && styles.toggleTextOn]}>
-            {armed ? 'tap fires the pad' : 'tap selects only'}
+        <View style={styles.status}>
+          <View style={[styles.dot, { backgroundColor: dot }]} />
+          <Text style={[styles.why, !live && styles.whyBad]} numberOfLines={1}>
+            {why}
           </Text>
-        </Pressable>
-        <Pressable
+          <Text style={styles.seat} numberOfLines={1}>
+            {seat}
+          </Text>
+        </View>
+
+        <PushButton
+          label={armed ? 'tap fires the pad' : 'tap selects only'}
+          colour={SEAT_HEX.blocked}
+          lit={armed}
+          onPress={() => setArmed((a) => !a)}
+          style={styles.key}
+        />
+        <PushButton
+          label={moving === null ? 'move' : moving < 0 ? 'pick one up' : 'tap where it goes'}
+          colour={SEAT_HEX.idle}
+          lit={moving !== null}
           onPress={() => {
             setMoving(moving === null ? -1 : null);
             say(moving === null ? 'tap a pad to pick it up' : 'move off');
           }}
-          style={[styles.toggle, moving !== null && styles.toggleMove]}>
-          <Text style={[styles.toggleText, moving !== null && styles.toggleTextOn]}>
-            {moving === null ? 'move' : moving < 0 ? 'pick one up' : 'tap where it goes'}
-          </Text>
-        </Pressable>
+          style={styles.key}
+        />
 
         <View style={styles.spacer} />
+
+        <PushButton
+          label="reconnect"
+          colour={C.accentText}
+          lit={api && !live}
+          disabled={busy || !api}
+          onPress={reconnect}
+          style={styles.key}>
+          {busy ? <ActivityIndicator size="small" color={C.accentText} /> : null}
+        </PushButton>
+
         <Text style={styles.hostLabel}>push_cc at</Text>
         <TextInput
           value={host}
@@ -213,7 +271,6 @@ export default function App() {
           placeholder="host or ip"
           placeholderTextColor={C.faint}
         />
-        <Text style={[styles.note, note ? styles.noteOn : null]}>{note}</Text>
       </View>
 
       <View style={styles.mirror}>
@@ -238,7 +295,7 @@ export default function App() {
             <View style={styles.waiting}>
               <ActivityIndicator color={C.accentText} />
               <Text style={styles.waitingText}>
-                no answer from {host}:8765 — start it with{' '}
+                no answer from {host}:{PORT} — start it with{' '}
                 <Text style={styles.mono}>python3 mapui.py --lan</Text>
               </Text>
             </View>
@@ -249,7 +306,6 @@ export default function App() {
             index={sel}
             pad={sel === null ? null : macros[sel] || null}
             labels={labels}
-            note={note}
             onSave={savePad}
             onClear={clearPad}
             onAddLabel={addLabel}
@@ -257,6 +313,15 @@ export default function App() {
           />
         </View>
       </View>
+
+      {/* one place for every transient message -- it used to be a reserved
+          strip in the header, furthest from the pads and the editor that
+          produce them */}
+      {!!note && (
+        <View style={styles.toastWrap}>
+          <Text style={styles.toast}>{note}</Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -271,36 +336,38 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   title: { color: C.text, fontSize: 17, fontWeight: '600' },
-  dot: { width: 9, height: 9, borderRadius: 5, marginLeft: 6 },
-  seat: { color: C.dim, fontSize: 13 },
-  spacer: { flex: 1 },
-  toggle: {
-    borderWidth: 1,
-    borderColor: C.line,
-    borderRadius: S.radius,
+  status: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: S.control,
     paddingHorizontal: 12,
-    height: 34,
-    justifyContent: 'center',
-    backgroundColor: C.panel,
+    borderRadius: S.radius,
+    borderWidth: 1,
+    borderColor: KEY.edge,
+    backgroundColor: KEY.face,
+    maxWidth: 380,
   },
-  toggleOn: { borderColor: '#7a3a3a', backgroundColor: '#241a1a' },
-  toggleMove: { borderColor: '#3a7a4a', backgroundColor: '#182417' },
-  toggleText: { color: C.faint, fontSize: 12 },
-  toggleTextOn: { color: C.text },
+  dot: { width: 9, height: 9, borderRadius: 5 },
+  why: { color: C.dim, fontSize: 12, flexShrink: 1 },
+  whyBad: { color: C.bad },
+  seat: { color: C.faint, fontSize: 12, flexShrink: 1 },
+  spacer: { flex: 1 },
+  // the hardware's buttons are square-shouldered and short; only the height
+  // differs from the ones flanking the display
+  key: { height: S.control, minHeight: S.control, minWidth: 96 },
   hostLabel: { color: C.faint, fontSize: 12 },
   host: {
     width: 150,
-    height: 34,
+    height: S.control,
     color: C.text,
-    backgroundColor: C.panel,
+    backgroundColor: KEY.face,
     borderWidth: 1,
-    borderColor: C.line,
-    borderRadius: S.radius,
+    borderColor: KEY.edge,
+    borderRadius: 6,
     paddingHorizontal: 10,
     fontSize: 13,
   },
-  note: { color: 'transparent', fontSize: 12, width: 190 },
-  noteOn: { color: C.good },
   mirror: { paddingHorizontal: S.pad, paddingBottom: 6 },
   body: { flex: 1, flexDirection: 'row', padding: S.pad, gap: S.pad },
   gridWrap: { flex: 1 },
@@ -310,5 +377,24 @@ const styles = StyleSheet.create({
   mono: {
     color: C.accentText,
     ...Platform.select({ ios: { fontFamily: 'Menlo' }, default: {} }),
+  },
+  toastWrap: {
+    position: 'absolute',
+    pointerEvents: 'none',
+    left: 0,
+    right: 0,
+    bottom: 20,
+    alignItems: 'center',
+  },
+  toast: {
+    color: C.text,
+    fontSize: 13,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: S.radius,
+    borderWidth: 1,
+    borderColor: C.edge,
+    backgroundColor: C.raised,
+    overflow: 'hidden',
   },
 });

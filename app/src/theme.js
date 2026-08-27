@@ -42,11 +42,21 @@ export const SEAT_HEX = {
   blocked: '#f03c3c',
 };
 
+// The chassis, off the photographs: the buttons sit darker than the panel
+// around them, ringed by a hairline that catches light along the top edge.
+export const KEY = {
+  face: '#08080a',
+  edge: '#1d1d23',
+  top: '#2c2c35',
+  lit: '#101016',
+};
+
 export const S = {
   gap: 8,
   pad: 14,
   radius: 8,
   hit: 44, // the smallest thing a finger should have to find
+  control: 40, // header controls -- shorter than a pad, still a finger target
 };
 
 export const mono = {

@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { C, PALETTE, hexFor, S } from './theme';
 
-export default function Inspector({ index, pad, labels, onSave, onClear, onAddLabel, onDelLabel, note }) {
+export default function Inspector({ index, pad, labels, onSave, onClear, onAddLabel, onDelLabel }) {
   const [label, setLabel] = useState('');
   const [text, setText] = useState('');
   const [tag, setTag] = useState('');
@@ -117,7 +117,6 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
           <Text style={styles.btnText}>Clear pad</Text>
         </TouchableOpacity>
       </View>
-      {!!note && <Text style={styles.note}>{note}</Text>}
 
       <Text style={[styles.h1, styles.h1Spaced]}>Colour labels</Text>
       {labels.length === 0 && <Text style={styles.hint}>none yet</Text>}
@@ -269,12 +268,6 @@ const styles = StyleSheet.create({
     color: C.text,
     fontSize: 14,
     fontWeight: '600',
-  },
-  note: {
-    color: C.good,
-    fontSize: 12,
-    marginTop: 10,
-    height: 16,
   },
   labelRow: {
     flexDirection: 'row',

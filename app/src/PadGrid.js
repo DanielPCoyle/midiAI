@@ -55,6 +55,9 @@ export default function PadGrid({ macros, sel, moving, onPress }) {
 }
 
 const styles = StyleSheet.create({
+  // The pads used to carry `aspectRatio: 1` and a `minHeight`, which fought
+  // the row flex and pushed the bottom row off the bottom of the screen. Rows
+  // divide whatever height there is; a pad is whatever shape that leaves.
   grid: {
     flex: 1,
     flexDirection: 'column',
@@ -65,8 +68,6 @@ const styles = StyleSheet.create({
   },
   pad: {
     flex: 1,
-    aspectRatio: 1,
-    minHeight: S.hit,
     margin: S.gap / 2,
     borderRadius: S.radius,
     backgroundColor: C.raised,

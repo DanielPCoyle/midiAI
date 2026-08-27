@@ -1,8 +1,15 @@
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
+import PushButton from './PushButton';
 import { C, S, SEAT_HEX } from './theme';
 
 const SLOTS = 8;
 const rgb = ([r, g, b]) => `rgb(${r}, ${g}, ${b})`;
+
+// display.py centres the view-strip text on a band of `bands[0]` px with a
+// font a shade taller than the band, so descenders land 2px below it. On the
+// Push that is just the label; here it is a row of clipped glyph tails
+// hanging under the buttons that replace them.
+const BLEED = 2;
 
 export default function PushMirror({ base, surface, onTab, onSeat }) {
   const views = Array.isArray(surface?.views) ? surface.views : null;
@@ -27,27 +34,19 @@ function TabRow({ surface, views, onTab }) {
     <View style={styles.row}>
       {Array.from({ length: SLOTS }, (_, i) => {
         if (!views || i >= views.length) {
-          return <View key={i} style={styles.slotEmpty} />;
+          return <PushButton key={i} label="" disabled style={styles.slot} />;
         }
-        const isActive = i === active;
         const mode = modes[i];
         const label = mode > 1 ? `${views[i]} ${(at[i] ?? 0) + 1}/${mode}` : views[i];
-        const tint = colours[i] ? rgb(colours[i]) : C.accentText;
         return (
-          <Pressable
+          <PushButton
             key={i}
+            label={label}
+            colour={colours[i] ? rgb(colours[i]) : C.accentText}
+            lit={i === active}
             onPress={() => onTab(i)}
-            style={({ pressed }) => [
-              styles.slot,
-              { borderColor: isActive ? tint : 'transparent' },
-              isActive ? styles.slotActive : { opacity: 0.55 },
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={[styles.slotText, { color: tint }]} numberOfLines={1}>
-              {label}
-            </Text>
-          </Pressable>
+            style={styles.slot}
+          />
         );
       })}
     </View>
@@ -63,30 +62,18 @@ function SeatRow({ surface, onSeat }) {
       {Array.from({ length: SLOTS }, (_, i) => {
         const seat = seats[i] || null;
         if (!seat) {
-          return (
-            <View key={i} style={styles.slotEmpty}>
-              <Text style={styles.slotNumber}>{i + 1}</Text>
-            </View>
-          );
+          return <PushButton key={i} label={String(i + 1)} disabled style={styles.slot} />;
         }
         const [name, status] = seat;
-        const isActive = i === current;
-        const tint = SEAT_HEX[status] || C.faint;
         return (
-          <Pressable
+          <PushButton
             key={i}
+            label={name}
+            colour={SEAT_HEX[status] || C.faint}
+            lit={i === current}
             onPress={() => onSeat(i)}
-            style={({ pressed }) => [
-              styles.slot,
-              { borderColor: isActive ? tint : 'transparent' },
-              isActive ? styles.slotActive : { opacity: 0.55 },
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={[styles.slotText, { color: tint }]} numberOfLines={1}>
-              {name}
-            </Text>
-          </Pressable>
+            style={styles.slot}
+          />
         );
       })}
     </View>
@@ -103,7 +90,8 @@ function Frame({ base, surface }) {
   }
 
   const [w, h] = surface.size;
-  const [top, bottom] = surface.bands;
+  const [band, bottom] = surface.bands;
+  const top = band + BLEED;
   const visible = h - top - bottom;
 
   return (
@@ -130,36 +118,6 @@ const styles = StyleSheet.create({
   },
   slot: {
     flex: 1,
-    minHeight: 34,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: S.radius,
-    borderWidth: 1.5,
-    backgroundColor: C.panel,
-    paddingHorizontal: 4,
-  },
-  slotActive: {
-    backgroundColor: C.raised,
-  },
-  slotEmpty: {
-    flex: 1,
-    minHeight: 34,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: S.radius,
-    backgroundColor: C.panel,
-    opacity: 0.25,
-  },
-  slotNumber: {
-    color: C.faint,
-    fontSize: 12,
-  },
-  slotText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  pressed: {
-    opacity: 0.7,
   },
   frame: {
     width: '100%',
