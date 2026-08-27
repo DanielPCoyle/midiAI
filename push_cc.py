@@ -2050,6 +2050,10 @@ def run():
                                     disp_mod.VIEW_RGB.get(v, (200, 200, 200))
                                     for v in VIEWS],
                                 "seats": seats, "current": current,
+                                # the two label bands, so the mirror can crop
+                                # them: the page's own buttons already say it
+                                "bands": [disp_mod.STRIP_H, disp_mod.SEAT_H],
+                                "size": [disp_mod.WIDTH, disp_mod.HEIGHT],
                                 "stamp": time.time()})
                         except Exception as e:
                             # the pads are the product, the screen is the label:

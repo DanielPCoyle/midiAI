@@ -95,7 +95,12 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
  /* the mirror: the Push's own screen, with its two button rows where they
     physically sit -- above the glass and below it */
  #push{width:746px;margin-bottom:18px}
- #screen{width:746px;height:124px;display:block;background:#000;border-radius:3px}
+ /* the frame is the whole 960x160, label bands and all; the crop hides them
+    because the rows above and below are those labels, as buttons. Sized from
+    the band heights the surface reports, so it cannot drift from display.py */
+ #glass{width:746px;overflow:hidden;background:#000;border-radius:3px;
+        aspect-ratio:960/136}
+ #screen{width:100%;display:block;margin-top:-1.25%}
  .btnrow{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin:4px 0}
  .btn{height:22px;border:1px solid #24242a;border-radius:4px;background:#101014;
       font:10px/20px ui-monospace,Menlo,monospace;text-align:center;cursor:pointer;
@@ -110,7 +115,7 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
   hardware &middot; click one and the Push follows</span></h1>
 <div id=push>
   <div id=tabs class=btnrow></div>
-  <img id=screen alt="Push display">
+  <div id=glass><img id=screen alt="Push display"></div>
   <div id=seats class=btnrow></div>
 </div>
 <div id=bar>
@@ -273,6 +278,11 @@ let seen=null;
 function press(what){ fetch('/press',{method:'POST',body:JSON.stringify(what)}); }
 function drawSurface(s){
   const rgb=c=>'rgb('+c.join(',')+')';
+  if(s.bands&&s.size){                     // crop the label bands off the top
+    const [t,b]=s.bands, [w,h]=s.size;     // and bottom: the buttons say it
+    $('glass').style.aspectRatio=w+'/'+(h-t-b);
+    $('screen').style.marginTop=(-100*t/w)+'%';
+  }
   $('tabs').innerHTML=s.views.map((v,i)=>{
     const on=i===s.view, m=s.modes[i]>1?' '+((s.at||[])[i]+1||1)+'/'+s.modes[i]:'';
     return '<div class="btn'+(on?' on':'')+'" style="color:'+rgb(s.colours[i])+

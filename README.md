@@ -80,6 +80,11 @@ clicking one presses it. The mirror renders nothing of its own: push_cc saves
 the frame it just sent to the Push and the page shows that file. Two drawings
 of one screen drift apart the day someone edits only one of them.
 
+The two label bands are cropped out of the mirror — the rows above and below
+the glass *are* those labels, as buttons, and the page should not say a thing
+twice. The crop is sized from the band heights the surface reports, so it
+cannot drift from display.py.
+
 A click goes back through the same file the poll loop already watches, so it
 lands where a physical press lands — a click and a press cannot come to mean
 two different things. It keeps working with the screen unplugged: the
