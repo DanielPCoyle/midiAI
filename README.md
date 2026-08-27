@@ -53,8 +53,14 @@ your LED writes land underneath its own and the device looks dead in one
 direction only — input works, output does nothing. This costs an afternoon if
 you do not know it.
 
-Press the Push's **User** button too: in Live mode its MIDI goes to port 1 and
-this sees nothing.
+You do **not** need to press the Push's User button. A Push that has just been
+plugged in is in Live mode, where everything it sends goes to port 1 and
+everything sent to port 2 is ignored — so the pads and buttons are deaf while
+the screen keeps drawing, which reads as a device that came back half alive and
+sits on one session with no button able to move it. Startup now asks for User
+mode itself (`Set MIDI Mode`, sysex `0A 01`). Sysex is accepted on both ports in
+every mode, so that request lands whichever port the device is currently
+listening to, and Ableton never has to be opened to do it.
 
 ## Chains
 

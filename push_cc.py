@@ -124,6 +124,21 @@ PITCH_SPAN = 8192 * 2               # mido pitchwheel runs -8192..8191
 # note, v127 finger on and v0 off, so the release is a real event and not a
 # timer we guessed at. Nothing is sent until that v0 arrives.
 STRIP_NOTE = 12
+SYSEX_HEAD = [0x00, 0x21, 0x1D, 0x01, 0x01]   # Ableton, device 1, model 1
+MODE_CC, MODE_LIVE, MODE_USER = 0x0A, 0, 1
+STRIP_CFG_CC, STRIP_LED_CC = 0x17, 0x19
+# The spec's power-up default. Bits 5 and 6 are autoreturn, to centre -- which
+# is exactly the spring-back strip_pick has to throw away, so the empirical
+# find and the document agree. Bit 0 hands the LEDs to us; everything else is
+# left alone, including the pitch bend the rest of this depends on.
+STRIP_CFG_DEFAULT = 0x68
+# Bit 0 takes the LEDs, and bit 1 is the one that actually matters: with "host
+# sends" left on values, the spec ignores every Set Touch Strip LEDs command
+# silently, which reads exactly like a dead wire. Bit 2 stays put -- the strip
+# must keep sending pitch bend, which is what the rest of this reads.
+STRIP_CFG_HOST = STRIP_CFG_DEFAULT | 0x03
+STRIP_LEDS = 31                # LED 0 is the bottom, LED 30 the top
+STRIP_ON, STRIP_OFF = 7, 0     # 3 bits each: 7 is full, 0 is dark
 
 # Raw keys, sent as-is. Separate from COMMAND_CCS because nothing here submits
 # and that table asserts everything in it does.
@@ -343,6 +358,17 @@ def slug(text):
     return name[:60] or "push/" + time.strftime("%H%M%S")
 
 
+def answer_keys(pick, sel):
+    """Keys that move a select widget's caret from `sel` to `pick` and commit.
+
+    The lit pads have been painted as answer buttons since the grid became all
+    shortcuts, and pressing one has done nothing since -- a button that lights
+    and then ignores you is worse than one that never lights. Walking the caret
+    is how the encoder already answers; this just aims it at a pad."""
+    step = pick - sel
+    return (DOWN if step > 0 else UP) * abs(step) + ENTER
+
+
 def step_slot(current, delta, slots):
     """Next occupied slot, wrapping. Empty pads are not worth stopping on."""
     live = sorted(s for s in slots if slots[s])
@@ -457,6 +483,24 @@ def model_for(agent):
     return name
 
 
+def strip_bar(level, levels=EFFORTS, n=STRIP_LEDS):
+    """LED brightnesses bottom to top: a bar as tall as the thinking you asked
+    for. A strip that sits dark between touches is a control with no readout,
+    and this one already knows the answer. Unknown level reads as dark rather
+    than as `low` -- no bar is honest about not knowing, a short one is not."""
+    if level not in levels:
+        return [STRIP_OFF] * n
+    lit = round((levels.index(level) + 1) / len(levels) * n)
+    return [STRIP_ON] * lit + [STRIP_OFF] * (n - lit)
+
+
+def strip_pack(leds):
+    """Three bits per LED, two to a byte, the lower LED in the low bits. 31 is
+    odd, so the last byte carries the top LED alone."""
+    return [leds[i] | (leds[i + 1] << 3 if i + 1 < len(leds) else 0)
+            for i in range(0, len(leds), 2)]
+
+
 def strip_pick(pitch, current):
     """Level under the finger, or `current` when this is the strip's rest
     position.
@@ -484,7 +528,7 @@ def effort_for(agent):
     """The level the session is actually on, which is not the same as the one
     we last asked for: it can be changed from the keyboard too, and a readout
     that quietly reports our own last write would be worse than none."""
-    path = transcript(agent)
+    path = transcript(agent) if agent else None   # the strip asks with no agent
     if not path:
         return ""
     try:
@@ -675,9 +719,8 @@ def sweep_panes(slots, by_id, current):
     typing.
 
     Not agent_status for the first: an agent asking a prose question stays
-    idle, so herdr never reports it. Only the pane knows. The typing comes off
-    the same read, so it costs nothing to keep."""
-    asking, pendings = set(), {}
+    idle, so herdr never reports it. Only the pane knows."""
+    asking = set()
     for slot, tid in slots.items():
         if slot == current or not tid:
             continue
@@ -687,9 +730,7 @@ def sweep_panes(slots, by_id, current):
         summary = pane_summary(agent, SWEEP_LINES)
         if summary.get("opts"):
             asking.add(slot)
-        if summary.get("pending"):
-            pendings[slot] = summary["pending"]
-    return asking, pendings
+    return asking
 
 
 def focus_info(slot, agent, summary, scroll=0):
@@ -705,9 +746,11 @@ def focus_info(slot, agent, summary, scroll=0):
             "context": used / max(1, limit)}
 
 
-def panel_col(agent, pending=""):
+def panel_col(agent):
     """One screen column. Two agents can share a repo name, so show a tail of
-    the terminal id -- that is the thing that actually tells them apart."""
+    the terminal id -- that is the thing that actually tells them apart.
+
+    No prompt text: a half-written prompt belongs to the focus view."""
     if agent is None:
         return None
     used, limit = context_for(agent)
@@ -717,7 +760,6 @@ def panel_col(agent, pending=""):
             "effort": effort_for(agent),
             "sub": agent.get("terminal_id", "")[-6:],
             "focused": bool(agent.get("focused")),
-            "typed": pending,
             "context": used / limit if limit else 0.0}
 
 
@@ -733,6 +775,34 @@ class Push:
     def __init__(self, mido, inp, out):
         self.mido, self.inp, self.out = mido, inp, out
         self.painted = {}
+        self.leds = None        # last strip bar sent, so we only resend on change
+
+    def sysex(self, *body):
+        self.out.send(self.mido.Message("sysex", data=SYSEX_HEAD + list(body)))
+
+    def midi_mode(self, mode=MODE_USER):
+        """A Push that has just been plugged in is in Live mode: everything it
+        sends goes to the other port and everything we send it is ignored. The
+        screen still draws -- that is USB, not MIDI -- so the surface looks
+        half alive, stuck on one session with no button able to move it. That
+        is what the User button was for, and asking Ableton to press it for us
+        is a poor way to start. Sysex is accepted on both ports in every mode,
+        so this lands whichever one the device is currently listening to."""
+        self.sysex(MODE_CC, mode)
+
+    def strip_host(self, host=True):
+        """Take the strip's LEDs off the device, or hand them back. Must be
+        done before any LED write lands, and undone on the way out or the
+        strip stays ours in whatever runs next."""
+        self.sysex(STRIP_CFG_CC, STRIP_CFG_HOST if host else STRIP_CFG_DEFAULT)
+        self.leds = None
+
+    def strip(self, leds):
+        """16 bytes down the same wire as every pad, so only on change."""
+        if leds == self.leds:
+            return
+        self.leds = leds
+        self.sysex(STRIP_LED_CC, *strip_pack(leds))
 
     def note(self, kind, slot, note, colour, anim=STATIC):
         self._send(kind, slot, self.mido.Message(
@@ -764,6 +834,7 @@ class Push:
             self.cc(f"arm{i}", 0, [cc], BLACK)
         for i in range(len(FREED_CCS)):
             self.cc("freed", i, FREED_CCS, BLACK)
+        self.strip([STRIP_OFF] * STRIP_LEDS)
 
 
 def screen():
@@ -790,13 +861,15 @@ def run():
     inp = mido.open_input(name)
     out = mido.open_output(name)
     push = Push(mido, inp, out)
+    push.midi_mode(MODE_USER)   # first of all: in Live mode it cannot hear us
+    push.strip_host(True)   # before blank: LED writes go nowhere until we own them
     push.blank()
     out.send(mido.Message("start"))  # spec: animations don't run until a start arrives
 
     disp_mod, disp = screen()
     debug = "--debug" in sys.argv
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
-    by_id, focused = {}, None
+    by_id, focused, live = {}, None, []   # live persists a hold, unscraped
     shown, frame, view = None, None, 0
     current, summary, arming = 0, {}, False
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
@@ -805,16 +878,30 @@ def run():
     arm_held = {cc: False for cc in ARM_CCS}   # not `held`: a local below took it
     published = object()   # sentinel: nothing published yet
     closing = None      # (slot, deadline): asked to close, waiting on an answer
-    asking, pendings, next_sweep, was_asking = set(), {}, 0.0, False
+    asking, next_sweep, was_asking = set(), 0.0, False
     chain, automating = None, False   # a row of pads queued at one agent
     strip_level, strip_touch = None, False  # uncommitted until the finger lifts
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
             now = time.monotonic()
+            # First, before anything that can block. Claude infers the hold
+            # from these spaces arriving and calls it released after ~120ms of
+            # quiet, so a gap is not a slow frame -- it is a release, and the
+            # recording sputters. Send, then do the slow work.
+            if talk_slot is not None and now >= next_key:
+                next_key, sent = now + REPEAT_S, sent + 1
+                herdr("agent", "send", slots[talk_slot], PTT_KEY)
+
+            # A poll costs two subprocesses, and a sweep costs one per agent:
+            # together more than the release timer allows, which is why the
+            # hold worked or sputtered depending on where the 1.5s sweep fell.
+            # Nothing it scrapes can change in the second or two of a hold.
+            talking = talk_slot is not None
             if now >= next_poll:
                 next_poll = now + POLL_S
-                live = agents()
+                if not talking:
+                    live = agents()
                 assign(live, slots)
                 by_id = {a["terminal_id"]: a for a in live}
                 for s in range(SLOTS):
@@ -839,7 +926,8 @@ def run():
                 seat = current if peek is None else peek
                 cur = by_id.get(slots.get(seat))
                 scroll = scrolls.get(seat, 0)
-                summary = pane_summary(cur)
+                if not talking:
+                    summary = pane_summary(cur)
                 opts = summary.get("opts") or []
                 target = slots.get(current) or focused
                 if (cur or {}).get("terminal_id") != published:
@@ -852,9 +940,9 @@ def run():
                     print("close request expired", flush=True)
                     closing, shown = None, None
 
-                if now >= next_sweep:
+                if now >= next_sweep and not talking:
                     next_sweep = now + SWEEP_S
-                    asking, pendings = sweep_panes(slots, by_id, current)
+                    asking = sweep_panes(slots, by_id, current)
                 if opts:
                     asking.add(current)
                 else:
@@ -940,15 +1028,10 @@ def run():
                         build, draw = ((panel_col, disp_mod.render)
                                        if VIEWS[view] == "agents"
                                        else (usage_col, disp_mod.render_usage))
-                        typed = dict(pendings)
-                        typed[seat] = summary.get("pending", "")
-                        cols = tuple(
-                            build(by_id.get(slots.get(s)), typed.get(s, ""))
-                            if build is panel_col else build(by_id.get(slots.get(s)))
-                            for s in range(SLOTS))
-                        state = (view, cols, seat)
-                        drawn = ((lambda: draw(cols, seat)) if draw is disp_mod.render
-                                 else (lambda: draw(cols)))
+                        cols = tuple(build(by_id.get(slots.get(s)))
+                                     for s in range(SLOTS))
+                        state = (view, cols)
+                        drawn = (lambda c=cols: draw(c))
                     if state != shown:              # re-render on change only
                         try:
                             shown, frame = state, drawn()
@@ -969,7 +1052,8 @@ def run():
                 push.cc("play", 0, [PLAY_CC],
                         BLUE if armed else (GREEN if target else BLACK),
                         PULSE if armed else STATIC)
-                push.cc("auto", 0, [AUTOMATE_CC], BRIGHT if chain else DIM)
+                push.cc("auto", 0, [AUTOMATE_CC],
+                        BRIGHT if (automating or chain) else DIM)
                 push.cc("solo", 0, [SOLO_CC], WHITE if pinned else BLACK)
                 push.cc("dup", 0, [DUPLICATE_CC], GREEN if cur else BLACK)
                 for cc in PAGE_CCS:
@@ -992,6 +1076,11 @@ def run():
                 push.cc("adddev", 0, [ADD_DEVICE_CC], GREEN)
                 push.cc("addtrk", 0, [ADD_TRACK_CC], GREEN)
                 push.cc("browse", 0, [BROWSE_CC], WHITE if cur else BLACK)
+                # the strip reads back what it sets: the level under your
+                # finger while you are choosing it, the agent's real one the
+                # rest of the time
+                push.strip(strip_bar(strip_level if strip_touch and strip_level
+                                     else effort_for(cur)))
                 chain_at = {p: k for k, p in enumerate(chain.steps)} if chain else {}
                 for i in range(MACRO_SLOTS):        # bottom row changes job when asked
                     row0, anim = i < SLOTS, STATIC
@@ -1017,6 +1106,7 @@ def run():
                     # also blanks its LEDs. painted still believes they are lit,
                     # so without this the surface stays dark until a restart.
                     push.painted.clear()
+                    push.strip_host(True)   # the mode change took the strip back
                     shown = None
                     print("mode change -> repainting", flush=True)
                     continue
@@ -1200,10 +1290,20 @@ def run():
                         level = strip_pick(msg.pitch, strip_level)
                         if level != strip_level:
                             strip_level, shown = level, None
-                elif (msg.type == "control_change" and msg.control == AUTOMATE_CC):
-                    automating = bool(msg.value)
+                elif (msg.type == "control_change" and msg.control == AUTOMATE_CC
+                      and msg.value):
+                    # A latch, not a held modifier. Record and Select are holds
+                    # because the pad you hit is the one you are overwriting and
+                    # that wants deliberation; picking a row to run does not,
+                    # and a two-handed hold on a surface you play one-handed
+                    # just does not land.
+                    automating, shown = not automating, None
                     if automating:
-                        view, shown = VIEWS.index("macros"), None  # pick a row
+                        view = VIEWS.index("macros")   # the rows to choose from
+                        print("automate on -> tap a pad to arm its row",
+                              flush=True)
+                    else:
+                        print("automate off", flush=True)
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
                       and msg.value):
                     if chain and chain.phase == "armed":
@@ -1245,11 +1345,16 @@ def run():
                             chain = Chain(steps, target, current,
                                           os.path.basename((cur or {}).get("cwd", ""))
                                           or "?")
-                            shown = None
+                            # the latch has done its job; leaving it on would
+                            # turn the next ordinary pad press into a chain
+                            automating, shown = False, None
                             print(f"chain armed: {len(steps)} steps from pad {i} "
                                   f"-> {target}", flush=True)
                         else:
-                            print(f"chain: nothing to run from pad {i}", flush=True)
+                            # stay latched: an empty row is a miss, not a change
+                            # of mind, and the lit button says you are still here
+                            print(f"chain: nothing to run from pad {i}, "
+                                  f"still armed -- pick another row", flush=True)
                     elif arming:
                         text = (summary.get("pending") or "").strip()
                         was = MACROS[i] or {}
@@ -1265,6 +1370,15 @@ def run():
                         # ask what a pad does without finding out the hard way
                         previewing, shown = i, None
                         print(f"shift+pad {i} -> preview", flush=True)
+                    elif opts and i < SLOTS and i < len(opts) and target:
+                        # exactly the pads painted white above: what lights is
+                        # what answers. Ahead of the macro branch so a pad that
+                        # is currently an answer cannot fire its old text into
+                        # a question instead.
+                        pick = summary.get("sel") or 0
+                        print(f"answer {i + 1}/{len(opts)}: {opts[i][1]!r} "
+                              f"-> {target}", flush=True)
+                        herdr("agent", "send", target, answer_keys(i, pick))
                     elif MACROS[i] and target:
                         m = MACROS[i]
                         # the text goes in now so it reads back immediately, but
@@ -1288,10 +1402,6 @@ def run():
                 scrolls[talk_slot] = 0
                 print(f"pad {talk_slot} held -> talking to {slots[talk_slot]}", flush=True)
 
-            if talk_slot is not None and now >= next_key:
-                next_key, sent = now + REPEAT_S, sent + 1
-                herdr("agent", "send", slots[talk_slot], PTT_KEY)
-
             time.sleep(0.005)
     except KeyboardInterrupt:
         pass
@@ -1299,6 +1409,7 @@ def run():
         publish_target(None)
         push.painted.clear()
         push.blank()
+        push.strip_host(False)   # hand the strip back or it stays ours
         if disp:
             try:
                 disp.blank()
@@ -1346,12 +1457,12 @@ def selftest():
                      "terminal_id": "term_659ce899ee9293", "focused": True})
     assert col["name"] == "bugcast" and col["sub"] == "ee9293", col
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
-                     "terminal_id": "t", "focused": False}, "half a sentence")
-    assert col["typed"] == "half a sentence", col
+                     "terminal_id": "t", "focused": False})
     assert 0.0 <= col["context"] <= 1.0, "context fraction stays in range"
     # every renderer reads by key, so a new field cannot break an old unpack
-    assert set(col) == {"name", "status", "model", "effort", "sub", "focused",
-                        "typed", "context"}, col
+    assert set(col) == {"name", "status", "model", "effort", "sub",
+                        "focused", "context"}, col
+    assert "typed" not in col, "the prompt is the focus view's job, not a column's"
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
     assert short_model("claude-sonnet-5") == "sonnet 5"
@@ -1397,7 +1508,36 @@ def selftest():
 
     # the strip is absolute: both ends must be reachable, and reachable at the
     # very edge, or the two levels people most want are the two they cannot hit
+    # answering: walk the caret to the pad you pressed, then commit
+    assert answer_keys(0, 0) == ENTER, "already on it, just commit"
+    assert answer_keys(2, 0) == DOWN * 2 + ENTER, "down to a later option"
+    assert answer_keys(0, 2) == UP * 2 + ENTER, "back up to an earlier one"
+    assert answer_keys(3, 1) == DOWN * 2 + ENTER, "distance, not destination"
+    assert answer_keys(7, 0).endswith(ENTER), "every answer submits"
+
     assert STRIP_NOTE not in ENC_TOUCH + MACRO_NOTES, "the strip needs its own note"
+    # the bar: taller means more thinking, and it has to reach both ends
+    assert strip_bar("low").count(STRIP_ON) > 0, "the lowest level still shows"
+    assert strip_bar("max") == [STRIP_ON] * STRIP_LEDS, "max fills the strip"
+    assert strip_bar("") == [STRIP_OFF] * STRIP_LEDS, "unknown reads as dark"
+    assert strip_bar("banana") == [STRIP_OFF] * STRIP_LEDS, "and so does nonsense"
+    heights = [strip_bar(l).count(STRIP_ON) for l in EFFORTS]
+    assert heights == sorted(heights), "more effort is never a shorter bar"
+    assert len(set(heights)) == len(EFFORTS), "every level looks different"
+    assert all(len(strip_bar(l)) == STRIP_LEDS for l in EFFORTS), "one per LED"
+
+    # 3 bits each, two to a byte, low LED in the low bits -- 31 is odd, so the
+    # top LED rides alone in the last byte
+    assert len(strip_pack([STRIP_OFF] * STRIP_LEDS)) == 16, "16 bytes on the wire"
+    assert strip_pack([1, 2]) == [1 | (2 << 3)], "second LED sits in the high bits"
+    assert strip_pack([7] * 31)[-1] == 7, "the odd top LED keeps its own byte"
+    assert all(0 <= b <= 0x7F for b in strip_pack([7] * 31)), "sysex stays 7-bit"
+    assert STRIP_CFG_HOST & 0x01 and not STRIP_CFG_DEFAULT & 0x01, "bit 0 is ours"
+    # bit 1 is the whole feature: without it the device accepts the config, says
+    # so when asked, and then discards every LED write without a word
+    assert STRIP_CFG_HOST & 0x02, "host must send sysex or the LEDs are ignored"
+    # and taking them must not disturb the pitch bend everything else reads
+    assert STRIP_CFG_HOST & 0x04 == STRIP_CFG_DEFAULT & 0x04, "still pitch bend"
     # the spring-back: the strip reports exact centre as a bend just BEFORE its
     # release note, so a naive read committed `high` from anywhere on the strip
     assert strip_pick(0, "medium") == "medium", "rest must not overwrite a choice"

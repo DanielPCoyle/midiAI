@@ -462,53 +462,13 @@ def render_usage(cols):
     return img
 
 
-def render_typing(cols, who):
-    """Someone is mid-sentence. Their words are worth more of the glass than
-    eight cards nobody is reading, so the cards shrink to a strip."""
-    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
-    d = ImageDraw.Draw(img)
-    strip = 44
-    for i, col in enumerate(cols):
-        x = i * COL_W
-        if i:
-            d.line([(x, 6), (x, strip - 6)], fill=(40, 40, 40))
-        if not col:
-            continue
-        rgb = STATUS_RGB.get(col["status"], STATUS_RGB[None])
-        lit = i == who
-        name, typed = col["name"], col["typed"]
-        ctx_bar(d, x + 8, 4, COL_W - 18, col.get("context", 0.0), h=2)
-        d.rectangle([x + 8, 10, x + 24, 26], fill=rgb if lit else tuple(c // 3 for c in rgb))
-        d.text((x + 12, 11), str(i + 1), font=font(13), fill=(0, 0, 0))
-        s, f = fit(d, name, COL_W - 36, 13)
-        d.text((x + 30, 12), s, font=f, fill=(210, 210, 210) if lit else (95, 95, 95))
-        if typed and not lit:          # someone else is typing too
-            d.rectangle([x + 8, 30, x + COL_W - 10, 33], fill=(70, 95, 130))
-    d.line([(0, strip), (WIDTH, strip)], fill=(48, 48, 48))
+def render(cols):
+    """cols: 8 entries of (name, status, model, sub, focused), None.
 
-    col = cols[who]
-    d.text((16, strip + 8), f"{who + 1}. {col['name']}", font=font(13),
-           fill=(110, 110, 110))
-    body, bf = col["typed"], font(30)
-    lines = wrap(d, body, WIDTH - 40, bf, 2)
-    if len(lines) < 2 or d.textlength(body, font=bf) > (WIDTH - 40) * 2:
-        bf = font(22)                  # long ones get smaller rather than clipped
-        lines = wrap(d, body, WIDTH - 40, bf, 3)
-    for j, line in enumerate(lines):
-        d.text((20, strip + 28 + j * (bf.size + 6)), line, font=bf, fill=(235, 235, 235))
-    return img
-
-
-def render(cols, prefer=None):
-    """cols: 8 entries of (name, status, model, sub, focused, typed), None.
-
-    Hands the glass over to whoever is typing, because a half-written prompt
-    is the only thing here that changes while you watch it."""
-    typing = [i for i, c in enumerate(cols) if c and c["typed"]]
-    if typing:
-        # the one you are on wins: if you are typing, that is what you meant
-        who = prefer if prefer in typing else typing[0]
-        return render_typing(cols, who)
+    Eight cards, and only that. A half-written prompt belongs to the focus
+    view, which is where you go to read one; letting it take this glass meant
+    the one screen showing all eight agents kept turning into a screen about
+    one of them."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
     for i, col in enumerate(cols):
@@ -520,7 +480,7 @@ def render(cols, prefer=None):
             d.text((x + 10, 10), t, font=f, fill=(45, 45, 45))
             continue
         name, status, model = col["name"], col["status"], col["model"]
-        sub, typed = col["sub"], col["typed"]
+        sub = col["sub"]
         rgb = STATUS_RGB.get(status, STATUS_RGB[None])
         _column(d, i, rgb, col["focused"])
         ctx_bar(d, x + 8, 6, COL_W - 18, col["context"])
@@ -538,13 +498,6 @@ def render(cols, prefer=None):
             s, ef = fit(d, tag, 34, 12)
             d.text((x + COL_W - 12 - d.textlength(s, font=ef), 104), s, font=ef,
                    fill=(110, 110, 110))
-        if typed:               # someone is mid-sentence in this one
-            d.rectangle([x + 6, HEIGHT - 30, x + COL_W - 8, HEIGHT - 6],
-                        fill=(18, 24, 34))
-            bf = font(12)
-            for j, line in enumerate(wrap(d, typed, COL_W - 22, bf, 2)):
-                d.text((x + 11, HEIGHT - 28 + j * 12), line, font=bf,
-                       fill=(150, 175, 215))
     return img
 
 
