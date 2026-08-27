@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
   Platform,
+  Pressable,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -30,6 +32,7 @@ export default function App() {
   const [sel, setSel] = useState(null);
   const [moving, setMoving] = useState(null);
   const [armed, setArmed] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [ready, setReady] = useState(false);
@@ -176,6 +179,7 @@ export default function App() {
       const next = macros.slice();
       next[sel] = fields.text.trim() ? fields : null;
       putMacros(next, labels);
+      setEditing(false);
     },
     [labels, macros, say, sel, putMacros]
   );
@@ -185,6 +189,7 @@ export default function App() {
     const next = macros.slice();
     next[sel] = null;
     putMacros(next, labels);
+    setEditing(false);
   }, [labels, macros, say, sel, putMacros]);
 
   const addLabel = useCallback(
@@ -249,6 +254,16 @@ export default function App() {
           style={styles.key}
         />
 
+        {sel !== null && (
+          <PushButton
+            label={`edit pad ${36 + sel}`}
+            colour={C.accentText}
+            lit={editing}
+            onPress={() => setEditing(true)}
+            style={styles.key}
+          />
+        )}
+
         <View style={styles.spacer} />
 
         <PushButton
@@ -283,36 +298,57 @@ export default function App() {
       </View>
 
       <View style={styles.body}>
-        <View style={styles.gridWrap}>
-          {ready ? (
-            <PadGrid
-              macros={macros}
-              sel={sel}
-              moving={moving !== null && moving >= 0 ? moving : null}
-              onPress={tapPad}
-            />
-          ) : (
-            <View style={styles.waiting}>
-              <ActivityIndicator color={C.accentText} />
-              <Text style={styles.waitingText}>
-                no answer from {host}:{PORT} — start it with{' '}
-                <Text style={styles.mono}>python3 mapui.py --lan</Text>
-              </Text>
-            </View>
-          )}
-        </View>
-        <View style={styles.side}>
-          <Inspector
-            index={sel}
-            pad={sel === null ? null : macros[sel] || null}
-            labels={labels}
-            onSave={savePad}
-            onClear={clearPad}
-            onAddLabel={addLabel}
-            onDelLabel={delLabel}
+        {ready ? (
+          <PadGrid
+            macros={macros}
+            sel={sel}
+            moving={moving !== null && moving >= 0 ? moving : null}
+            onPress={tapPad}
           />
-        </View>
+        ) : (
+          <View style={styles.waiting}>
+            <ActivityIndicator color={C.accentText} />
+            <Text style={styles.waitingText}>
+              no answer from {host}:{PORT} — start it with{' '}
+              <Text style={styles.mono}>python3 mapui.py --lan</Text>
+            </Text>
+          </View>
+        )}
       </View>
+
+      {/* the editor is a detour, not a place -- it used to hold a third of the
+          screen open whether or not anything was being edited, next to a grid
+          that wants every pixel it can get */}
+      <Modal
+        visible={editing}
+        transparent
+        animationType="fade"
+        supportedOrientations={['portrait', 'landscape']}
+        onRequestClose={() => setEditing(false)}>
+        <View style={styles.scrim}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditing(false)} />
+          <View style={styles.sheet}>
+            <View style={styles.sheetHead}>
+              <Text style={styles.sheetTitle}>Pad {sel === null ? '' : 36 + sel}</Text>
+              <View style={styles.spacer} />
+              <PushButton
+                label="close"
+                onPress={() => setEditing(false)}
+                style={styles.key}
+              />
+            </View>
+            <Inspector
+              index={sel}
+              pad={sel === null ? null : macros[sel] || null}
+              labels={labels}
+              onSave={savePad}
+              onClear={clearPad}
+              onAddLabel={addLabel}
+              onDelLabel={delLabel}
+            />
+          </View>
+        </View>
+      </Modal>
 
       {/* one place for every transient message -- it used to be a reserved
           strip in the header, furthest from the pads and the editor that
@@ -369,9 +405,31 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   mirror: { paddingHorizontal: S.pad, paddingBottom: 6 },
-  body: { flex: 1, flexDirection: 'row', padding: S.pad, gap: S.pad },
-  gridWrap: { flex: 1 },
-  side: { width: 380 },
+  body: { flex: 1, padding: S.pad },
+  scrim: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: S.pad,
+  },
+  sheet: {
+    width: 560,
+    maxWidth: '100%',
+    maxHeight: '92%',
+    borderRadius: S.radius,
+    borderWidth: 1,
+    borderColor: C.line,
+    backgroundColor: C.panel,
+    overflow: 'hidden',
+  },
+  sheetHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: S.pad,
+    paddingTop: S.pad,
+  },
+  sheetTitle: { color: C.text, fontSize: 16, fontWeight: '600' },
   waiting: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   waitingText: { color: C.dim, fontSize: 13, textAlign: 'center', maxWidth: 420 },
   mono: {

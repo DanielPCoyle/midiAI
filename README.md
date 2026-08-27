@@ -76,7 +76,10 @@ an invented cost is worse than no cost.
 
 The UI is a React Native app (Expo) in `app/`, laid out for an iPad in
 landscape: the Push's own screen across the top with its two button rows where
-they physically sit, the 64 pads below it, and the pad editor down the right.
+they physically sit, and the 64 pads below it across the full width. The pad
+editor is a sheet, not a column — an **edit pad** key appears in the top row
+once you have picked one, and the editor was holding a third of the screen
+open next to a grid that wants every pixel it can get.
 Everything on it drives the real controller — tapping a view button here
 presses that button there.
 

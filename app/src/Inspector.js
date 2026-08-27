@@ -60,8 +60,6 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
 
   return (
     <ScrollView style={styles.panel} contentContainerStyle={styles.content}>
-      <Text style={styles.h1}>Pad {36 + index}</Text>
-
       <Text style={styles.label}>Label <Text style={styles.hint}>(shown on the Push screen)</Text></Text>
       <TextInput
         style={styles.input}
@@ -160,13 +158,12 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
 
 const styles = StyleSheet.create({
   panel: {
-    flex: 1,
+    flexGrow: 0, // a sheet as tall as its content, not as tall as the screen
     backgroundColor: C.panel,
-    borderLeftWidth: 1,
-    borderLeftColor: C.line,
   },
   content: {
     padding: S.pad,
+    paddingTop: 4,
     paddingBottom: 40,
   },
   empty: {
