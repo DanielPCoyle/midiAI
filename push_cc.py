@@ -90,7 +90,7 @@ VOLUME_CC = 79                     # master encoder -> up/down arrows at the age
 ENC_CCS = list(range(71, 79))      # the 8 encoders, one over each agent column
 ENC_TOUCH = list(range(0, 8))      # touching one is a note, not a CC
 SHIFT_CC = 49                      # held modifier, the standard Push idiom
-SOLO_CC = 61                       # pin the screen so questions stop moving it
+SOLO_CC = 61                       # pin: neither questions nor herdr move it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
 PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next session
 CONFIRM_S = 10                     # a question that goes unanswered expires
@@ -1525,6 +1525,20 @@ def panel_col(agent):
             "context": used / limit if limit else 0.0}
 
 
+def follow_focus(focused, slots, current, pinned=False):
+    """Which slot the Push should be sitting on, given the pane herdr has
+    focused on the computer.
+
+    The surface is a second pair of hands on the same sessions, not a separate
+    place you are also somewhere -- clicking a pane on screen and finding the
+    Push still pointed at the last one is the bug. Solo is the opt-out: it
+    already means stay put, for the same reason."""
+    if pinned or focused is None:
+        return current
+    slot = next((s for s, tid in slots.items() if tid == focused), None)
+    return current if slot is None else slot
+
+
 def agent_name(agent):
     return os.path.basename((agent or {}).get("cwd", "")) or "?"
 
@@ -1636,6 +1650,7 @@ def run():
     debug = "--debug" in sys.argv
     slots, talk_slot, pad_down, next_key, next_poll, sent = {}, None, None, 0.0, 0.0, 0
     by_id, focused, live = {}, None, []   # live persists a hold, unscraped
+    last_focus = object()   # sentinel: the first poll follows whatever is focused
     shown, frame, view = None, None, 0
     current, summary, arming = 0, {}, False
     scrolls, peek = {}, None        # scroll is per agent; peek is a held finger
@@ -1728,6 +1743,16 @@ def run():
                               if (a := by_id.get(slots.get(s))) else None
                               for s in range(SLOTS))
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
+                # on the edge only: herdr's focus MOVING is what follows, so a
+                # question that pulls the surface to another slot is not
+                # dragged straight back by a focus that never changed
+                if focused != last_focus:
+                    last_focus = focused
+                    seat_now = follow_focus(focused, slots, current, pinned)
+                    if seat_now != current:
+                        current, shown = seat_now, None
+                        scrolls[seat_now] = 0
+                        print(f"herdr focus -> slot {seat_now}", flush=True)
                 # Scraped every poll, not just in the focus view: the bottom row
                 # answers a pending question from wherever you happen to be.
                 seat = current if peek is None else peek
@@ -2527,6 +2552,14 @@ def selftest():
     assert tool_line({"name": "Bash", "input": {}}) == "Bash", "no argument, no ()"
 
     # PR checks: the worst run decides the colour, and gh reports two shapes
+    # the Push follows the pane herdr has focused, unless you pinned it
+    seats = {0: "x", 2: "y"}
+    assert follow_focus("y", seats, 0) == 2, "clicking a pane moves the surface"
+    assert follow_focus("y", seats, 0, pinned=True) == 0, "solo means stay put"
+    assert follow_focus(None, seats, 1) == 1, "nothing focused, nothing to do"
+    assert follow_focus("gone", seats, 1) == 1, "focused pane holds no slot"
+    assert follow_focus("x", seats, 0) == 0, "already there"
+
     assert check_state([]) == "none"
     assert check_state([{"conclusion": "SUCCESS", "status": "COMPLETED"},
                         {"state": "SUCCESS"}]) == "pass", "a StatusContext too"

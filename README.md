@@ -16,6 +16,12 @@ without touching the keyboard.
 | **Touchstrip** | pitchbend | slide to set reasoning effort, `low` → `max` |
 | **Buttons above screen** | CC 102–109 | pick a view — labelled on the screen above it; press the one you are on to walk its modes |
 | **Buttons below screen** | CC 20–27 | the sessions: tap = focus · hold = talk · named on the screen above them |
+| **Solo** | CC 61 | pin: stop the surface following herdr's focus, and stop questions pulling it |
+
+Focus goes both ways. Tapping a session button focuses that pane in herdr,
+and clicking a pane on the computer moves the Push to it — one set of
+sessions, two pairs of hands, never two different ideas of where you are.
+Solo opts out.
 
 Pad colour follows herdr's `agent_status`:
 
