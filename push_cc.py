@@ -52,6 +52,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 PORT_NAME = "Ableton Push 2 User Port"
@@ -77,7 +78,7 @@ MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 # focus first: it is the one you actually watch, and view defaults to 0 so
 # it is also what comes up on start
-VIEWS = ["focus", "agents", "usage", "macros"]
+VIEWS = ["focus", "agents", "usage", "plan", "macros"]
 SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
@@ -100,6 +101,11 @@ ARROW_CCS = {44: "\x1b[D", 45: "\x1b[C", 46: UP, 47: DOWN}
 # While a chain is armed the same two buttons choose which of the row's
 # sequences to run. They go back to being arrow keys the moment it is not.
 PICK_CCS = {44: -1, 45: 1}
+# Octave up/down page the focus view. The knobs already scroll it a line at a
+# time, which is the wrong gesture for getting somewhere: a button you can hit
+# twice beats a knob you have to keep turning.
+SCROLL_CCS = {55: 1, 54: -1}       # up goes back through history, down returns
+PAGE_LINES = 6                     # about a screenful at the body's font
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
 ARM_CCS = (RECORD_CC,)
 # Select rearranges the grid instead of arming with Record: tap it, tap a pad to
@@ -178,6 +184,11 @@ BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
 DIM, BRIGHT = 20, 127
 BLUE = 125  # ponytail: not in the spec's guaranteed set; worst case it is the
             # wrong hue, which costs nothing. Swap if it reads badly.
+# The view picker marks its selection by brightness, not hue. Blue for the
+# unselected ones lost: 125 is a saturated (0,0,255) and 122 a grey-white
+# (204,204,204), so through the small slots above the display the ones you had
+# not chosen were the ones that stood out.
+TAB_DIM = 124   # (20,20,20): present, clearly not the one
 
 # Palette indices the Push 2 spec guarantees, plus the blue above. Any 0-127
 # index works on the hardware; these are the ones worth offering by name.
@@ -382,6 +393,17 @@ def answer_keys(pick, sel):
     is how the encoder already answers; this just aims it at a pad."""
     step = pick - sel
     return (DOWN if step > 0 else UP) * abs(step) + ENTER
+
+
+def page_scroll(scroll, delta, page=PAGE_LINES):
+    """Where a page button lands.
+
+    Scroll 0 is the summary, not the top of the transcript, so the first page
+    back has to arrive at the live tail rather than six lines above it --
+    otherwise leaving the TLDR silently skips the newest thing said."""
+    if scroll == 0 and delta > 0:
+        return 1
+    return max(0, scroll + delta * page)
 
 
 def step_slot(current, delta, slots):
@@ -656,6 +678,148 @@ def usage_for(agent):
     return tot
 
 
+_model_tok = {}     # path -> (offset, {model: totals}). Appends only, like usage.
+_MODEL_RE = re.compile(rb'"model":"([^"]+)"')
+
+
+def model_usage_for(agent):
+    """Tokens by model for one session, accumulated incrementally.
+
+    The same source and the same arithmetic /usage uses for its session block:
+    the transcript, one JSON object per line, each carrying both the model that
+    produced it and what it spent. usage_for scans the whole tail for numbers
+    and so cannot say which model spent them -- parsing per line is what keeps
+    the two paired. No dollars: see the README. Nothing here knows the plan,
+    and on this one the marginal cost of a token is zero."""
+    path = transcript(agent) if agent else None
+    try:
+        size = os.stat(path).st_size if path else 0
+    except OSError:
+        return {}
+    off, tot = _model_tok.get(path, (0, {}))
+    if size < off:                       # truncated or replaced; start over
+        off, tot = 0, {}
+    if size > off:
+        try:
+            with open(path, "rb") as f:
+                f.seek(off)
+                chunk = f.read()
+        except OSError:
+            return tot
+        cut = chunk.rfind(b"\n") + 1    # never parse a half-written line
+        if cut:
+            for line in chunk[:cut].splitlines():
+                m = _MODEL_RE.search(line)
+                if not m:
+                    continue
+                seat = tot.setdefault(short_model(m.group(1).decode()),
+                                      {k: 0 for k in _USAGE_FIELDS})
+                for key, pat in _USAGE_FIELDS.items():
+                    seat[key] += sum(int(v) for v in re.findall(pat, line))
+            _model_tok[path] = (off + cut, tot)
+    return tot
+
+
+def model_totals(live):
+    """Every agent's per-model tokens, added up. Account-wide is what /usage
+    reports and what you actually want to look at; per agent is the other
+    view's job."""
+    out = {}
+    for agent in live:
+        for name, tot in model_usage_for(agent).items():
+            seat = out.setdefault(name, {k: 0 for k in _USAGE_FIELDS})
+            for key, value in tot.items():
+                seat[key] += value
+    # <synthetic> is Claude Code's marker for messages it generated itself, not
+    # a model, and it spends nothing. Dropping empties covers it and whatever
+    # else turns up wearing the same shape.
+    return {k: v for k, v in out.items() if any(v.values())}
+
+
+# ---------------------------------------------------------------- plan usage
+
+CREDS_FILE = os.path.expanduser("~/.claude/.credentials.json")
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_TTL = 120.0        # the endpoint is rate limited; /usage itself caches longer
+# The reply also carries five_hour/seven_day at the top level, but `limits` is
+# the normalised form: each entry already says what it is, how full, when it
+# resets and how worried to be. Reading that instead means a window we have
+# never heard of still draws, and one that goes away stops drawing.
+USAGE_KINDS = {"session": "session", "weekly_all": "week"}
+PLAN_MODES = 2         # the plan's own bars, then tokens by model
+_plan = {"at": -USAGE_TTL, "bars": [], "busy": False, "err": ""}
+
+
+def claude_token():
+    """The live OAuth token.
+
+    Keychain first, and it has to be: the copy in ~/.claude went stale eight
+    days before this was written and was never rewritten, because the entry
+    macOS holds is the one Claude Code actually keeps fresh. We only ever
+    read. Refreshing is Claude Code's job -- a refresh token that rotates
+    under it would log every session out, which is a poor trade for a bar on
+    a MIDI controller."""
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=10)
+        if not out.returncode:
+            return json.loads(out.stdout)["claudeAiOauth"]["accessToken"]
+    except Exception:
+        pass
+    try:                              # the file, for whatever it is worth
+        with open(CREDS_FILE) as f:
+            return json.load(f)["claudeAiOauth"]["accessToken"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        return ""
+
+
+def plan_fetch():
+    """Ask the endpoint /usage asks. Runs on its own thread, never the loop.
+
+    Undocumented: nothing promises this keeps working, so every field is
+    optional and a bad shape yields no bars rather than an exception. curl,
+    not urllib, because this venv's Python has no CA bundle -- and the token
+    goes in on stdin so it never reaches an argument list or this log."""
+    token = claude_token()
+    if not token:
+        _plan.update(err="no credentials", busy=False)
+        return
+    try:
+        out = subprocess.run(
+            ["curl", "-sS", "--max-time", "15", "-H", "@-", USAGE_URL],
+            input=f"Authorization: Bearer {token}\n"
+                  f"anthropic-beta: oauth-2025-04-20\n",
+            capture_output=True, text=True, timeout=20)
+        raw = json.loads(out.stdout)
+    except Exception as e:                      # network, timeout, or not JSON
+        _plan.update(err=f"{type(e).__name__}", busy=False)
+        return
+    bars = []
+    for seat in raw.get("limits") or []:
+        if not isinstance(seat, dict) or seat.get("percent") is None:
+            continue
+        model = ((seat.get("scope") or {}).get("model") or {}).get("display_name")
+        bars.append({
+            # a scoped window names its own model, which is the only place
+            # "Fable" appears -- there is no fable key to look up
+            "label": model or USAGE_KINDS.get(seat.get("kind"), seat.get("kind", "?")),
+            "used": max(0.0, min(1.0, float(seat["percent"]) / 100.0)),
+            "severity": seat.get("severity") or "normal",
+            "active": bool(seat.get("is_active")),
+            "resets": seat.get("resets_at") or ""})
+    _plan.update(bars=bars, err="" if bars else "no limits in reply", busy=False)
+
+
+def plan_usage(now):
+    """The cached bars, refreshing behind you when they go stale."""
+    if not _plan["busy"] and now - _plan["at"] >= USAGE_TTL:
+        _plan.update(at=now, busy=True)
+        threading.Thread(target=plan_fetch, daemon=True).start()
+    return _plan["bars"], _plan["err"]
+
+
 _ctx_cache = {}     # path -> (size, used)
 # Every current model is 1M except Haiku. Checked against the model table
 # rather than recalled: assuming 200k put these sessions at 137% full.
@@ -717,6 +881,46 @@ def usage_col(agent):
 _OPT_RE = re.compile(r"^\s*(❯|>)?\s*(\d+)\.\s+(.+?)\s*$")
 
 
+_TLDR_RE = re.compile(r"^[*#\s]*TL;?DR\b", re.I)
+# What Claude Code draws in the margin: answer, activity, recap, prompt.
+_MARKERS = ("\u23fa", "\u273b", "\u203b", "\u276f")
+
+
+def tldr(lines):
+    """The agent's last word, which is the only part of a pane worth reading
+    at a glance.
+
+    An explicit TLDR section if it wrote one -- ours are told to end every
+    substantive answer with one -- and otherwise its last answer with the
+    indented rows that belong to it. `say` kept only the first of those, which
+    is where most of the sentence lived. Raw scrollback is what the knobs are
+    for; it should not be what you get by default."""
+    for i in range(len(lines) - 1, -1, -1):
+        if _TLDR_RE.match(lines[i].strip()):
+            out = []
+            # the heading itself is a wasted row: this view is the TLDR now,
+            # and the screen has about five lines to spend
+            for line in lines[i + 1:]:
+                # the pane's own furniture ends the section: the next answer,
+                # the status footer, a recap, the prompt. Running past them was
+                # putting "recap:" and half a typed prompt in the summary.
+                if line[:1] in _MARKERS and out:
+                    break
+                if line.strip():
+                    out.append(line.strip())
+            return out[:7]
+    start = next((i for i in range(len(lines) - 1, -1, -1)
+                  if lines[i].startswith("\u23fa")), None)
+    if start is None:
+        return []
+    out = [lines[start][1:].strip()]
+    for line in lines[start + 1:]:
+        if not line.startswith((" ", "\t")) or not line.strip():
+            break
+        out.append(line.strip())
+    return out
+
+
 def prompt_text(lines):
     """The whole input buffer, not just its first row.
 
@@ -771,7 +975,8 @@ def pane_summary(agent, depth=SCRAPE_LINES):
             act = line[1:].strip()
     pending = prompt_text(lines)
     return {"say": say, "act": act, "opts": opts, "sel": sel,
-            "lines": body, "pending": "" if opts else pending}
+            "lines": body, "tldr": tldr(body),
+            "pending": "" if opts else pending}
 
 
 def sweep_panes(slots, by_id, current):
@@ -793,7 +998,7 @@ def sweep_panes(slots, by_id, current):
     return asking
 
 
-def focus_info(slot, agent, summary, scroll=0):
+def focus_info(slot, agent, summary, scroll=0, suggested=False):
     used, limit = context_for(agent)
     return {"slot": slot,
             "name": os.path.basename(agent.get("cwd", "")) or "?",
@@ -801,6 +1006,10 @@ def focus_info(slot, agent, summary, scroll=0):
             "effort": effort_for(agent),
             "status": agent.get("agent_status"),
             **{k: summary.get(k, "") for k in ("act", "say", "pending")},
+            "tldr": summary.get("tldr") or [],
+            # a macro put this there and you have not touched it yet, so it is
+            # a proposal to read, not a sentence you are in the middle of
+            "suggested": suggested,
             "opts": summary.get("opts") or [], "sel": summary.get("sel"),
             "lines": summary.get("lines") or [], "scroll": scroll,
             "context": used / max(1, limit)}
@@ -942,6 +1151,12 @@ def run():
     chain, automating = None, False   # a row of pads queued at one agent
     strip_level, strip_touch = None, False  # uncommitted until the finger lifts
     moving = None        # None off, -1 waiting for a pad, >=0 the pad in hand
+    mode = 0             # which mode of the models view; left/right walk them
+    # the exact text the last macro inserted. Compared rather than remembered
+    # as a flag: type one character onto it and it stops matching, which is
+    # precisely when it stops being a suggestion. Nothing to reset, nothing to
+    # leak, and submitting empties the prompt so it lapses on its own.
+    inserted = ""
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -980,7 +1195,8 @@ def run():
                         colour, anim = WHITE, STATIC  # the one you are driving
                     push.cc("session", s, SESSION_CCS, colour, anim)
                     push.cc("tab", s, TAB_CCS,
-                            WHITE if s == view else (BLUE if s < len(VIEWS) else BLACK))
+                            WHITE if s == view else
+                            (TAB_DIM if s < len(VIEWS) else BLACK))
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
                 # Scraped every poll, not just in the focus view: the bottom row
                 # answers a pending question from wherever you happen to be.
@@ -1077,10 +1293,26 @@ def run():
                         state = ("chain", repr(cinfo))
                         drawn = (lambda c=cinfo: disp_mod.render_chain(c))
                     elif VIEWS[view] == "focus":
-                        info = focus_info(seat, cur, summary, scroll) if cur else None
+                        pend = (summary.get("pending") or "").strip()
+                        info = (focus_info(seat, cur, summary, scroll,
+                                           bool(pend) and pend == inserted.strip())
+                                if cur else None)
                         state = (view, repr(info))
                         drawn = (lambda: disp_mod.render_focus(info)) if info else (
                             lambda: disp_mod.render((None,) * SLOTS))
+                    elif VIEWS[view] == "plan":
+                        # account-wide, not per agent: which model is doing the
+                        # work is a question about the account, not a column
+                        if mode % PLAN_MODES:
+                            tot = model_totals(live)
+                            state = (view, "tokens", repr(sorted(tot.items())), mode)
+                            drawn = (lambda t=tot, m=mode:
+                                     disp_mod.render_models(t, m, PLAN_MODES))
+                        else:                       # first: what you glance at
+                            bars, uerr = plan_usage(now)
+                            state = (view, "plan", repr(bars), uerr, mode)
+                            drawn = (lambda b=bars, e=uerr, m=mode:
+                                     disp_mod.render_plan(b, e, m, PLAN_MODES))
                     elif VIEWS[view] == "macros":
                         cols = tuple(MACROS)
                         state = (view, cols, arming, moving)
@@ -1097,6 +1329,12 @@ def run():
                     if state != shown:              # re-render on change only
                         try:
                             shown, frame = state, drawn()
+                            # the picker's labels, drawn once here rather than
+                            # in nine renderers. Not on the two that take the
+                            # whole glass -- a preview or a close prompt is not
+                            # a view, and neither left room for the band.
+                            if previewing is None and not closing:
+                                frame = disp_mod.view_strip(frame, VIEWS, view)
                         except Exception as e:
                             # the pads are the product, the screen is the label:
                             # a drawing bug must not take the surface down
@@ -1122,6 +1360,8 @@ def run():
                     push.cc(f"page{cc}", 0, [cc], WHITE if cur else BLACK)
                 for cc in ARROW_CCS:
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if target else BLACK)
+                for cc in SCROLL_CCS:      # lit only when there is a pane to page
+                    push.cc(f"pg{cc}", 0, [cc], WHITE if cur else BLACK)
                 # a mapped button that never lights reads as a dead one
                 push.cc("shift", 0, [SHIFT_CC], BRIGHT if shifted else DIM)
                 for i, cc in enumerate(ARM_CCS):
@@ -1332,6 +1572,10 @@ def run():
                     shown = None
                     print(f"chain: sequence {here + 1}/{total}, "
                           f"{len(chain.steps)} steps", flush=True)
+                elif (msg.type == "control_change" and msg.control in PICK_CCS
+                      and msg.value and VIEWS[view] == "plan"):
+                    mode, shown = (mode + PICK_CCS[msg.control]) % PLAN_MODES, None
+                    print(f"plan -> mode {mode + 1}/{PLAN_MODES}", flush=True)
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
                       and msg.value and target):
                     herdr("agent", "send", target, ARROW_CCS[msg.control])
@@ -1342,6 +1586,13 @@ def run():
                     steps = min(abs(delta), MAX_STEPS)
                     herdr("agent", "send", target,
                           (DOWN if delta > 0 else UP) * steps)
+                elif (msg.type == "control_change" and msg.control in SCROLL_CCS
+                      and msg.value):
+                    seat = current if peek is None else peek
+                    scrolls[seat] = page_scroll(scrolls.get(seat, 0),
+                                                SCROLL_CCS[msg.control])
+                    shown = None
+                    print(f"page -> slot {seat} scroll {scrolls[seat]}", flush=True)
                 elif msg.type == "control_change" and msg.control == TEMPO_CC:
                     # clockwise winds back through history, anticlockwise returns
                     # to the live tail at 0 -- same sense as the up arrow
@@ -1492,6 +1743,7 @@ def run():
                         # send half a thought
                         print(f"macro {m['label']!r} -> {target}", flush=True)
                         herdr("agent", "send", target, m["text"])
+                        inserted = m["text"]
                         macro_down = (i, now)
 
             if (macro_down and talk_slot is None and target
@@ -1545,6 +1797,23 @@ def selftest():
     assert colour_for(a("x", "idle")) == (GREEN, STATIC)
     assert colour_for(a("x", "banana")) == UNKNOWN
     assert colour_for({}) == UNKNOWN
+
+    # tokens by model: the same numbers /usage counts, from the same place
+    assert model_usage_for(None) == {}, "no agent, no tokens"
+    assert model_totals([]) == {}, "no agents, nothing to total"
+    _model_tok["/fake"] = (0, {"opus 5": {"out": 5, "inp": 1, "cread": 2, "cwrite": 3},
+                               "<synthetic>": {k: 0 for k in _USAGE_FIELDS}})
+    # model_totals reads through model_usage_for, so exercise the filter direct
+    merged = {}
+    for name, tot in _model_tok["/fake"][1].items():
+        seat = merged.setdefault(name, {k: 0 for k in _USAGE_FIELDS})
+        for k, v in tot.items():
+            seat[k] += v
+    kept = {k: v for k, v in merged.items() if any(v.values())}
+    assert kept == {"opus 5": {"out": 5, "inp": 1, "cread": 2, "cwrite": 3}}, kept
+    assert "<synthetic>" not in kept, "not a model, and it spends nothing"
+    del _model_tok["/fake"]
+    assert "plan" in VIEWS and len(VIEWS) <= len(TAB_CCS), "a button per view"
 
     assert len(MACROS) == MACRO_SLOTS, "one entry per macro pad"
     # the text itself never carries a newline; submitting is the flag's job, so
@@ -1638,6 +1907,38 @@ def selftest():
 
     # the strip is absolute: both ends must be reachable, and reachable at the
     # very edge, or the two levels people most want are the two they cannot hit
+    # paging out of the summary must land on the newest line, not six above it
+    assert page_scroll(0, 1) == 1, "the first page back arrives at the live tail"
+    assert page_scroll(1, 1) == 1 + PAGE_LINES, "then it pages properly"
+    assert page_scroll(0, -1) == 0, "already live, nowhere further down"
+    assert page_scroll(3, -1) == 0, "never past the tail"
+    assert page_scroll(20, -1) == 20 - PAGE_LINES, "and back down a page"
+    assert page_scroll(1, -1) == 0, "one line back returns to the summary"
+    assert set(SCROLL_CCS) & set(ARROW_CCS) == set(), "paging is not the arrows"
+    assert set(SCROLL_CCS) & set(PAGE_CCS) == set(), "nor switching sessions"
+
+    # the focus view's default: an explicit TLDR, else the last answer
+    pane = ["⏺ an older answer", "  its second line",
+            "⏺ the last answer", "  wrapped onto here",
+            "✻ Churned for 6s"]
+    assert tldr(pane) == ["the last answer", "wrapped onto here"], \
+        "the whole answer, not just its first line, and only the last one"
+    withtldr = pane + ["**TLDR**", "- Progress: did the thing",
+                       "- Next: the other thing",
+                       "✻ Churned for 6s · done",
+                       "※ recap: not part of it",
+                       "❯ half a typed prompt"]
+    got = tldr(withtldr)
+    assert got == ["- Progress: did the thing", "- Next: the other thing"], got
+    assert not any("TLDR" in l for l in got), "the heading is a row we cannot spare"
+    assert not any("recap" in l or "typed prompt" in l for l in got), \
+        "the pane's own furniture ends the section"
+    assert tldr(["⏺ only me"]) == ["only me"], "an answer with no body"
+    assert tldr([]) == [] and tldr(["nothing here"]) == [], "no answer, no summary"
+    # matched however it is spelled, and dropped either way
+    assert tldr(["tl;dr", "- Progress: x"]) == ["- Progress: x"]
+    assert tldr(["## TL;DR", "- Next: y"]) == ["- Next: y"]
+
     # moving pads: one operation, because an empty destination is just None
     a = [{"label": "a", "text": "a", "colour": BLUE, "tag": None, "submit": False},
          None,

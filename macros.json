@@ -35,21 +35,21 @@
       "text": "commit this",
       "colour": 3,
       "tag": "Git",
-      "submit": true
+      "submit": false
     },
     {
       "label": "PR",
       "text": "Make a pull request against main for the work currently on this branch.",
       "colour": 3,
       "tag": "Git",
-      "submit": true
+      "submit": false
     },
     {
       "label": "Review All Pull Requests",
       "text": "Review all pull requests and merge them into main when green.",
       "colour": 3,
       "tag": "Git",
-      "submit": true
+      "submit": false
     },
     null,
     null,
