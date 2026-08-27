@@ -1,20 +1,23 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { PanResponder, StyleSheet, Text, View } from 'react-native';
 import { C, PAD_HEX, hexFor, S, mono } from './theme';
 
 // note 36 is the Push's bottom-left pad. Row 0 (indices 0-7) is the bottom
 // screen row here, and index 56-63 sit at the top -- build rows top to
 // bottom on screen but count them r=7..0 so index math still reads i=r*8+c.
 const ROWS = [7, 6, 5, 4, 3, 2, 1, 0];
+const SIDE = 8;
+const SLOP = 6; // past this, a press was a drag and not a tap
 
-function Pad({ i, macro, isSel, isMoving, onPress }) {
+function Pad({ i, macro, isSel, isMoving, isHeld, isOver }) {
   return (
-    <Pressable
-      onPress={() => onPress(i)}
-      style={({ pressed }) => [
+    <View
+      style={[
         styles.pad,
         isSel && styles.sel,
         isMoving && styles.moving,
-        pressed && styles.pressed,
+        isOver && styles.over,
+        isHeld && styles.held,
       ]}
     >
       {macro && (
@@ -26,25 +29,95 @@ function Pad({ i, macro, isSel, isMoving, onPress }) {
           {macro.label}
         </Text>
       )}
-    </Pressable>
+    </View>
   );
 }
 
-export default function PadGrid({ macros, sel, moving, onPress }) {
+export default function PadGrid({ macros, sel, moving, onPress, onDrop }) {
+  const [drag, setDrag] = useState(null);
+  const live = useRef(null); // the same drag, readable inside the responder
+  const frame = useRef(null);
+  const grid = useRef(null);
+
+  // One responder for the whole grid rather than sixty-four: the pads are a
+  // regular 8x8, so where a finger is *is* which pad it is on, and a drag that
+  // crosses pads never has to be handed from one child to the next.
+  const cellAt = (pageX, pageY) => {
+    const f = frame.current;
+    if (!f || !f.width || !f.height) return null;
+    const c = Math.floor(((pageX - f.x) / f.width) * SIDE);
+    const r = Math.floor(((pageY - f.y) / f.height) * SIDE);
+    if (c < 0 || c >= SIDE || r < 0 || r >= SIDE) return null;
+    return (SIDE - 1 - r) * SIDE + c;
+  };
+
+  const responder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e) => {
+          const from = cellAt(e.nativeEvent.pageX, e.nativeEvent.pageY);
+          live.current = { from, over: from, moved: false };
+          setDrag(live.current);
+        },
+        onPanResponderMove: (e, g) => {
+          const d = live.current;
+          if (!d) return;
+          const over = cellAt(e.nativeEvent.pageX, e.nativeEvent.pageY);
+          const moved = d.moved || Math.hypot(g.dx, g.dy) > SLOP;
+          if (over !== d.over || moved !== d.moved) {
+            live.current = { ...d, over, moved };
+            setDrag(live.current);
+          }
+        },
+        onPanResponderRelease: () => {
+          const d = live.current;
+          live.current = null;
+          setDrag(null);
+          if (!d || d.from === null) return;
+          // a drag that ends off the grid, or back where it started, is a
+          // change of mind -- not a swap, and not a selection either
+          if (d.moved) {
+            if (d.over !== null && d.over !== d.from) onDrop(d.from, d.over);
+            return;
+          }
+          onPress(d.from);
+        },
+        onPanResponderTerminate: () => {
+          live.current = null;
+          setDrag(null);
+        },
+      }),
+    [onDrop, onPress]
+  );
+
+  const dragging = drag && drag.moved;
+
   return (
-    <View style={styles.grid}>
+    <View
+      ref={grid}
+      style={styles.grid}
+      onLayout={() =>
+        grid.current?.measureInWindow((x, y, width, height) => {
+          frame.current = { x, y, width, height };
+        })
+      }
+      {...responder.panHandlers}
+    >
       {ROWS.map((r) => (
         <View key={r} style={styles.row}>
-          {Array.from({ length: 8 }, (_, c) => {
-            const i = r * 8 + c;
+          {Array.from({ length: SIDE }, (_, c) => {
+            const i = r * SIDE + c;
             return (
               <Pad
                 key={i}
                 i={i}
                 macro={macros[i]}
                 isSel={sel === i}
-                isMoving={moving === i}
-                onPress={onPress}
+                isMoving={moving === i || (dragging && drag.from === i)}
+                isHeld={!!drag && !drag.moved && drag.from === i}
+                isOver={!!dragging && drag.over === i && drag.over !== drag.from}
               />
             );
           })}
@@ -61,6 +134,7 @@ const styles = StyleSheet.create({
   grid: {
     flex: 1,
     flexDirection: 'column',
+    userSelect: 'none', // or a drag across the grid drags a text selection
   },
   row: {
     flex: 1,
@@ -77,7 +151,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     overflow: 'hidden',
   },
-  pressed: {
+  held: {
     backgroundColor: C.panel,
   },
   sel: {
@@ -90,6 +164,12 @@ const styles = StyleSheet.create({
     borderColor: PAD_HEX[8],
     borderWidth: 2,
     borderStyle: 'dashed',
+    backgroundColor: C.accent,
+  },
+  // where it would land if you let go now
+  over: {
+    borderColor: PAD_HEX[8],
+    borderWidth: 2,
     backgroundColor: C.accent,
   },
   swatch: {

@@ -80,6 +80,15 @@ they physically sit, and the 64 pads below it across the full width. The pad
 editor is a sheet, not a column — an **edit pad** key appears in the top row
 once you have picked one, and the editor was holding a third of the screen
 open next to a grid that wants every pixel it can get.
+
+Pads are rearranged by dragging one onto another, which swaps them — the same
+trade the Push's own move mode makes, minus the mode. One `PanResponder` for
+the whole grid rather than sixty-four: the pads are a regular 8×8, so where a
+finger is *is* which pad it is on, and a drag crossing pads never has to be
+handed from one child to the next. Under six pixels of travel it was a tap and
+selects instead; a drag that ends off the grid, or back where it started, is a
+change of mind and does nothing. An empty pad has nothing to give, so dragging
+one would only teleport the pad you aimed at — it is refused.
 Everything on it drives the real controller — tapping a view button here
 presses that button there.
 

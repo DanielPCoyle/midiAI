@@ -173,6 +173,20 @@ export default function App() {
     [armed, base, labels, macros, moving, putMacros, say]
   );
 
+  // dropping a pad on another swaps them, the same trade the Push's own move
+  // mode makes -- an empty pad has nothing to give, so dragging one would only
+  // teleport the pad you aimed at
+  const dropPad = useCallback(
+    (from, to) => {
+      if (!macros[from]) return say('that pad is empty');
+      const next = macros.slice();
+      [next[from], next[to]] = [next[to], next[from]];
+      putMacros(next, labels);
+      setSel(to);
+    },
+    [labels, macros, putMacros, say]
+  );
+
   const savePad = useCallback(
     (fields) => {
       if (sel === null) return say('pick a pad first');
@@ -304,6 +318,7 @@ export default function App() {
             sel={sel}
             moving={moving !== null && moving >= 0 ? moving : null}
             onPress={tapPad}
+            onDrop={dropPad}
           />
         ) : (
           <View style={styles.waiting}>
