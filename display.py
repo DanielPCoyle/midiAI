@@ -121,14 +121,14 @@ def ctx_bar(d, x, y, w, frac, h=3):
 # The screen half of push_cc.VIEW_CC: one hue per view, so the label above a
 # button and the button itself are the same colour. Unselected labels are the
 # same hue dimmed -- on the glass, unlike the buttons, a hue does have one.
-VIEW_RGB = {"focus": (235, 235, 240), "agents": (110, 150, 240),
+VIEW_RGB = {"focus": (235, 235, 240), "sessions": (110, 150, 240),
             "tests": (60, 220, 90), "prs": (240, 205, 60),
             "usage": (240, 80, 80)}
 
 
 def view_strip(img, names, current):
     """names: list of view names, in button order, up to 8 (e.g.
-              ["focus", "agents", "usage", "plan", "macros"])
+              ["focus", "sessions", "usage", "plan", "macros"])
        current: index of the active view
        Draws in place on `img` and returns it.
 
@@ -1051,7 +1051,7 @@ def render(cols):
 
     Eight cards, and only that. A half-written prompt belongs to the focus
     view, which is where you go to read one; letting it take this glass meant
-    the one screen showing all eight agents kept turning into a screen about
+    the one screen showing all eight sessions kept turning into a screen about
     one of them."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)

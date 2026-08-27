@@ -44,9 +44,9 @@ shortcuts grid — the same subject, the session you are driving, shown as what
 you can say to it. Record, Select and Automate all put you there, because
 that is the mode their pads live in.
 
-**agents** names every column: repo, status, model, and a tail of the terminal
-id. That last one earns its space — two checkouts of one repo show the same
-name, and the id is the only thing that tells them apart.
+**sessions** names every column: repo, status, model, and a tail of the
+terminal id. That last one earns its space — two checkouts of one repo show
+the same name, and the id is the only thing that tells them apart.
 
 In this view the pads are the *subagents* the current session has spawned —
 read off `~/.claude/projects/<session>/subagents/`, labelled with the

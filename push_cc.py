@@ -13,8 +13,8 @@ dictate the rest of the sentence onto what it just typed. Hold Shift and tap one
 Hold Record or Select and tap one to save
 whatever is in the prompt onto it. macros.json is hand-editable.
 
-Buttons above the display (CC 102-109) pick the view: 1 focus, 2 agents,
-3 usage, 4 shortcuts. White is the one you are on.
+Buttons above the display (CC 102-109) pick the view: 1 focus,
+2 sessions, 3 tests, 4 prs, 5 usage. White is the one you are on.
 
 The 960x160 screen names each column, so two checkouts of the same repo are
 told apart by the tail of their terminal id. Missing pyusb just means no
@@ -79,13 +79,13 @@ MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 # focus first: it is the one you actually watch, and view defaults to 0 so
 # it is also what comes up on start
-VIEWS = ["focus", "agents", "tests", "prs", "usage"]
+VIEWS = ["focus", "sessions", "tests", "prs", "usage"]
 # a view with more than one mode: its own button cycles them, Left/Right too.
 # One button per subject beats two buttons for two halves of one question.
 # the shortcuts grid is the focus view's second mode: it is the same subject
 # -- the session you are driving -- shown as what you can say to it
-# the agents view's second mode names the pads its first mode lights
-VIEW_MODES = {"focus": 2, "agents": 2, "usage": 3}
+# the sessions view's second mode names the pads its first mode lights
+VIEW_MODES = {"focus": 2, "sessions": 2, "usage": 3}
 SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
@@ -208,7 +208,7 @@ PALETTE = [("red", RED), ("orange", 3), ("yellow", YELLOW), ("green", GREEN),
 # animation rather than the brightness: an arbitrary palette index has no dim
 # twin to fall back on, and the label strip already boxes the one you are on.
 # display.VIEW_RGB carries the same assignment in screen colours; change both.
-VIEW_CC = {"focus": WHITE, "agents": BLUE, "tests": GREEN,
+VIEW_CC = {"focus": WHITE, "sessions": BLUE, "tests": GREEN,
            "prs": YELLOW, "usage": RED}
 DEFAULT_LABELS = [{"name": "prompt", "colour": BLUE}]
 STATIC, PULSE, BLINK = 0, 9, 14
@@ -709,7 +709,7 @@ def finished_calls(path):
     """Tool calls this session already has a result for.
 
     ponytail: the whole file, re-read whenever it grows -- 40ms on an 11MB
-    transcript, and only asked for while the agents view is up. Read from an
+    transcript, and only asked for while the sessions view is up. Read from an
     offset if that ever bites."""
     try:
         size = os.stat(path).st_size
@@ -1870,10 +1870,10 @@ def run():
                 if now >= next_sweep and not talking:
                     next_sweep = now + SWEEP_S
                     asking = sweep_panes(slots, by_id, current)
-                # the pads in the agents view are this session's subagents,
+                # the pads in the sessions view are this session's subagents,
                 # and the focus view may be sitting on one of them
                 subs = (subagents(cur, MACRO_SLOTS)
-                        if VIEWS[view] == "agents" or subfocus else [])
+                        if VIEWS[view] == "sessions" or subfocus else [])
                 if subfocus and subfocus[0] != (cur or {}).get("terminal_id"):
                     subfocus = None          # you drove somewhere else
                 troot = (cur or {}).get("cwd") or ""
@@ -1995,7 +1995,7 @@ def run():
                             state = (view, "plan", repr(bars), uerr, mode)
                             drawn = (lambda b=bars, e=uerr, m=mode:
                                      disp_mod.render_plan(b, e, m, USAGE_MODES))
-                    elif VIEWS[view] == "agents" and mode == 1:
+                    elif VIEWS[view] == "sessions" and mode == 1:
                         rows = tuple({"label": x["label"], "type": x["type"],
                                       "running": x["running"],
                                       "focused": bool(subfocus)
@@ -2114,10 +2114,10 @@ def run():
                 # question in particular answers from wherever you are.
                 lit_macros = VIEWS[view] == "focus"
                 testing = VIEWS[view] == "tests"
-                # the agents view puts the agents themselves on the pads. No
+                # the sessions view puts the subagents themselves on the pads. No
                 # answer-pad exception: a question drags you to the focus view
                 # before you could press one here.
-                picking = VIEWS[view] == "agents"
+                picking = VIEWS[view] == "sessions"
                 chain_at = {p: k for k, p in enumerate(chain.steps)} if chain else {}
                 for i in range(MACRO_SLOTS):        # bottom row changes job when asked
                     row0, anim = i < SLOTS, STATIC
@@ -2504,14 +2504,14 @@ def run():
                         print(f"answer {i + 1}/{len(opts)}: {opts[i][1]!r} "
                               f"-> {target}", flush=True)
                         herdr("agent", "send", target, answer_keys(i, pick))
-                    elif VIEWS[view] == "agents":
+                    elif VIEWS[view] == "sessions":
                         # last, under every mode: the pads only stand for the
                         # subagents when nothing louder has borrowed them
                         if i < len(subs):
                             confirm = ("focus", now + CONFIRM_S, i,
                                        subs[i]["label"])
                             shown = None
-                            print(f"agents: pad {i} -> focus "
+                            print(f"sessions: pad {i} -> focus "
                                   f"{subs[i]['label']!r}?", flush=True)
                     elif MACROS[i] and target:
                         m = MACROS[i]
