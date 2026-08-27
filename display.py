@@ -834,6 +834,61 @@ CHECK_RGB = {"pass": (60, 220, 90), "fail": (240, 60, 60),
              "pending": (240, 200, 40), "none": (80, 80, 80)}
 
 
+SUB_RGB = {"running": (240, 200, 40), "done": (60, 220, 90)}
+SUB_ROWS, SUB_COLS = 6, 2      # what fits between the two bands, in reading order
+
+
+def render_subs(info):
+    """info: repo, subs (label, type, model, running, focused).
+
+    The pads in this view are these, in this order: pad 1 is the bottom-left
+    one. The grid says which are still going; this says what they were asked
+    to do, which no colour can."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    subs = info.get("subs") or []
+    t, f = fit(d, info.get("repo", "?"), 300, 20)
+    d.text((10, 14), t, font=f, fill=(235, 235, 235))
+    live = sum(1 for x in subs if x.get("running"))
+    shown = subs[:SUB_ROWS * SUB_COLS]
+    tag = (f"{len(subs)} subagents  ·  {live} running"
+           + (f"  ·  {len(subs) - len(shown)} not shown"
+              if len(subs) > len(shown) else "")) if subs else ""
+    if tag:
+        t, f = fit(d, tag, 420, 15)
+        d.text((WIDTH - 14 - d.textlength(t, font=f), 18), t, font=f,
+               fill=(120, 120, 120))
+    d.line([(10, 38), (WIDTH - 10, 38)], fill=(50, 50, 50))
+    if not subs:
+        t, f = fit(d, "this session has spawned none", WIDTH - 40, 20)
+        d.text((20, 70), t, font=f, fill=(90, 90, 90))
+        return img
+
+    cw, step = (WIDTH - 20) // SUB_COLS, (BOTTOM - 44) // SUB_ROWS
+    for i, sub in enumerate(shown):
+        x = 10 + (i // SUB_ROWS) * cw
+        y = 42 + (i % SUB_ROWS) * step
+        rgb = SUB_RGB["running" if sub.get("running") else "done"]
+        d.rectangle([x, y + 2, x + 10, y + step - 5], fill=rgb)
+        num, f = fit(d, str(i + 1), 30, 13)
+        d.text((x + 16, y + 3), num, font=f, fill=(110, 110, 110))
+        # the type earns its place: two subagents with one description happens,
+        # and "Explore" next to "general-purpose" is what tells them apart
+        kind = sub.get("type", "")
+        kw = 0
+        if kind:
+            t, kf = fit(d, kind, 150, 12)
+            kw = d.textlength(t, font=kf) + 12
+            d.text((x + cw - 14 - kw + 12, y + 4), t, font=kf, fill=(95, 95, 95))
+        t, f = fit(d, sub.get("label", "?"), cw - 60 - kw, 15)
+        d.text((x + 40, y + 2), t, font=f,
+               fill=(245, 245, 245) if sub.get("focused") else (195, 195, 195))
+        if sub.get("focused"):          # the one the focus view is sitting on
+            d.line([(x - 4, y + 2), (x - 4, y + step - 5)],
+                   fill=(150, 175, 215), width=3)
+    return img
+
+
 def render_prs(info):
     """info: repo, rows (n, title, who, draft, checks, review, mine), err.
 

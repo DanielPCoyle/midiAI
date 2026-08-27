@@ -84,7 +84,8 @@ VIEWS = ["focus", "agents", "tests", "prs", "usage"]
 # One button per subject beats two buttons for two halves of one question.
 # the shortcuts grid is the focus view's second mode: it is the same subject
 # -- the session you are driving -- shown as what you can say to it
-VIEW_MODES = {"focus": 2, "usage": 3}
+# the agents view's second mode names the pads its first mode lights
+VIEW_MODES = {"focus": 2, "agents": 2, "usage": 3}
 SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
@@ -1914,6 +1915,14 @@ def run():
                             state = (view, "plan", repr(bars), uerr, mode)
                             drawn = (lambda b=bars, e=uerr, m=mode:
                                      disp_mod.render_plan(b, e, m, USAGE_MODES))
+                    elif VIEWS[view] == "agents" and mode == 1:
+                        rows = tuple({"label": x["label"], "type": x["type"],
+                                      "running": x["running"],
+                                      "focused": bool(subfocus)
+                                      and subfocus[1] == x["id"]} for x in subs)
+                        state = (view, "subs", rows)
+                        drawn = (lambda r=rows, n=agent_name(cur):
+                                 disp_mod.render_subs({"repo": n, "subs": r}))
                     elif VIEWS[view] == "prs":
                         rows, perr = open_prs(troot, now)
                         pinfo = {"repo": agent_name(cur), "rows": rows,

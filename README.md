@@ -53,7 +53,9 @@ read off `~/.claude/projects/<session>/subagents/`, labelled with the
 description each was dispatched with. Yellow pulsing is still running, green
 has come back. Tapping one asks before it acts, and yes points the **focus**
 view at that subagent's own transcript instead of the session's pane. A
-session button takes you back.
+session button takes you back. The view's second mode names them all on the
+glass, in pad order — the grid says which are still going, the list says what
+each was asked to do.
 
 Two permanent bands frame every view: the top names what each button above the
 screen switches to, the bottom names the session each button below it drives.
