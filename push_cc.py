@@ -78,7 +78,7 @@ MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 # focus first: it is the one you actually watch, and view defaults to 0 so
 # it is also what comes up on start
-VIEWS = ["focus", "agents", "usage", "plan", "macros"]
+VIEWS = ["focus", "agents", "usage", "plan", "tests", "macros"]
 SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
@@ -101,6 +101,7 @@ ARROW_CCS = {44: "\x1b[D", 45: "\x1b[C", 46: UP, 47: DOWN}
 # While a chain is armed the same two buttons choose which of the row's
 # sequences to run. They go back to being arrow keys the moment it is not.
 PICK_CCS = {44: -1, 45: 1}
+BACK_CC = 44           # left also backs out of the test tree, while it is up
 # Octave up/down page the focus view. The knobs already scroll it a line at a
 # time, which is the wrong gesture for getting somewhere: a button you can hit
 # twice beats a knob you have to keep turning.
@@ -736,6 +737,262 @@ def model_totals(live):
     return {k: v for k, v in out.items() if any(v.values())}
 
 
+# ---------------------------------------------------------------- tests
+
+# .claude/worktrees holds checkouts of the same repo -- and Add Track is what
+# puts them there, so this project generates its own decoys. Counting them
+# doubled cookoojobs from 262 files to 525 and lit failures in trees nobody
+# was working in.
+TEST_SKIP = {"node_modules", ".git", ".claude", "dist", "build", ".next",
+             "coverage", "__snapshots__", ".turbo", "vendor"}
+TEST_PATS = (".test.", ".spec.")
+# jest and playwright both print one of these per file as they go. The JSON
+# reporters are more of a contract but only speak at the end, and a grid that
+# stays dark for three minutes and then flips is not worth hardware.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# PASS/FAIL only. jest also ticks every individual assertion with ✓, and
+# accepting those filled the grid with pads named "concatenating" and "emits".
+# The guard below is the real fix: a result line names a test FILE.
+_RESULT_RE = re.compile(r"^\s*(PASS|FAIL)\s+(\S+)")
+# playwright drives real browsers against a real app, detox drives a simulator.
+# They belong in the tree, but not behind a pad you might lean on.
+TEST_SLOW = ("playwright", "detox", "cypress")
+# not-run is its own colour: dark grey says no information, and a green pad
+# for something that never ran is the one lie a test display must not tell
+TEST_LEDS = {"pass": (GREEN, STATIC), "fail": (RED, BLINK),
+             "run": (YELLOW, PULSE), "": (TAB_DIM, STATIC)}
+
+
+def test_files(root):
+    """Every test file under `root`, relative and sorted, decoys dropped."""
+    out = []
+    for here, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in TEST_SKIP and not d.startswith(".")]
+        for name in files:
+            if any(p in name for p in TEST_PATS):
+                out.append(os.path.relpath(os.path.join(here, name), root))
+    return sorted(out)
+
+
+def test_packages(root):
+    """The runnable units: every package.json with a test script.
+
+    In a monorepo these are also the top of the tree -- cookoojobs' four
+    sub-packages are both the directories you zoom into and the things you
+    run, so structure and execution agree without being made to."""
+    out = []
+    for here, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in TEST_SKIP and not d.startswith(".")]
+        if "package.json" not in files:
+            continue
+        try:
+            with open(os.path.join(here, "package.json")) as f:
+                cmd = (json.load(f).get("scripts") or {}).get("test", "")
+        except (OSError, ValueError):
+            continue
+        if not cmd or cmd.startswith("npm run"):     # a router, not a runner
+            continue
+        out.append({"name": os.path.relpath(here, root),
+                    "cwd": here, "cmd": cmd,
+                    "slow": any(s in cmd for s in TEST_SLOW)})
+    return sorted(out, key=lambda p: p["name"])
+
+
+def test_tree(paths):
+    """Nested dicts; a file is a leaf holding None."""
+    root = {}
+    for p in paths:
+        node = root
+        parts = p.split(os.sep)
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node.setdefault(parts[-1], None)
+    return root
+
+
+def tree_at(tree, path):
+    """The node a zoom path points at, or None if it has gone away -- macros
+    are not the only thing that can change under a view."""
+    node = tree
+    for part in path:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def leaves_under(node, prefix=""):
+    """Every file beneath a node, so a directory can answer for its children."""
+    if node is None:
+        return [prefix]
+    out = []
+    for name, child in node.items():
+        out.extend(leaves_under(child, f"{prefix}/{name}" if prefix else name))
+    return out
+
+
+def roll_up(states):
+    """One colour for a directory, from what is beneath it. Failure wins:
+    the whole point is that you can follow red down to the file without
+    knowing where it lives."""
+    if not states:
+        return ""
+    for want in ("fail", "run", "pass"):
+        if want in states:
+            return want
+    return ""
+
+
+def test_items(tree, path, states):
+    """The children at this zoom, each wearing the worst state beneath it.
+
+    Worst, not average: a directory is red if anything under it failed, which
+    is what lets you follow red down to the file without knowing where it
+    lives. That descent is the whole reason this is a tree and not a list."""
+    node = tree_at(tree, path)
+    if not isinstance(node, dict):
+        return []
+    out = []
+    for name in sorted(node):
+        child = node[name]
+        under = leaves_under(child, "/".join(path + [name]))
+        seen = {states.get(leaf, "") for leaf in under} - {""}
+        out.append({"name": name, "dir": isinstance(child, dict),
+                    "state": roll_up(seen)})
+    return out[:MACRO_SLOTS]
+
+
+def parse_result(line):
+    """(status, file) from a runner's stdout, or None. Colour codes stripped:
+    jest paints PASS green and the escape lands before the word."""
+    m = _RESULT_RE.match(_ANSI_RE.sub("", line))
+    if not m:
+        return None
+    path = m.group(2)
+    if not any(pat in path for pat in TEST_PATS):
+        return None                      # a test's name, not a file's
+    return ("pass" if m.group(1) == "PASS" else "fail"), path
+
+
+_tests = {"root": None, "tree": {}, "pkgs": [], "busy": False}
+
+
+def tests_for(root):
+    """A repo's tree and its runnable packages, discovered off the loop.
+
+    Both walks together are 86ms on cookoojobs -- inside the release timer,
+    but only just, and the next repo is always bigger. Discovered once per
+    repo on a thread and then held: nothing here moves while you look at it."""
+    if root and _tests["root"] != root and not _tests["busy"]:
+        _tests["busy"] = True
+
+        def go():
+            try:
+                found = test_tree(test_files(root)), test_packages(root)
+            except OSError:
+                found = {}, []
+            _tests.update(root=root, tree=found[0], pkgs=found[1], busy=False)
+
+        threading.Thread(target=go, daemon=True).start()
+    if _tests["root"] != root:
+        return {}, []
+    return _tests["tree"], _tests["pkgs"]
+
+
+def scope_packages(pkgs, path, slow=False):
+    """The runners a zoom path covers.
+
+    Slow ones stay out unless asked for: playwright starts browsers and detox
+    a simulator, and a pad is a very low bar for either."""
+    here = "/".join(path)
+    if here:
+        pkgs = [p for p in pkgs
+                if p["name"] == here or p["name"].startswith(here + os.sep)
+                or here.startswith(p["name"] + os.sep)] or pkgs
+    return [p for p in pkgs if slow or not p["slow"]]
+
+
+class TestRun:
+    """One pass of a repo's unit tests, watched as it goes.
+
+    Sequential, the way `npm test` runs them, and on its own thread: a run is
+    minutes and the poll loop owes a keystroke every 60ms. Nothing here is
+    read by the loop except a dict it never writes."""
+
+    def __init__(self, root, packages, only=None):
+        self.root, self.packages, self.only = root, packages, only
+        self.states = {}         # path relative to root -> pass | fail | run
+        self.now = ""            # the package currently running
+        self.done, self.stop = False, False
+        self.proc = None
+
+    def key(self, pkg, printed):
+        """Runners print paths relative to their own package, the tree is
+        relative to the repo. Without this every result misses its pad."""
+        printed = printed.lstrip("./")
+        if pkg["name"] in (".", ""):
+            return os.path.normpath(printed)
+        if printed.startswith(pkg["name"] + os.sep):
+            return os.path.normpath(printed)
+        return os.path.normpath(os.path.join(pkg["name"], printed))
+
+    def run(self):
+        for pkg in self.packages:
+            if self.stop:
+                break
+            self.now = pkg["name"]
+            cmd = pkg["cmd"]
+            if self.only:
+                # the runner works from its own package; the tree counts from
+                # the repo, so hand it back a path it recognises
+                rel = self.only
+                if pkg["name"] not in (".", "") and rel.startswith(pkg["name"] + os.sep):
+                    rel = rel[len(pkg["name"]) + 1:]
+                cmd = f"{cmd} {rel}"
+            # npm is what normally puts node_modules/.bin on PATH, and these
+            # scripts say bare `jest`. Without this the process starts, says
+            # "jest: not found", and the grid reports nothing at all.
+            binp = os.pathsep.join(
+                [os.path.join(pkg["cwd"], "node_modules", ".bin"),
+                 os.path.join(self.root, "node_modules", ".bin"),
+                 os.environ.get("PATH", "")])
+            try:
+                self.proc = subprocess.Popen(
+                    ["sh", "-c", cmd], cwd=pkg["cwd"], text=True,
+                    env=dict(os.environ, PATH=binp),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            except OSError as e:
+                print(f"tests: {pkg['name']} would not start ({e})", flush=True)
+                continue
+            for line in self.proc.stdout:
+                if self.stop:
+                    self.proc.terminate()
+                    break
+                got = parse_result(line)
+                if got:
+                    status, printed = got
+                    self.states[self.key(pkg, printed)] = status
+            self.proc.wait()
+            self.proc = None
+        self.now, self.done = "", True
+
+    def start(self):
+        threading.Thread(target=self.run, daemon=True).start()
+        return self
+
+    def abort(self):
+        self.stop = True
+        if self.proc:
+            try:
+                self.proc.terminate()
+            except OSError:
+                pass
+
+    def tally(self):
+        vals = list(self.states.values())
+        return vals.count("pass"), vals.count("fail")
+
+
 # ---------------------------------------------------------------- plan usage
 
 CREDS_FILE = os.path.expanduser("~/.claude/.credentials.json")
@@ -1152,6 +1409,7 @@ def run():
     strip_level, strip_touch = None, False  # uncommitted until the finger lifts
     moving = None        # None off, -1 waiting for a pad, >=0 the pad in hand
     mode = 0             # which mode of the models view; left/right walk them
+    test_path, test_run, titems = [], None, []   # where you are in the tree
     # the exact text the last macro inserted. Compared rather than remembered
     # as a flag: type one character onto it and it stops matching, which is
     # precisely when it stops being a suggestion. Nothing to reset, nothing to
@@ -1220,6 +1478,11 @@ def run():
                 if now >= next_sweep and not talking:
                     next_sweep = now + SWEEP_S
                     asking = sweep_panes(slots, by_id, current)
+                troot = (cur or {}).get("cwd") or ""
+                if VIEWS[view] == "tests":
+                    ttree, tpkgs = tests_for(troot)
+                    titems = test_items(ttree, test_path,
+                                        test_run.states if test_run else {})
                 if opts:
                     asking.add(current)
                 else:
@@ -1313,6 +1576,17 @@ def run():
                             state = (view, "plan", repr(bars), uerr, mode)
                             drawn = (lambda b=bars, e=uerr, m=mode:
                                      disp_mod.render_plan(b, e, m, PLAN_MODES))
+                    elif VIEWS[view] == "tests":
+                        ok, bad = test_run.tally() if test_run else (0, 0)
+                        tinfo = {"repo": os.path.basename(troot) or "?",
+                                 "path": list(test_path), "items": titems,
+                                 "running": (test_run.now if test_run
+                                             and not test_run.done else ""),
+                                 "passed": ok, "failed": bad,
+                                 "slow": any(p["slow"] for p in
+                                             scope_packages(tpkgs, test_path, True))}
+                        state = (view, repr(tinfo))
+                        drawn = (lambda i=tinfo: disp_mod.render_tests(i))
                     elif VIEWS[view] == "macros":
                         cols = tuple(MACROS)
                         state = (view, cols, arming, moving)
@@ -1385,10 +1659,21 @@ def run():
                 # rest of the time
                 push.strip(strip_bar(strip_level if strip_touch and strip_level
                                      else effort_for(cur)))
+                # The grid shows shortcuts where shortcuts are the subject.
+                # On usage or plan it is 64 lit pads about something else, and
+                # a surface that is always on says nothing. The modes keep
+                # their pads regardless: an armed chain, a pad in hand, Record
+                # held, and a question waiting are all live state, and a
+                # question in particular answers from wherever you are.
+                lit_macros = VIEWS[view] in ("focus", "macros")
+                testing = VIEWS[view] == "tests"
                 chain_at = {p: k for k, p in enumerate(chain.steps)} if chain else {}
                 for i in range(MACRO_SLOTS):        # bottom row changes job when asked
                     row0, anim = i < SLOTS, STATIC
-                    if i in chain_at:               # the chain owns its own pads
+                    if testing:
+                        colour, anim = (TEST_LEDS[titems[i]["state"]]
+                                        if i < len(titems) else (BLACK, STATIC))
+                    elif i in chain_at:             # the chain owns its own pads
                         k = chain_at[i]
                         colour, anim = (
                             (GREEN, STATIC) if chain.phase == "done" else
@@ -1408,7 +1693,8 @@ def run():
                         colour = (RED if arming else
                                   (WHITE if row0 and i < len(opts) else
                                    (BLACK if opts and row0 else
-                                    (MACROS[i]["colour"] if MACROS[i] else BLACK))))
+                                    (MACROS[i]["colour"]
+                                     if MACROS[i] and lit_macros else BLACK))))
                     push.note("macro", i, MACRO_NOTES[i], colour, anim)
 
             for msg in inp.iter_pending():
@@ -1512,7 +1798,11 @@ def run():
                     print(f"browse -> pull requests for {where}", flush=True)
                 elif (msg.type == "control_change" and msg.control == STOP_CC
                       and msg.value):
-                    if chain:
+                    if VIEWS[view] == "tests" and test_run and not test_run.done:
+                        test_run.abort()
+                        shown = None
+                        print("tests: aborted", flush=True)
+                    elif chain:
                         # mid-step, stop has to mean the agent too, or the chain
                         # dies and the thing it started keeps running
                         print(f"chain {chain.phase} -> discarded", flush=True)
@@ -1565,6 +1855,10 @@ def run():
                     shown = None
                     if arming and not was:
                         view = VIEWS.index("macros")   # show what you would overwrite
+                elif (msg.type == "control_change" and msg.control == BACK_CC
+                      and msg.value and VIEWS[view] == "tests" and test_path):
+                    test_path, shown = test_path[:-1], None
+                    print(f"tests -> {'/'.join(test_path) or '(top)'}", flush=True)
                 elif (msg.type == "control_change" and msg.control in PICK_CCS
                       and msg.value and chain and chain.phase == "armed"
                       and chain.cycle(MACROS, PICK_CCS[msg.control])):
@@ -1644,7 +1938,18 @@ def run():
                         print("automate off", flush=True)
                 elif (msg.type == "control_change" and msg.control == PLAY_CC
                       and msg.value):
-                    if chain and chain.phase == "armed":
+                    if VIEWS[view] == "tests":
+                        if test_run and not test_run.done:
+                            print("tests: already running", flush=True)
+                        else:
+                            pk = scope_packages(tpkgs, test_path)
+                            if pk:
+                                test_run, shown = TestRun(troot, pk).start(), None
+                                print("tests: running " +
+                                      ", ".join(q["name"] for q in pk), flush=True)
+                            else:
+                                print("tests: nothing runnable here", flush=True)
+                    elif chain and chain.phase == "armed":
                         shown = None
                         if chain.fire(MACROS, now):
                             chain.phase = "running"
@@ -1677,7 +1982,22 @@ def run():
                         macro_down = None
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if moving is not None:
+                    if testing:
+                        if i < len(titems):
+                            it = titems[i]
+                            if it["dir"]:
+                                test_path, shown = test_path + [it["name"]], None
+                                print(f"tests -> {'/'.join(test_path)}", flush=True)
+                            elif not (test_run and not test_run.done):
+                                # a leaf runs itself: both runners take a path,
+                                # and the package it sits in picks the runner
+                                leaf = "/".join(test_path + [it["name"]])
+                                pk = scope_packages(tpkgs, test_path) or tpkgs
+                                if pk:
+                                    test_run = TestRun(troot, pk[:1], only=leaf).start()
+                                    shown = None
+                                    print(f"tests: re-running {leaf}", flush=True)
+                    elif moving is not None:
                         if moving < 0:
                             if MACROS[i]:
                                 moving = i
@@ -1797,6 +2117,44 @@ def selftest():
     assert colour_for(a("x", "idle")) == (GREEN, STATIC)
     assert colour_for(a("x", "banana")) == UNKNOWN
     assert colour_for({}) == UNKNOWN
+
+    # tests: the tree the grid navigates, and reading a runner's output
+    assert test_tree(["a/b.test.ts", "a/c.test.ts", "d.test.ts"]) == \
+        {"a": {"b.test.ts": None, "c.test.ts": None}, "d.test.ts": None}
+    tt = test_tree(["a/b/c.test.ts", "a/d.test.ts", "e.test.ts"])
+    assert sorted(tree_at(tt, [])) == ["a", "e.test.ts"], "the top is a level"
+    assert sorted(tree_at(tt, ["a"])) == ["b", "d.test.ts"], "and so is a branch"
+    assert tree_at(tt, ["a", "b", "c.test.ts"]) is None, "a file is a leaf"
+    assert tree_at(tt, ["nope"]) is None, "a path that has gone away"
+    assert sorted(leaves_under(tt["a"], "a")) == ["a/b/c.test.ts", "a/d.test.ts"]
+    assert leaves_under(None, "x") == ["x"], "a file is its own leaf"
+
+    # failure wins, so red can be followed down without knowing where it lives
+    assert roll_up({"pass", "fail"}) == "fail"
+    assert roll_up({"pass", "run"}) == "run", "running outranks settled passes"
+    assert roll_up({"fail", "run"}) == "fail", "but a failure outranks running"
+    assert roll_up({"pass"}) == "pass"
+    assert roll_up(set()) == "", "nothing run yet is not a pass"
+
+    assert parse_result("PASS src/a.test.ts") == ("pass", "src/a.test.ts")
+    assert parse_result("  FAIL  x/b.spec.js") == ("fail", "x/b.spec.js")
+    # jest paints the word, so the escape arrives before it
+    assert parse_result("\x1b[32mPASS\x1b[0m src/c.test.ts") == ("pass", "src/c.test.ts")
+    assert parse_result("Tests: 3 passed") is None, "a summary is not a file"
+    # jest ticks each assertion too; those are not files and must not take pads
+    assert parse_result("  ✓ concatenating") is None, "a test name is not a file"
+    assert parse_result("PASS concatenating") is None, "nor is it, dressed as one"
+    assert parse_result("") is None and parse_result("random") is None
+
+    r = TestRun("/r", [{"name": "pkg", "cwd": "/r/pkg", "cmd": "jest", "slow": False}])
+    assert r.key(r.packages[0], "src/a.test.ts") == "pkg/src/a.test.ts", \
+        "a runner prints paths from its own package, the tree counts from the repo"
+    assert r.key(r.packages[0], "./src/a.test.ts") == "pkg/src/a.test.ts"
+    assert r.key(r.packages[0], "pkg/src/a.test.ts") == "pkg/src/a.test.ts", \
+        "already qualified, do not double it"
+    assert r.key({"name": ".", "cwd": "/r"}, "a.test.ts") == "a.test.ts"
+    r.states = {"a": "pass", "b": "fail", "c": "pass"}
+    assert r.tally() == (2, 1)
 
     # tokens by model: the same numbers /usage counts, from the same place
     assert model_usage_for(None) == {}, "no agent, no tokens"

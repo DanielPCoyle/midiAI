@@ -778,6 +778,107 @@ def render_plan(bars, err="", mode=0, modes=1):
     return img
 
 
+_TEST_STATE_RGB = {
+    "fail": (224, 60, 60), "pass": (60, 208, 90),
+    "run": (224, 208, 44), "": (100, 100, 100),
+}
+
+
+def render_tests(info):
+    """A zoomable tree of test files, navigated on the pad grid. info: repo,
+    path (zoom breadcrumb), items (children of the current zoom, PAD ORDER),
+    running, passed, failed, slow. See module callers for the full shape.
+
+    Mapped exactly like render_macros -- items[i] sits on pad i, pad 0 is
+    bottom-left on the Push, so the cell you look at is the pad you'd press.
+    Failure colour has already propagated upward into a directory's `state`
+    by the time it reaches here; this only draws what it's given, it does
+    not compute the propagation itself.
+    """
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    items = (info.get("items") or [])[:64]
+    repo = info.get("repo") or "?"
+    path = list(info.get("path") or [])
+    running = info.get("running") or ""
+    slow = bool(info.get("slow"))
+    passed = int(info.get("passed") or 0)
+    failed = int(info.get("failed") or 0)
+
+    # breadcrumb, truncated from the LEFT -- unlike fit() (shrink, then chop
+    # the end) the tail is what matters here: you already know the repo,
+    # what you need is where in it you've zoomed to
+    crumb = " / ".join([repo] + path)
+    size = 12
+    cf = font(size)
+    while size > 8 and d.textlength(crumb, font=cf) > WIDTH - 20:
+        size -= 1
+        cf = font(size)
+    text = crumb
+    while text and d.textlength("..." + text, font=cf) > WIDTH - 20:
+        text = text[1:]
+    if text != crumb:
+        text = "..." + text
+    d.text((10, 12), text, font=cf, fill=(190, 195, 200))
+
+    # second line: in-progress / slow markers on the left, the tally on the
+    # right -- failures read louder than passes on purpose
+    y2 = 25
+    x = 10
+    if running:
+        s, rf = fit(d, f"running {running}", 280, 12)
+        d.rectangle([x, y2 + 1, x + 5, y2 + rf.size], fill=(224, 208, 44))
+        d.text((x + 9, y2), s, font=rf, fill=(224, 208, 44))
+        x += 13 + d.textlength(s, font=rf) + 14
+    if slow:
+        sf = font(11)
+        d.rectangle([x, y2 + 1, x + 5, y2 + sf.size], fill=(224, 138, 44))
+        d.text((x + 9, y2), "slow runner", font=sf, fill=(224, 138, 44))
+
+    fail_f = font(15 if failed else 12)
+    pass_f = font(11)
+    fail_s, pass_s = str(failed), f"{passed} passed"
+    tx = WIDTH - 12 - d.textlength(fail_s, font=fail_f)
+    d.text((tx, y2 - 1), fail_s, font=fail_f,
+           fill=(230, 70, 70) if failed else (90, 90, 90))
+    tx -= 6 + d.textlength(pass_s, font=pass_f)
+    d.text((tx, y2 + 2), pass_s, font=pass_f, fill=(110, 150, 115))
+
+    grid_top, grid_bottom = 42, HEIGHT - 2
+    if not items:
+        # nothing discovered: say so quietly, not an empty grid
+        s, mf = fit(d, "no tests found", WIDTH - 40, 18)
+        tw = d.textlength(s, font=mf)
+        mid = grid_top + (grid_bottom - grid_top - mf.size) / 2
+        d.text(((WIDTH - tw) / 2, mid), s, font=mf, fill=(90, 90, 90))
+        return img
+
+    rows = 8
+    cell_h = (grid_bottom - grid_top) // rows
+    for r in range(rows):
+        for c in range(8):
+            i = (rows - 1 - r) * 8 + c              # pad 0 = bottom-left
+            x = c * COL_W
+            y = grid_top + r * cell_h
+            box = [x + 1, y, x + COL_W - 2, y + cell_h - 2]
+            if i >= len(items):
+                d.rectangle(box, outline=(30, 30, 30))
+                continue
+            item = items[i]
+            state = item.get("state") or ""
+            hue = _TEST_STATE_RGB.get(state, _TEST_STATE_RGB[""])
+            fail = state == "fail"
+            d.rectangle(box, outline=hue if fail else (40, 40, 40), width=2 if fail else 1)
+            d.rectangle([x + 1, y, x + 4, y + cell_h - 2], fill=hue)
+            name = (item.get("name") or "?") + ("/" if item.get("dir") else "")
+            s, nf = fit(d, name, COL_W - 12, 12)
+            txt = ((240, 240, 240) if fail else (200, 220, 200) if state == "pass"
+                   else (235, 225, 180) if state == "run" else (135, 135, 135))
+            d.text((x + 8, y + (cell_h - nf.size) // 2), s, font=nf, fill=txt)
+    return img
+
+
 def render(cols):
     """cols: 8 entries of (name, status, model, sub, focused), None.
 
