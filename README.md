@@ -89,6 +89,20 @@ handed from one child to the next. Under six pixels of travel it was a tap and
 selects instead; a drag that ends off the grid, or back where it started, is a
 change of mind and does nothing. An empty pad has nothing to give, so dragging
 one would only teleport the pad you aimed at — it is refused.
+
+Hover a pad, or tap it, and after a moment a card comes up over it: the label,
+the first 200 characters of what it would send, and two keys — **run** and
+**edit**. A pad is a two-word label for a paragraph you wrote days ago, and
+the two ways to find out what it says were to fire it at a live session or to
+open the editor. The card is the third. It never appears while `tap fires the
+pad` is armed, where a tap has already done the thing the card would ask about.
+
+What puts it away is another pad, an empty one, a tap or a drag — never the
+card noticing you left it. react-native-web builds hover out of events that
+bubble, so crossing onto the card's own title or its keys arrives as *leaving*
+the card, and it closed itself every time you reached for the buttons it
+exists to offer. A thing that cannot be trusted to say when you have gone
+should not be the one asked.
 Everything on it drives the real controller — tapping a view button here
 presses that button there.
 

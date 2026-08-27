@@ -148,6 +148,21 @@ export default function App() {
     }
   }, [base, host, loadMacros, say]);
 
+  // the live wire: this types into a real session, so it is only ever reached
+  // from something you deliberately aimed at -- an armed tap, or a card's key
+  const firePad = useCallback(
+    (i) =>
+      post(base, '/fire', { index: i })
+        .then((r) => say(r))
+        .catch(() => say('nothing there, or no session selected')),
+    [base, say]
+  );
+
+  const editPad = useCallback((i) => {
+    setSel(i);
+    setEditing(true);
+  }, []);
+
   // One tap, three meanings, in the order that cannot surprise you: a pad in
   // your hand lands, an armed pad fires, and otherwise you are just picking
   // one to edit.
@@ -164,13 +179,9 @@ export default function App() {
         return;
       }
       setSel(i);
-      if (armed) {
-        post(base, '/fire', { index: i })
-          .then((r) => say(r))
-          .catch(() => say('nothing there, or no session selected'));
-      }
+      if (armed) firePad(i);
     },
-    [armed, base, labels, macros, moving, putMacros, say]
+    [armed, firePad, labels, macros, moving, putMacros, say]
   );
 
   // dropping a pad on another swaps them, the same trade the Push's own move
@@ -317,8 +328,11 @@ export default function App() {
             macros={macros}
             sel={sel}
             moving={moving !== null && moving >= 0 ? moving : null}
+            armed={armed}
             onPress={tapPad}
             onDrop={dropPad}
+            onExecute={firePad}
+            onEdit={editPad}
           />
         ) : (
           <View style={styles.waiting}>
