@@ -79,7 +79,7 @@ MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 # focus first: it is the one you actually watch, and view defaults to 0 so
 # it is also what comes up on start
-VIEWS = ["focus", "agents", "usage", "tests", "macros"]
+VIEWS = ["focus", "agents", "usage", "tests", "macros", "prs"]
 # a view with more than one mode: its own button cycles them, Left/Right too.
 # One button per subject beats two buttons for two halves of one question.
 VIEW_MODES = {"usage": 3}
@@ -1217,6 +1217,94 @@ def plan_usage(now):
     return _plan["bars"], _plan["err"]
 
 
+PR_TTL = 60.0       # gh reaches the network; a minute-old list is still true
+PR_MAX = 20         # what one gh call asks for; the screen shows its worst
+_prs = {}           # checkout -> {at, busy, rows, err}
+
+
+def check_state(rollup):
+    """Many check runs, one colour. The worst one wins, which is the only
+    summary a glance can use."""
+    seen = set()
+    for run in rollup or []:
+        if not isinstance(run, dict):
+            continue
+        # check runs report conclusion+status, plain statuses report state
+        done = (run.get("conclusion") or run.get("state") or "").upper()
+        if not done or run.get("status") in ("QUEUED", "IN_PROGRESS", "PENDING"):
+            seen.add("pending")
+        elif done in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+            seen.add("pass")
+        elif done in ("PENDING", "EXPECTED"):
+            seen.add("pending")
+        else:
+            seen.add("fail")        # failure, cancelled, timed out, action req
+    for state in ("fail", "pending", "pass"):
+        if state in seen:
+            return state
+    return "none"
+
+
+def pr_rows(raw, branch=""):
+    """gh's JSON -> what the screen draws, worst news first."""
+    rows = []
+    for pr in raw if isinstance(raw, list) else []:
+        rows.append({
+            "n": pr.get("number", 0),
+            "title": " ".join((pr.get("title") or "").split()),
+            "who": (pr.get("author") or {}).get("login", ""),
+            "draft": bool(pr.get("isDraft")),
+            "checks": check_state(pr.get("statusCheckRollup")),
+            # the shortest true label: gh says REVIEW_REQUIRED for "nobody has
+            # looked", which is the common case and not worth a word
+            "review": {"APPROVED": "approved",
+                       "CHANGES_REQUESTED": "changes"}.get(
+                           pr.get("reviewDecision") or "", ""),
+            # the one you are standing on, which is why you opened this view
+            "mine": bool(branch) and pr.get("headRefName") == branch})
+    rank = {"fail": 0, "pending": 1, "none": 2, "pass": 3}
+    # your branch first, then whatever is on fire: the screen only draws the
+    # top few, so the order is what decides which ones you get to see
+    rows.sort(key=lambda r: (not r["mine"], rank.get(r["checks"], 3), r["n"]))
+    return rows
+
+
+def pr_fetch(where):
+    """One gh call, on its own thread. gh is a second of network, and the loop
+    has half of one."""
+    slot = _prs[where]
+    try:
+        head = subprocess.run(["git", "-C", where, "branch", "--show-current"],
+                              capture_output=True, text=True, timeout=10)
+        out = subprocess.run(
+            ["gh", "pr", "list", "--limit", str(PR_MAX), "--json",
+             "number,title,author,isDraft,reviewDecision,statusCheckRollup,"
+             "headRefName"],
+            cwd=where, capture_output=True, text=True, timeout=30)
+        if out.returncode:
+            # gh's own words: not a repo, no remote, not logged in
+            first = (out.stderr.strip().splitlines() or ["gh failed"])[0]
+            slot.update(rows=[], err=first[:70], busy=False)
+            return
+        rows = pr_rows(json.loads(out.stdout), head.stdout.strip())
+    except Exception as e:
+        slot.update(rows=[], err=type(e).__name__, busy=False)
+        return
+    slot.update(rows=rows, err="", busy=False)
+
+
+def open_prs(where, now):
+    """The cached list for one checkout, refreshing behind you."""
+    if not where:
+        return [], ""
+    slot = _prs.setdefault(where, {"at": -PR_TTL, "rows": [], "busy": False,
+                                   "err": "asking gh..."})
+    if not slot["busy"] and now - slot["at"] >= PR_TTL:
+        slot.update(at=now, busy=True)
+        threading.Thread(target=pr_fetch, args=(where,), daemon=True).start()
+    return slot["rows"], slot["err"]
+
+
 _ctx_cache = {}     # path -> (size, used)
 # Every current model is 1M except Haiku. Checked against the model table
 # rather than recalled: assuming 200k put these sessions at 137% full.
@@ -1781,6 +1869,12 @@ def run():
                             state = (view, "plan", repr(bars), uerr, mode)
                             drawn = (lambda b=bars, e=uerr, m=mode:
                                      disp_mod.render_plan(b, e, m, USAGE_MODES))
+                    elif VIEWS[view] == "prs":
+                        rows, perr = open_prs(troot, now)
+                        pinfo = {"repo": agent_name(cur), "rows": rows,
+                                 "err": perr}
+                        state = (view, repr(pinfo))
+                        drawn = (lambda i=pinfo: disp_mod.render_prs(i))
                     elif VIEWS[view] == "tests":
                         ok, bad = test_run.tally() if test_run else (0, 0)
                         tinfo = {"repo": os.path.basename(troot) or "?",
@@ -2431,6 +2525,28 @@ def selftest():
         # every key render_focus reads, or it draws a KeyError instead of a pane
         assert set(info) >= set(focus_info(0, {"cwd": "/x"}, {})), info
     assert tool_line({"name": "Bash", "input": {}}) == "Bash", "no argument, no ()"
+
+    # PR checks: the worst run decides the colour, and gh reports two shapes
+    assert check_state([]) == "none"
+    assert check_state([{"conclusion": "SUCCESS", "status": "COMPLETED"},
+                        {"state": "SUCCESS"}]) == "pass", "a StatusContext too"
+    assert check_state([{"conclusion": "SUCCESS", "status": "COMPLETED"},
+                        {"conclusion": "", "status": "QUEUED"}]) == "pending"
+    assert check_state([{"conclusion": "", "status": "QUEUED"},
+                        {"conclusion": "FAILURE", "status": "COMPLETED"}]) == "fail", \
+        "red outranks a run still going"
+    assert check_state([{"conclusion": "SKIPPED", "status": "COMPLETED"}]) == "pass"
+    pr = lambda n, **kw: {"number": n, "title": "  t\n t ",
+                          "author": {"login": "me"}, **kw}
+    rows = pr_rows([pr(1), pr(2, statusCheckRollup=[{"conclusion": "FAILURE"}]),
+                    pr(3, headRefName="here", isDraft=True,
+                       reviewDecision="APPROVED")], "here")
+    assert [r["n"] for r in rows] == [3, 2, 1], "mine first, then what is on fire"
+    assert rows[0]["draft"] and rows[0]["review"] == "approved"
+    assert rows[2]["title"] == "t t", "a wrapped title is one line here"
+    assert pr_rows({"error": "not a list"}) == [], "gh failing is not a crash"
+    assert pr_rows([pr(1, reviewDecision="REVIEW_REQUIRED")])[0]["review"] == "", \
+        "nobody has looked yet is the common case, not news"
     # every question the surface can ask has a screen that asks it
     import display as _d
     for kind in ("close", "focus"):

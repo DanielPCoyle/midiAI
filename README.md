@@ -47,6 +47,12 @@ Two permanent bands frame every view: the top names what each button above the
 screen switches to, the bottom names the session each button below it drives.
 Eight identical buttons you have to remember are not a surface.
 
+**prs** lists the open pull requests for the selected session's checkout —
+your branch first, then whatever is on fire. The swatch is the whole CI answer
+(green passed, yellow still running, red failed, grey no checks), with the
+author and review state on the right. `gh` runs on its own thread and the list
+is cached for a minute; **Browse** opens the same list in a browser.
+
 **usage** answers one question — what is being spent — at three altitudes,
 walked with its own view button or Left/Right: the plan's own limit bars, then
 tokens by model, then output and context tokens per agent. Tokens, not money:

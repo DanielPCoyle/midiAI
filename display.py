@@ -820,6 +820,73 @@ _TEST_STATE_RGB = {
 }
 
 
+PR_ROWS = 5         # rows that fit above the seat band without crowding
+CHECK_RGB = {"pass": (60, 220, 90), "fail": (240, 60, 60),
+             "pending": (240, 200, 40), "none": (80, 80, 80)}
+
+
+def render_prs(info):
+    """info: repo, rows (n, title, who, draft, checks, review, mine), err.
+
+    A row per open pull request, worst checks first. The swatch is the whole
+    CI answer: you are looking for red before you are reading titles."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    every, err = info.get("rows") or [], info.get("err") or ""
+    rows = every[:PR_ROWS]
+    t, f = fit(d, info.get("repo", "?"), 300, 20)
+    d.text((10, 14), t, font=f, fill=(235, 235, 235))
+    more = len(every) - len(rows)
+    tag = (f"{len(every)} open" + (f"  ·  {more} not shown" if more else "")
+           if every else ("" if err else "no open PRs"))
+    if tag:
+        t, f = fit(d, tag, 260, 15)
+        d.text((WIDTH - 14 - d.textlength(t, font=f), 18), t, font=f,
+               fill=(120, 120, 120))
+    d.line([(10, 38), (WIDTH - 10, 38)], fill=(50, 50, 50))
+
+    if err and not every:
+        t, f = fit(d, err, WIDTH - 40, 20)
+        d.text((20, 70), t, font=f, fill=(200, 140, 60))
+        return img
+    if not every:
+        t, f = fit(d, "nothing waiting on a review", WIDTH - 40, 20)
+        d.text((20, 70), t, font=f, fill=(90, 90, 90))
+        return img
+
+    y, step = 44, min(24, (BOTTOM - 46) // max(1, len(rows)))   # <= PR_ROWS
+    for row in rows:
+        rgb = CHECK_RGB.get(row.get("checks"), CHECK_RGB["none"])
+        d.rectangle([10, y + 3, 22, y + step - 6], fill=rgb)
+        num, f = fit(d, f"#{row.get('n', 0)}", 60, 17)
+        d.text((30, y + 2), num, font=f,
+               fill=(235, 235, 235) if row.get("mine") else (140, 140, 140))
+        # the right-hand tags are fixed width so the titles all end together
+        tags = [x for x in (("draft" if row.get("draft") else ""),
+                            row.get("review", "")) if x]
+        note = "  ".join(tags)
+        nw = 0
+        if note:
+            t, nf = fit(d, note, 210, 15)
+            nw = d.textlength(t, font=nf) + 16
+            d.text((WIDTH - 12 - nw + 16, y + 4), t, font=nf,
+                   fill=(60, 220, 90) if "approved" in note else (150, 150, 150))
+        who = row.get("who", "")
+        ww = 0
+        if who:
+            t, wf = fit(d, who, 150, 14)
+            ww = d.textlength(t, font=wf) + 14
+            d.text((WIDTH - 12 - nw - ww + 14, y + 5), t, font=wf,
+                   fill=(100, 100, 100))
+        t, f = fit(d, row.get("title", ""), WIDTH - 100 - nw - ww, 17)
+        d.text((90, y + 2), t, font=f,
+               fill=(235, 235, 235) if row.get("mine") else (185, 185, 185))
+        if row.get("mine"):     # the branch you are standing on
+            d.line([(4, y + 2), (4, y + step - 5)], fill=(150, 175, 215), width=3)
+        y += step
+    return img
+
+
 def render_tests(info):
     """A zoomable tree of test files, navigated on the pad grid. info: repo,
     path (zoom breadcrumb), items (children of the current zoom, PAD ORDER),
