@@ -92,8 +92,27 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Push shortcuts</title>
  .row{display:flex;align-items:center;gap:8px;margin-top:12px}
  .row input{width:auto}
  .row label{margin:0}
+ /* the mirror: the Push's own screen, with its two button rows where they
+    physically sit -- above the glass and below it */
+ #push{width:746px;margin-bottom:18px}
+ #screen{width:746px;height:124px;display:block;background:#000;border-radius:3px}
+ .btnrow{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin:4px 0}
+ .btn{height:22px;border:1px solid #24242a;border-radius:4px;background:#101014;
+      font:10px/20px ui-monospace,Menlo,monospace;text-align:center;cursor:pointer;
+      overflow:hidden;white-space:nowrap;padding:0 2px;color:#6b6b74}
+ .btn:hover{border-color:#4a4a58}
+ .btn.on{border-color:currentColor;background:#1b1b22}
+ .btn.off{cursor:default;color:#33333a}
 </style>
 <div>
+<h1>The Push's screen &mdash; live
+  <span class=n style="margin-left:10px">the buttons sit where they sit on the
+  hardware &middot; click one and the Push follows</span></h1>
+<div id=push>
+  <div id=tabs class=btnrow></div>
+  <img id=screen alt="Push display">
+  <div id=seats class=btnrow></div>
+</div>
 <div id=bar>
   <input type=checkbox id=arm onchange=arm()>
   <label for=arm>Run on click</label>
@@ -246,6 +265,37 @@ async function put(){
     body:JSON.stringify({labels,pads:macros})});
   note(r.ok?'saved \\u2014 live on the Push':'save failed'); draw(); drawLabels(); }
 function note(t){ $('msg').textContent=t; setTimeout(()=>$('msg').textContent='',2500); }
+// The mirror draws nothing of its own: push_cc saves the frame it just sent
+// to the Push, and this shows that file. Two drawings of one screen would
+// drift the day someone edits only one of them.
+const SEAT_RGB={idle:'#3cd05a',working:'#f0c828',blocked:'#f03c3c'};
+let seen=null;
+function press(what){ fetch('/press',{method:'POST',body:JSON.stringify(what)}); }
+function drawSurface(s){
+  const rgb=c=>'rgb('+c.join(',')+')';
+  $('tabs').innerHTML=s.views.map((v,i)=>{
+    const on=i===s.view, m=s.modes[i]>1?' '+((s.at||[])[i]+1||1)+'/'+s.modes[i]:'';
+    return '<div class="btn'+(on?' on':'')+'" style="color:'+rgb(s.colours[i])+
+           (on?'':';opacity:.55')+'" onclick="press({tab:'+i+'})">'+
+           escapeHtml(v)+m+'</div>';
+  }).concat(Array(8-s.views.length).fill('<div class="btn off"></div>')).join('');
+  $('seats').innerHTML=s.seats.map((seat,i)=>{
+    if(!seat) return '<div class="btn off">'+(i+1)+'</div>';
+    const on=i===s.current;
+    return '<div class="btn'+(on?' on':'')+'" style="color:'+
+           (SEAT_RGB[seat[1]]||'#8a8a92')+(on?'':';opacity:.6')+
+           '" onclick="press({seat:'+i+'})">'+escapeHtml(seat[0])+'</div>';
+  }).join('');
+}
+async function mirror(){
+  try{
+    const s=await (await fetch('/surface')).json();
+    if(!s.views) return;
+    if(s.stamp!==seen){ seen=s.stamp;
+      $('screen').src='/frame.png?t='+s.stamp; drawSurface(s); }
+  }catch(e){}
+}
+mirror(); setInterval(mirror,400);
 fetch('/macros').then(r=>r.json()).then(d=>{
   labels=d.labels||[]; macros=d.pads||[]; draw(); drawLabels(); });
 </script>"""
@@ -269,7 +319,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _raw(self, code, body, ctype):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
+        if self.path.startswith("/frame.png"):
+            try:
+                with open(push_cc.FRAME_FILE, "rb") as f:
+                    return self._raw(200, f.read(), "image/png")
+            except OSError:       # push_cc down, or no screen to mirror yet
+                return self._send(404, "no frame", "text/plain")
+        if self.path == "/surface":
+            try:
+                with open(push_cc.SURFACE_FILE) as f:
+                    return self._send(200, f.read(), "application/json")
+            except OSError:
+                return self._send(200, "{}", "application/json")
         if self.path == "/target":
             return self._send(200, json.dumps({**read_target(), **push_state()}),
                               "application/json")
@@ -283,6 +353,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/fire":
             return self._fire()
+        if self.path == "/press":
+            return self._press()
         if self.path == "/relaunch":
             state = relaunch()
             return self._send(200, json.dumps(state), "application/json")
@@ -324,6 +396,24 @@ class Handler(BaseHTTPRequestHandler):
                       m["text"] + ("\r" if m["submit"] else ""))
         self._send(200, f"{m['label']}{' + enter' if m['submit'] else ''}",
                    "text/plain")
+
+    def _press(self):
+        """A button on the mirror. push_cc consumes the file on its next poll,
+        which is the same path a physical press takes -- so a click and a press
+        cannot mean two different things."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            cmd = json.loads(raw)
+            keep = {k: int(cmd[k]) for k in ("tab", "seat") if k in cmd}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return self._send(400, "bad request", "text/plain")
+        if not keep:
+            return self._send(400, "nothing to press", "text/plain")
+        tmp = push_cc.CMD_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(keep, f)
+        os.replace(tmp, push_cc.CMD_FILE)
+        self._send(200, "ok", "text/plain")
 
     def log_message(self, *_):
         pass                                   # ponytail: no request spam

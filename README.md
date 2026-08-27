@@ -72,6 +72,19 @@ walked with its own view button or Left/Right: the plan's own limit bars, then
 tokens by model, then output and context tokens per agent. Tokens, not money:
 an invented cost is worse than no cost.
 
+## The browser mirror
+
+`mapui.py` shows the Push's screen live, with the two button rows where they
+physically sit — the view picker above the glass, the sessions below it — and
+clicking one presses it. The mirror renders nothing of its own: push_cc saves
+the frame it just sent to the Push and the page shows that file. Two drawings
+of one screen drift apart the day someone edits only one of them.
+
+A click goes back through the same file the poll loop already watches, so it
+lands where a physical press lands — a click and a press cannot come to mean
+two different things. It keeps working with the screen unplugged: the
+renderers are pure PIL and only `disp.show()` needs the device.
+
 ## Run
 
     .venv/bin/python push_cc.py

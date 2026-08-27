@@ -181,6 +181,11 @@ MACRO_FILE = os.path.join(_HERE, "macros.json")
 # mapui runs in its own process and cannot see which session the Push has
 # selected, so publish it. Written only when it changes.
 TARGET_FILE = os.path.join(_HERE, ".target.json")
+# the browser mirror: the frame we just drew, what the surface around it says,
+# and the one file that comes back the other way
+FRAME_FILE = os.path.join(_HERE, ".frame.png")
+SURFACE_FILE = os.path.join(_HERE, ".surface.json")
+CMD_FILE = os.path.join(_HERE, ".command.json")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 SWEEP_LINES = "40"                 # enough to spot a question at the foot of a pane
 SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
@@ -301,6 +306,39 @@ def publish_target(agent):
     with open(tmp, "w") as f:
         json.dump(payload, f)
     os.replace(tmp, TARGET_FILE)
+
+
+def publish_frame(frame, surface):
+    """Hand the browser the exact image the Push is showing, plus what the
+    buttons around it currently mean.
+
+    The mirror renders nothing of its own: two drawings of one screen drift
+    apart the day someone edits only one of them."""
+    try:
+        tmp = FRAME_FILE + ".tmp"
+        frame.save(tmp, format="PNG")   # the name says .tmp; PIL needs telling
+        os.replace(tmp, FRAME_FILE)
+        tmp = SURFACE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(surface, f)
+        os.replace(tmp, SURFACE_FILE)
+    except (OSError, ValueError) as e:      # a mirror is never worth a crash
+        print(f"mirror: {e}", file=sys.stderr, flush=True)
+
+
+def take_command():
+    """A press from the browser mirror, consumed exactly once."""
+    try:
+        with open(CMD_FILE) as f:
+            raw = f.read()
+        os.remove(CMD_FILE)
+    except OSError:
+        return None
+    try:
+        cmd = json.loads(raw)
+    except json.JSONDecodeError:
+        return None         # already unlinked: a bad one cannot loop
+    return cmd if isinstance(cmd, dict) else None
 
 
 def reload_macros():
@@ -1624,14 +1662,23 @@ class Push:
 
 
 def screen():
-    """The 960x160 panel, or None if it is unavailable. Never fatal: the pads
-    are the product, the screen is the label on it."""
+    """The renderers, and the 960x160 panel if it can be had.
+
+    Two answers, not one: the drawing is pure PIL and the browser mirror wants
+    it whether or not the hardware screen is there -- which is exactly when a
+    mirror is worth having. Never fatal either way: the pads are the product,
+    the screen is the label on it."""
     try:
         import display
-        return display, display.Display()
-    except Exception as e:                      # no pyusb, no libusb, device busy
-        print(f"no display ({e}); pads still work", file=sys.stderr)
+    except Exception as e:                      # no PIL
+        print(f"no display module ({e}); pads still work", file=sys.stderr)
         return None, None
+    try:
+        return display, display.Display()
+    except Exception as e:              # no pyusb, no libusb, device busy
+        print(f"no screen ({e}); pads and the browser mirror still work",
+              file=sys.stderr)
+        return display, None
 
 
 def run():
@@ -1703,6 +1750,32 @@ def run():
             if current == slot:
                 current = step_slot(current, 1, slots)
         confirm, shown = None, None
+
+    def tap_tab(i):
+        """A view button, from the Push or from the mirror in the browser."""
+        nonlocal view, shown
+        if not 0 <= i < len(VIEWS):
+            return
+        name, modes = VIEWS[i], VIEW_MODES.get(VIEWS[i], 1)
+        # already here: the same button walks that view's modes, so one button
+        # owns one subject however deep it goes. Each view keeps its own place
+        # -- one counter shared between them meant leaving one moved the other.
+        if i == view:
+            view_mode[name] = (view_mode.get(name, 0) + 1) % modes
+        view, shown = i, None                   # force a redraw
+        print(f"view -> {name}" + (f" {view_mode.get(name, 0) + 1}/{modes}"
+                                   if modes > 1 else ""), flush=True)
+
+    def tap_seat(slot):
+        """A session button: focus it there, and follow it here."""
+        nonlocal current, shown, subfocus
+        if not slots.get(slot):
+            return
+        herdr("agent", "focus", slots[slot])
+        # back out of a subagent: the seat you pressed is the session, not
+        # something it spawned
+        current, shown, subfocus = slot, None, None
+        scrolls[slot] = 0
 
     def show(name, m=None):
         """Go to a view, and to one of its modes when the reason to go there
@@ -1780,6 +1853,13 @@ def run():
                 if (cur or {}).get("terminal_id") != published:
                     published = (cur or {}).get("terminal_id")
                     publish_target(cur)
+                cmd = take_command()
+                if cmd:
+                    print(f"mirror: {cmd}", flush=True)
+                    if "tab" in cmd:
+                        tap_tab(int(cmd["tab"]))
+                    if "seat" in cmd:
+                        tap_seat(int(cmd["seat"]))
                 if reload_macros():
                     shown = None
                     print("macros reloaded", flush=True)
@@ -1845,7 +1925,7 @@ def run():
                     chain, shown = None, None   # let the screen go back to work
 
                 mode = view_mode.get(VIEWS[view], 0)
-                if disp:
+                if disp_mod:            # drawn for the glass and the mirror both
                     if strip_level:
                         # outranks the chain: your finger is on the strip now
                         state = ("effort", strip_level)
@@ -1959,16 +2039,29 @@ def run():
                             if banded:
                                 frame = disp_mod.view_strip(frame, VIEWS, view)
                                 frame = disp_mod.seat_strip(frame, seats, current)
+                            publish_frame(frame, {
+                                "views": VIEWS, "view": view,
+                                "modes": [VIEW_MODES.get(v, 1) for v in VIEWS],
+                                "mode": mode,
+                                # every view's own place, not just this one's:
+                                # the mirror labels them all
+                                "at": [view_mode.get(v, 0) for v in VIEWS],
+                                "colours": [
+                                    disp_mod.VIEW_RGB.get(v, (200, 200, 200))
+                                    for v in VIEWS],
+                                "seats": seats, "current": current,
+                                "stamp": time.time()})
                         except Exception as e:
                             # the pads are the product, the screen is the label:
                             # a drawing bug must not take the surface down
                             print(f"render failed ({VIEWS[view]}): {e}",
                                   file=sys.stderr, flush=True)
-                            shown, disp = state, None
+                            shown, disp, disp_mod = state, None, None
                     try:
-                        disp.show(frame)            # every poll: it blanks after ~2s
+                        if disp:        # every poll: it blanks after about 2s
+                            disp.show(frame)
                     except Exception:
-                        disp = None
+                        disp = None     # unplugged; the mirror carries on
 
                 # while a chain is armed Play means "run it", not "enter", and a
                 # button that changed jobs has to say so
@@ -2122,26 +2215,12 @@ def run():
                             print(f"shift+pad {slot} -> confirm close?", flush=True)
                             pad_down = None
                             continue
-                        herdr("agent", "focus", slots[slot])   # short press = focus
-                        # back out of a subagent: the seat you pressed is the
-                        # session, not something it spawned
-                        current, pad_down, shown, subfocus = slot, None, None, None
-                        scrolls[slot] = 0
+                        tap_seat(slot)                  # short press = focus
+                        pad_down = None
                 elif (msg.type == "control_change" and msg.control in TAB_CCS
                       and msg.value):
                     i = TAB_CCS.index(msg.control)
-                    if i < len(VIEWS):
-                        name, modes = VIEWS[i], VIEW_MODES.get(VIEWS[i], 1)
-                        # already here: the same button walks that view's modes,
-                        # so one button owns one subject however deep it goes.
-                        # Each view keeps its own place -- one counter shared
-                        # between them meant leaving one moved the other.
-                        if i == view:
-                            view_mode[name] = (view_mode.get(name, 0) + 1) % modes
-                        view, shown = i, None       # force a redraw
-                        print(f"view -> {name}" +
-                              (f" {view_mode.get(name, 0) + 1}/{modes}"
-                               if modes > 1 else ""), flush=True)
+                    tap_tab(TAB_CCS.index(msg.control))
                 elif (msg.type == "control_change" and msg.control == ADD_DEVICE_CC
                       and msg.value):
                     where = (cur or {}).get("cwd") or os.getcwd()
