@@ -14,8 +14,8 @@ without touching the keyboard.
 | **Play** | CC 85 | enter — submits, to the focused agent · runs an armed chain |
 | **Automate** | CC 89 | hold, tap a pad: arms that pad's row as a chain |
 | **Touchstrip** | pitchbend | slide to set reasoning effort, `low` → `max` |
-| **Buttons above screen** | CC 102–109 | pick a view: 1 agents, 2 usage |
-| **Buttons below screen** | CC 20–27 | white marks the focused agent |
+| **Buttons above screen** | CC 102–109 | pick a view — labelled on the screen above it; press the one you are on to walk its modes |
+| **Buttons below screen** | CC 20–27 | the sessions: tap = focus · hold = talk · named on the screen above them |
 
 Pad colour follows herdr's `agent_status`:
 
@@ -36,8 +36,21 @@ interface 0, endpoint `0x01`).
 id. That last one earns its space — two checkouts of one repo show the same
 name, and the id is the only thing that tells them apart.
 
-**usage** shows output tokens and context tokens per agent. Tokens, not money:
-nothing here knows your plan, and an invented cost is worse than no cost.
+In this view the pads are the *subagents* the current session has spawned —
+read off `~/.claude/projects/<session>/subagents/`, labelled with the
+description each was dispatched with. Yellow pulsing is still running, green
+has come back. Tapping one asks before it acts, and yes points the **focus**
+view at that subagent's own transcript instead of the session's pane. A
+session button takes you back.
+
+Two permanent bands frame every view: the top names what each button above the
+screen switches to, the bottom names the session each button below it drives.
+Eight identical buttons you have to remember are not a surface.
+
+**usage** answers one question — what is being spent — at three altitudes,
+walked with its own view button or Left/Right: the plan's own limit bars, then
+tokens by model, then output and context tokens per agent. Tokens, not money:
+an invented cost is worse than no cost.
 
 ## Run
 

@@ -83,6 +83,8 @@ STATUS_RGB = {
     "blocked": (240, 60, 60), None: (110, 110, 110),
 }
 COL_W = WIDTH // 8
+SEAT_H = 12                             # seat_strip's height, at the far edge
+BOTTOM = 160 - SEAT_H                   # where content has to stop; HEIGHT below
 STRIP_H = 12                            # view_strip's height; renderers below
                                          # leave this band clear when composed
 
@@ -146,6 +148,32 @@ def view_strip(img, names, current):
     return img
 
 
+def seat_strip(img, seats, current):
+    """seats: up to 8 (name, status) pairs or None, in button order
+       current: index of the session you are driving
+       Draws in place on `img` and returns it.
+
+    view_strip's twin at the other edge. The Push's 8 session buttons sit
+    directly below this glass, so this band is what says which agent each one
+    is -- without it they are eight identical buttons you have to remember.
+    Renderers stop at BOTTOM to leave it the room."""
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, BOTTOM, WIDTH - 1, HEIGHT - 1], fill=(12, 12, 12))
+    for i, seat in enumerate(list(seats or [])[:8]):
+        x, active = i * COL_W, i == current
+        if active:
+            d.rectangle([x, BOTTOM, x + COL_W - 1, HEIGHT - 1], fill=(48, 70, 96))
+        name, status = seat if seat else (str(i + 1), None)
+        rgb = STATUS_RGB.get(status, (70, 70, 70)) if seat else (55, 55, 55)
+        if active:                      # lift it off the highlight
+            rgb = tuple(min(255, c + 70) for c in rgb)
+        t, f = fit(d, name, COL_W - 8, 12)
+        tw = d.textlength(t, font=f)
+        d.text((x + (COL_W - tw) / 2, BOTTOM + (SEAT_H - f.size) / 2 - 1), t,
+               font=f, fill=rgb)
+    return img
+
+
 def _column(d, i, rgb, focused):
     """Shared chrome: divider, focus ring, numbered swatch.
 
@@ -156,9 +184,9 @@ def _column(d, i, rgb, focused):
     10 too, keeping the swatch's original gap under it)."""
     x = i * COL_W
     if i:
-        d.line([(x, STRIP_H), (x, HEIGHT - 8)], fill=(45, 45, 45))
+        d.line([(x, STRIP_H), (x, BOTTOM - 8)], fill=(45, 45, 45))
     if focused:
-        d.rectangle([x + 3, 12, x + COL_W - 4, HEIGHT - 4], outline=rgb, width=2)
+        d.rectangle([x + 3, 12, x + COL_W - 4, BOTTOM - 4], outline=rgb, width=2)
     d.rectangle([x + 8, 22, x + 26, 40], fill=rgb)
     d.text((x + 12, 23), str(i + 1), font=font(15), fill=(0, 0, 0))
     return x
@@ -254,7 +282,7 @@ def render_focus(info):
     if info.get("scroll", 0) > 0:
         # full view: the raw pane, scrolled -- untouched by the tldr default
         # below, because once you have asked to scroll you want the transcript
-        bottom = HEIGHT - (22 if pending else 0)
+        bottom = BOTTOM - (22 if pending else 0)
         bf = font(15)
         rows = (bottom - 55) // 17
         body = flow(d, info.get("lines") or [], WIDTH - 30, bf)
@@ -277,22 +305,22 @@ def render_focus(info):
             d.text((WIDTH - 150, 25), f"-{scroll} lines", font=font(13), fill=(150, 175, 215))
 
         if pending:
-            d.rectangle([0, HEIGHT - 22, WIDTH, HEIGHT], fill=(18, 24, 34))
+            d.rectangle([0, BOTTOM - 22, WIDTH, BOTTOM], fill=(18, 24, 34))
             s, f = fit(d, "> " + pending, WIDTH - 24, 15)
-            d.text((12, HEIGHT - 19), s, font=f, fill=(150, 175, 215))
+            d.text((12, BOTTOM - 19), s, font=f, fill=(150, 175, 215))
         return img
 
     if pending and not info.get("suggested"):
         # actively being typed -- the prompt IS the body, full size, no strip
         pf = font(22)
-        rows = max(0, (HEIGHT - 55) // 26)
+        rows = max(0, (BOTTOM - 55) // 26)
         for i, line in enumerate(wrap(d, "❯ " + pending, WIDTH - 24, pf, rows)):
             d.text((12, 55 + i * 26), line, font=pf, fill=(150, 175, 215))
         return img
 
     # common case: summary at rest, not the raw transcript
     text_lines = info.get("tldr") or ([info["say"]] if info.get("say") else [])
-    bottom = HEIGHT - (22 if pending else 0)
+    bottom = BOTTOM - (22 if pending else 0)
     avail = bottom - 55
 
     # shrink-to-fit, the same pattern render_pad uses: try a comfortable size,
@@ -319,21 +347,27 @@ def render_focus(info):
         d.text((12, 55 + i * row_h), line, font=tf, fill=(228, 228, 228))
 
     if pending:                                 # suggested: proposal, not yours yet
-        d.rectangle([0, HEIGHT - 22, WIDTH, HEIGHT], fill=(18, 24, 34))
+        d.rectangle([0, BOTTOM - 22, WIDTH, BOTTOM], fill=(18, 24, 34))
         s, f = fit(d, "> " + pending, WIDTH - 24, 15)
-        d.text((12, HEIGHT - 19), s, font=f, fill=(150, 175, 215))
+        d.text((12, BOTTOM - 19), s, font=f, fill=(150, 175, 215))
     return img
 
 
-def render_confirm(name, slot, seconds):
-    """The only irreversible thing on the surface asks first, on the Push."""
-    img = Image.new("RGB", (WIDTH, HEIGHT), (26, 6, 6))
+# question -> (background, frame/name colour, what it asks)
+CONFIRMS = {"close": ((26, 6, 6), (240, 60, 60), "Close this session?"),
+            "focus": ((6, 18, 26), (70, 170, 240), "Focus this agent?")}
+
+
+def render_confirm(name, slot, seconds, kind="close"):
+    """Anything you cannot take back asks first, on the Push."""
+    bg, hue, question = CONFIRMS.get(kind, CONFIRMS["close"])
+    img = Image.new("RGB", (WIDTH, HEIGHT), bg)
     d = ImageDraw.Draw(img)
-    d.rectangle([0, 0, WIDTH - 1, HEIGHT - 1], outline=(240, 60, 60), width=3)
-    s, f = fit(d, "Close this session?", WIDTH - 60, 34)
+    d.rectangle([0, 0, WIDTH - 1, HEIGHT - 1], outline=hue, width=3)
+    s, f = fit(d, question, WIDTH - 60, 34)
     d.text((30, 18), s, font=f, fill=(255, 255, 255))
     s, f = fit(d, f"{slot + 1}. {name}", WIDTH - 60, 26)
-    d.text((30, 58), s, font=f, fill=(240, 160, 160))
+    d.text((30, 58), s, font=f, fill=tuple(min(255, c + 90) for c in hue))
 
     x = 30
     for colour, text in (((60, 220, 90), "button 1  green  = yes"),
@@ -391,7 +425,7 @@ def render_macros(macros, arming=False, moving=None):
               MOVE_ACCENT if moving is not None else (150, 175, 215))
     # grid top shifted +10 (matching the header text below) to clear the
     # view_strip band; cell_h recomputed to keep the same bottom margin
-    rows, cell_h = 8, (HEIGHT - 26) // 8
+    rows, cell_h = 8, (BOTTOM - 26) // 8
     # approximate: the Push owns the real palette, this only has to be
     # recognisable next to it
     swatches = {127: (224, 60, 60), 3: (224, 138, 44), 8: (224, 208, 44),
@@ -482,7 +516,7 @@ def render_chain(chain):
     d.line([(10, 38), (WIDTH - 10, 38)], fill=(50, 50, 50))
 
     # the row of steps, left to right in run order
-    top, bottom = 46, HEIGHT - 26
+    top, bottom = 46, BOTTOM - 26
     for i, step in enumerate(steps[:8]):
         x = i * COL_W
         hue = swatches.get(step["colour"], (150, 175, 215))
@@ -501,10 +535,10 @@ def render_chain(chain):
         d.text((x + 9, top + 16), s, font=ff, fill=txt)
 
     # footer: what phase this is, and what the transport/pads do about it
-    d.rectangle([0, HEIGHT - 22, WIDTH, HEIGHT], fill=(16, 16, 16))
-    d.rectangle([10, HEIGHT - 18, 24, HEIGHT - 4], fill=accent)
+    d.rectangle([0, BOTTOM - 22, WIDTH, BOTTOM], fill=(16, 16, 16))
+    d.rectangle([10, BOTTOM - 18, 24, BOTTOM - 4], fill=accent)
     s, f = fit(d, hint, WIDTH - 44, 15)
-    d.text((32, HEIGHT - 19), s, font=f, fill=accent)
+    d.text((32, BOTTOM - 19), s, font=f, fill=accent)
     return img
 
 
@@ -543,7 +577,7 @@ def render_effort(level, levels):
     # label and ladder both shifted +10 (same delta, gap preserved) to clear
     # the view_strip band composed on top of this image
     d.text((8, 12), "EFFORT", font=font(11), fill=(80, 80, 80))
-    top, bottom = 28, HEIGHT - 30
+    top, bottom = 28, BOTTOM - 30
     for i, lvl in enumerate(levels):
         x = i * cw
         hue = _effort_hue(i, n)
@@ -564,14 +598,15 @@ def render_effort(level, levels):
 
     s, f = fit(d, "lift off to set", WIDTH - 20, 14)
     tw = d.textlength(s, font=f)
-    d.text(((WIDTH - tw) / 2, HEIGHT - 20), s, font=f, fill=(140, 140, 140))
+    d.text(((WIDTH - tw) / 2, BOTTOM - 20), s, font=f, fill=(140, 140, 140))
     return img
 
 
-def render_usage(cols):
+def render_usage(cols, mode=0, modes=1):
     """cols: 8 entries of (name, out_tokens, ctx_tokens, focused), None if empty."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
+    _mode_indicator(d, mode, modes)
     # +10, matching the per-column swatch shift in _column, so the title and
     # name labels clear the view_strip band composed on top of this image
     d.text((8, 12), "USAGE", font=font(12), fill=(90, 90, 90))
@@ -579,7 +614,7 @@ def render_usage(cols):
         if not col:
             x = i * COL_W
             if i:
-                d.line([(x, STRIP_H), (x, HEIGHT - 8)], fill=(45, 45, 45))
+                d.line([(x, STRIP_H), (x, BOTTOM - 8)], fill=(45, 45, 45))
             continue
         name, out, ctx, focused = col
         rgb = (150, 175, 215)
@@ -602,8 +637,9 @@ NAME_W = 210
 def _mode_indicator(d, mode, modes):
     """← n/total → in the header, same idiom render_chain uses for a row that
     holds more than one sequence -- this view is the same trick one level up:
-    two whole modes behind Left/Right instead of two sequences in one step.
-    Silent when there's only one mode, so existing callers are unaffected."""
+    whole modes behind its view button (and Left/Right) instead of sequences
+    in one step. Silent when there's only one mode, so a single-mode renderer
+    is unaffected."""
     if modes <= 1:
         return
     mode = max(0, min(mode, modes - 1))
@@ -653,7 +689,7 @@ def render_models(totals, mode=0, modes=1):
 
     # shrink as the row count grows -- 1-2 models get room to breathe, 6 have
     # to fit the same 160px, same ladder pattern render_focus uses for tldr
-    avail = HEIGHT - 34
+    avail = BOTTOM - 34
     row_h = max(13, avail // (len(rows) + 1))          # +1 for the total row
     size = 20 if row_h >= 26 else 17 if row_h >= 20 else 14 if row_h >= 17 else 11
 
@@ -738,7 +774,7 @@ def render_plan(bars, err="", mode=0, modes=1):
     d.text((8, 12), "PLAN USAGE", font=font(11), fill=(80, 80, 80))
     _mode_indicator(d, mode, modes)
     n = min(len(bars), 5)
-    top, bottom = 26, HEIGHT - 2
+    top, bottom = 26, BOTTOM - 2
     row_h = (bottom - top) / n
     size = 16 if row_h >= 42 else 13 if row_h >= 32 else 11
     lf = font(size)
@@ -845,7 +881,7 @@ def render_tests(info):
     tx -= 6 + d.textlength(pass_s, font=pass_f)
     d.text((tx, y2 + 2), pass_s, font=pass_f, fill=(110, 150, 115))
 
-    grid_top, grid_bottom = 42, HEIGHT - 2
+    grid_top, grid_bottom = 42, BOTTOM - 2
     if not items:
         # nothing discovered: say so quietly, not an empty grid
         s, mf = fit(d, "no tests found", WIDTH - 40, 18)
@@ -892,7 +928,7 @@ def render(cols):
         x = i * COL_W
         if not col:
             if i:
-                d.line([(x, STRIP_H), (x, HEIGHT - 8)], fill=(45, 45, 45))
+                d.line([(x, STRIP_H), (x, BOTTOM - 8)], fill=(45, 45, 45))
             t, f = fit(d, str(i + 1), COL_W - 16, 18)
             d.text((x + 10, 20), t, font=f, fill=(45, 45, 45))
             continue

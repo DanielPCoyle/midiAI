@@ -47,6 +47,7 @@ of the eight encoders scrolls the agent above it, and touching one peeks at it.
   python3 push_cc.py --debug     log every control you press, with its number
   python3 mapui.py               edit the 64 pads in a browser, live
 """
+import glob
 import json
 import os
 import re
@@ -78,7 +79,10 @@ MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 # focus first: it is the one you actually watch, and view defaults to 0 so
 # it is also what comes up on start
-VIEWS = ["focus", "agents", "usage", "plan", "tests", "macros"]
+VIEWS = ["focus", "agents", "usage", "tests", "macros"]
+# a view with more than one mode: its own button cycles them, Left/Right too.
+# One button per subject beats two buttons for two halves of one question.
+VIEW_MODES = {"usage": 3}
 SESSION_CCS = list(range(20, 28))  # under the display: tap selects, hold talks
 PLAY_CC = 85                       # transport Play -> enter, submits what is typed
 TEMPO_CC = 14                      # tempo encoder -> scroll the focus view
@@ -89,7 +93,7 @@ SHIFT_CC = 49                      # held modifier, the standard Push idiom
 SOLO_CC = 61                       # pin the screen so questions stop moving it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
 PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next session
-CONFIRM_S = 10                     # a close request that goes unanswered expires
+CONFIRM_S = 10                     # a question that goes unanswered expires
 YES_SLOT, NO_SLOT = 0, 1           # while confirming, the first two session buttons
 MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
 UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
@@ -651,6 +655,142 @@ def transcript(agent):
         f"~/.claude/projects/{agent.get('cwd', '').replace('/', '-')}/{sid}.jsonl")
 
 
+# ---------------------------------------------------------------- subagents
+
+_done_cache = {}      # transcript -> (size, ids that have come back)
+SUB_STALE_S = 600     # a task with no result and a cold log has died, not run
+
+
+def finished_calls(path):
+    """Tool calls this session already has a result for.
+
+    ponytail: the whole file, re-read whenever it grows -- 40ms on an 11MB
+    transcript, and only asked for while the agents view is up. Read from an
+    offset if that ever bites."""
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        return set()
+    hit = _done_cache.get(path)
+    if hit and hit[0] == size:
+        return hit[1]
+    ids = set()
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                if '"tool_result"' not in line:
+                    continue        # cheap reject: most lines are not results
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                for block in row.get("message", {}).get("content") or []:
+                    if (isinstance(block, dict)
+                            and block.get("type") == "tool_result"):
+                        ids.add(block.get("tool_use_id"))
+    except OSError:
+        return set()
+    _done_cache[path] = (size, ids)
+    return ids
+
+
+def subagents(agent, limit=None, now=None):
+    """The Task subagents of one session, oldest first.
+
+    Claude writes each one a log and a sibling .meta.json carrying the
+    description it was dispatched with -- which is the only human name a
+    subagent ever gets. Whether it is still going is the parent's business:
+    the task is running until its tool call comes back."""
+    path = transcript(agent) if agent else None
+    if not path:
+        return []
+    done = finished_calls(path)
+    now = time.time() if now is None else now
+    out = []
+    for meta in glob.glob(os.path.join(path[:-len(".jsonl")],
+                                       "subagents", "agent-*.meta.json")):
+        try:
+            with open(meta) as f:
+                info = json.load(f)
+            born = os.path.getmtime(meta)
+        except (OSError, json.JSONDecodeError):
+            continue
+        log = meta[:-len(".meta.json")] + ".jsonl"
+        try:
+            touched = os.path.getmtime(log)
+        except OSError:
+            touched = born
+        out.append({
+            "id": os.path.basename(meta)[len("agent-"):-len(".meta.json")],
+            "label": info.get("description") or info.get("agentType") or "task",
+            "type": info.get("agentType") or "?",
+            "model": info.get("model") or "",
+            "log": log, "at": born,
+            # no result AND a cold log means it died with its session rather
+            # than finishing -- otherwise a crash leaves a pad pulsing forever
+            "running": (info.get("toolUseId") not in done
+                        and now - touched < SUB_STALE_S)})
+    out.sort(key=lambda x: x["at"])
+    return out[-limit:] if limit else out
+
+
+def tool_line(block):
+    """A tool call as one row: the name, and the argument that identifies it."""
+    args = block.get("input") or {}
+    hint = next((str(args[k]) for k in
+                 ("file_path", "path", "pattern", "command", "prompt",
+                  "description", "url", "query")
+                 if args.get(k)), "")
+    hint = " ".join(hint.split())[:60]
+    return f"{block.get('name', '?')}({hint})" if hint else str(block.get("name"))
+
+
+def sub_lines(path, tail=TAIL_BYTES):
+    """One subagent's log as pane-shaped rows: what it said flush left, what
+    it did indented -- which is exactly what the focus view greys out."""
+    try:
+        size = os.stat(path).st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - tail))
+            chunk = f.read()
+    except OSError:
+        return []
+    rows = chunk.split(b"\n")
+    if size > tail:
+        rows = rows[1:]             # the first is half a line
+    out = []
+    for row in rows:
+        try:
+            entry = json.loads(row)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        content = (entry.get("message") or {}).get("content")
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                out += [l for l in block.get("text", "").splitlines() if l.strip()]
+            elif block.get("type") == "tool_use":
+                out.append("  " + tool_line(block))
+    return out
+
+
+def sub_info(sub, slot=0, scroll=0):
+    """A subagent shaped like focus_info, so one renderer draws both."""
+    lines = sub_lines(sub["log"])
+    said = [l for l in lines if not l.startswith("  ")]
+    return {"slot": slot, "name": sub["label"],
+            "model": short_model(sub["model"]),
+            # the header's third field. A subagent has no effort of its own to
+            # show, and its type is the thing you actually want named there
+            "effort": sub["type"],
+            "status": "working" if sub["running"] else "idle",
+            "act": "", "say": said[-1] if said else "", "pending": "",
+            "tldr": tldr(lines) or [], "suggested": False,
+            "opts": [], "sel": None, "lines": lines, "scroll": scroll,
+            "context": context_used(sub["log"]) / context_limit(sub["model"])}
+
+
 def usage_for(agent):
     """Token totals for this session, accumulated incrementally.
 
@@ -1003,7 +1143,7 @@ USAGE_TTL = 120.0        # the endpoint is rate limited; /usage itself caches lo
 # resets and how worried to be. Reading that instead means a window we have
 # never heard of still draws, and one that goes away stops drawing.
 USAGE_KINDS = {"session": "session", "weekly_all": "week"}
-PLAN_MODES = 2         # the plan's own bars, then tokens by model
+USAGE_MODES = VIEW_MODES["usage"]   # plan bars, tokens by model, per agent
 _plan = {"at": -USAGE_TTL, "bars": [], "busy": False, "err": ""}
 
 
@@ -1084,29 +1224,24 @@ CONTEXT_LIMITS = (("haiku", 200_000),)
 CONTEXT_DEFAULT = 1_000_000
 
 
-def context_for(agent):
-    """How full this session's context is, and out of what.
-
-    Not the usage totals: those accumulate over the whole session. Context is
-    the input side of the most recent request only."""
-    path = transcript(agent)
-    model = model_for(agent)
-    limit = next((v for k, v in CONTEXT_LIMITS if k in model), CONTEXT_DEFAULT)
-    if not path:                       # no session id: open(None) is a TypeError
-        return 0, limit
+def context_used(path):
+    """Tokens on the input side of the last request in a transcript. Any
+    transcript: a session's, or one subagent's own log."""
     try:
-        size = os.stat(path).st_size
+        size = os.stat(path).st_size if path else 0
     except OSError:
-        return 0, limit
+        return 0
+    if not size:
+        return 0
     hit = _ctx_cache.get(path)
     if hit and hit[0] == size:
-        return hit[1], limit
+        return hit[1]
     try:
         with open(path, "rb") as f:
             f.seek(max(0, size - TAIL_BYTES))
             tail = f.read()
     except OSError:
-        return 0, limit
+        return 0
     i = tail.rfind(b'"usage":{')
     used = 0
     if i >= 0:
@@ -1118,7 +1253,20 @@ def context_for(agent):
             if m:
                 used += int(m.group(1))
     _ctx_cache[path] = (size, used)
-    return used, limit
+    return used
+
+
+def context_limit(model):
+    return next((v for k, v in CONTEXT_LIMITS if k in model), CONTEXT_DEFAULT)
+
+
+def context_for(agent):
+    """How full this session's context is, and out of what.
+
+    Not the usage totals: those accumulate over the whole session. Context is
+    the input side of the most recent request only."""
+    limit = context_limit(model_for(agent))
+    return context_used(transcript(agent)), limit
 
 
 def usage_col(agent):
@@ -1289,6 +1437,10 @@ def panel_col(agent):
             "context": used / limit if limit else 0.0}
 
 
+def agent_name(agent):
+    return os.path.basename((agent or {}).get("cwd", "")) or "?"
+
+
 def colour_for(agent):
     if agent is None:
         return EMPTY
@@ -1403,18 +1555,46 @@ def run():
     macro_down, talk_src, previewing = None, None, None
     arm_held = {cc: False for cc in ARM_CCS}   # not `held`: a local below took it
     published = object()   # sentinel: nothing published yet
-    closing = None      # (slot, deadline): asked to close, waiting on an answer
+    # (kind, deadline, index, name): asked something, waiting on an answer.
+    # One variable for both questions -- the yes/no row, the timeout and the
+    # screen are identical, only what yes does differs. index means a session
+    # slot to close, or a subagent pad to focus.
+    confirm = None
+    subfocus, subs = None, []   # (session, subagent id) the focus view is on
     asking, next_sweep, was_asking = set(), 0.0, False
     chain, automating = None, False   # a row of pads queued at one agent
     strip_level, strip_touch = None, False  # uncommitted until the finger lifts
     moving = None        # None off, -1 waiting for a pad, >=0 the pad in hand
-    mode = 0             # which mode of the models view; left/right walk them
+    mode = 0             # which mode of the usage view; its own button walks them
     test_path, test_run, titems = [], None, []   # where you are in the tree
     # the exact text the last macro inserted. Compared rather than remembered
     # as a flag: type one character onto it and it stops matching, which is
     # precisely when it stops being a suggestion. Nothing to reset, nothing to
     # leak, and submitting empties the prompt so it lapses on its own.
     inserted = ""
+
+    def say_yes():
+        """The answer to whichever question is on the glass."""
+        nonlocal confirm, current, view, shown, subfocus
+        kind, _, idx, nm = confirm
+        if kind == "focus":
+            sub = subs[idx] if idx < len(subs) else None
+            if sub:
+                subfocus = ((cur or {}).get("terminal_id"), sub["id"])
+                view, shown = VIEWS.index("focus"), None
+                scrolls[current] = 0
+                print(f"confirmed -> focus subagent {nm!r}", flush=True)
+        else:
+            slot = idx
+            pane = (by_id.get(slots.get(slot)) or {}).get("pane_id")
+            print(f"confirmed -> closing {pane}", flush=True)
+            if pane:
+                herdr("pane", "close", pane)
+                slots.pop(slot, None)
+            if current == slot:
+                current = step_slot(current, 1, slots)
+        confirm, shown = None, None
+
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -1443,7 +1623,7 @@ def run():
                     colour, anim = colour_for(a)
                     if s in asking:
                         colour, anim = RED, BLINK    # herdr cannot see this one
-                    if closing:                   # the row is a yes/no pair now
+                    if confirm:                   # the row is a yes/no pair now
                         colour, anim = ((GREEN, STATIC) if s == YES_SLOT else
                                         (RED, BLINK) if s == NO_SLOT else
                                         (BLACK, STATIC))
@@ -1455,6 +1635,10 @@ def run():
                     push.cc("tab", s, TAB_CCS,
                             WHITE if s == view else
                             (TAB_DIM if s < len(VIEWS) else BLACK))
+                # the legend for the eight buttons under the glass
+                seats = tuple((agent_name(a), a.get("agent_status"))
+                              if (a := by_id.get(slots.get(s))) else None
+                              for s in range(SLOTS))
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
                 # Scraped every poll, not just in the focus view: the bottom row
                 # answers a pending question from wherever you happen to be.
@@ -1471,13 +1655,19 @@ def run():
                 if reload_macros():
                     shown = None
                     print("macros reloaded", flush=True)
-                if closing and now >= closing[1]:
-                    print("close request expired", flush=True)
-                    closing, shown = None, None
+                if confirm and now >= confirm[1]:
+                    print(f"{confirm[0]} request expired", flush=True)
+                    confirm, shown = None, None
 
                 if now >= next_sweep and not talking:
                     next_sweep = now + SWEEP_S
                     asking = sweep_panes(slots, by_id, current)
+                # the pads in the agents view are this session's subagents,
+                # and the focus view may be sitting on one of them
+                subs = (subagents(cur, MACRO_SLOTS)
+                        if VIEWS[view] == "agents" or subfocus else [])
+                if subfocus and subfocus[0] != (cur or {}).get("terminal_id"):
+                    subfocus = None          # you drove somewhere else
                 troot = (cur or {}).get("cwd") or ""
                 if VIEWS[view] == "tests":
                     ttree, tpkgs = tests_for(troot)
@@ -1536,14 +1726,12 @@ def run():
                         m, idx = MACROS[previewing], MACRO_NOTES[previewing]
                         state = ("pad", previewing, repr(m))
                         drawn = (lambda mm=m, ii=idx: disp_mod.render_pad(mm, ii))
-                    elif closing:
-                        agent = by_id.get(slots.get(closing[0]))
-                        nm = os.path.basename((agent or {}).get("cwd", "")) or "?"
-                        left = max(0, int(closing[1] - now))
-                        slot_n = closing[0]
-                        state = ("closing", slot_n, nm, left)
-                        drawn = (lambda n=nm, i=slot_n, t=left:
-                                 disp_mod.render_confirm(n, i, t))
+                    elif confirm:
+                        kind, _, idx, nm = confirm
+                        left = max(0, int(confirm[1] - now))
+                        state = ("confirm", kind, idx, nm, left)
+                        drawn = (lambda n=nm, i=idx, t=left, k=kind:
+                                 disp_mod.render_confirm(n, i, t, k))
                     elif chain and chain.phase != "waiting":
                         # below preview and confirm: an explicit question you
                         # just asked outranks a chain running in the background.
@@ -1555,6 +1743,16 @@ def run():
                         cinfo = chain.info(MACROS)
                         state = ("chain", repr(cinfo))
                         drawn = (lambda c=cinfo: disp_mod.render_chain(c))
+                    elif VIEWS[view] == "focus" and any(
+                            subfocus and x["id"] == subfocus[1] for x in subs):
+                        # the focus view, pointed at a subagent instead of the
+                        # session that spawned it. One that has vanished falls
+                        # through to the ordinary focus view below.
+                        idx = next(i for i, x in enumerate(subs)
+                                   if x["id"] == subfocus[1])
+                        sinfo = sub_info(subs[idx], idx, scrolls.get(current, 0))
+                        state = (view, "sub", repr(sinfo))
+                        drawn = (lambda i=sinfo: disp_mod.render_focus(i))
                     elif VIEWS[view] == "focus":
                         pend = (summary.get("pending") or "").strip()
                         info = (focus_info(seat, cur, summary, scroll,
@@ -1563,19 +1761,26 @@ def run():
                         state = (view, repr(info))
                         drawn = (lambda: disp_mod.render_focus(info)) if info else (
                             lambda: disp_mod.render((None,) * SLOTS))
-                    elif VIEWS[view] == "plan":
-                        # account-wide, not per agent: which model is doing the
-                        # work is a question about the account, not a column
-                        if mode % PLAN_MODES:
+                    elif VIEWS[view] == "usage":
+                        # one question -- what is being spent -- answered at
+                        # three altitudes: the account's plan, the models it
+                        # spent on, then the agents that did the spending
+                        if mode == 1:
                             tot = model_totals(live)
                             state = (view, "tokens", repr(sorted(tot.items())), mode)
                             drawn = (lambda t=tot, m=mode:
-                                     disp_mod.render_models(t, m, PLAN_MODES))
+                                     disp_mod.render_models(t, m, USAGE_MODES))
+                        elif mode == 2:
+                            cols = tuple(usage_col(by_id.get(slots.get(s)))
+                                         for s in range(SLOTS))
+                            state = (view, "agents", cols, mode)
+                            drawn = (lambda c=cols, m=mode:
+                                     disp_mod.render_usage(c, m, USAGE_MODES))
                         else:                       # first: what you glance at
                             bars, uerr = plan_usage(now)
                             state = (view, "plan", repr(bars), uerr, mode)
                             drawn = (lambda b=bars, e=uerr, m=mode:
-                                     disp_mod.render_plan(b, e, m, PLAN_MODES))
+                                     disp_mod.render_plan(b, e, m, USAGE_MODES))
                     elif VIEWS[view] == "tests":
                         ok, bad = test_run.tally() if test_run else (0, 0)
                         tinfo = {"repo": os.path.basename(troot) or "?",
@@ -1593,22 +1798,24 @@ def run():
                         drawn = (lambda c=cols, a=arming, m=moving:
                                  disp_mod.render_macros(c, a, m))
                     else:
-                        build, draw = ((panel_col, disp_mod.render)
-                                       if VIEWS[view] == "agents"
-                                       else (usage_col, disp_mod.render_usage))
-                        cols = tuple(build(by_id.get(slots.get(s)))
+                        cols = tuple(panel_col(by_id.get(slots.get(s)))
                                      for s in range(SLOTS))
                         state = (view, cols)
-                        drawn = (lambda c=cols: draw(c))
+                        drawn = (lambda c=cols: disp_mod.render(c))
+                    # both legends, drawn once here rather than in nine
+                    # renderers. Not on the two that take the whole glass -- a
+                    # preview or a confirm is not a view, and neither left room
+                    # for a band. The seats go into the state: a renamed or
+                    # restatused agent has to force the redraw itself.
+                    banded = previewing is None and not confirm
+                    if banded:
+                        state = (*state, seats, current)
                     if state != shown:              # re-render on change only
                         try:
                             shown, frame = state, drawn()
-                            # the picker's labels, drawn once here rather than
-                            # in nine renderers. Not on the two that take the
-                            # whole glass -- a preview or a close prompt is not
-                            # a view, and neither left room for the band.
-                            if previewing is None and not closing:
+                            if banded:
                                 frame = disp_mod.view_strip(frame, VIEWS, view)
+                                frame = disp_mod.seat_strip(frame, seats, current)
                         except Exception as e:
                             # the pads are the product, the screen is the label:
                             # a drawing bug must not take the surface down
@@ -1660,13 +1867,17 @@ def run():
                 push.strip(strip_bar(strip_level if strip_touch and strip_level
                                      else effort_for(cur)))
                 # The grid shows shortcuts where shortcuts are the subject.
-                # On usage or plan it is 64 lit pads about something else, and
+                # On the usage view it is 64 lit pads about something else, and
                 # a surface that is always on says nothing. The modes keep
                 # their pads regardless: an armed chain, a pad in hand, Record
                 # held, and a question waiting are all live state, and a
                 # question in particular answers from wherever you are.
                 lit_macros = VIEWS[view] in ("focus", "macros")
                 testing = VIEWS[view] == "tests"
+                # the agents view puts the agents themselves on the pads. No
+                # answer-pad exception: a question drags you to the focus view
+                # before you could press one here.
+                picking = VIEWS[view] == "agents"
                 chain_at = {p: k for k, p in enumerate(chain.steps)} if chain else {}
                 for i in range(MACRO_SLOTS):        # bottom row changes job when asked
                     row0, anim = i < SLOTS, STATIC
@@ -1689,6 +1900,13 @@ def run():
                             colour, anim = GREEN, BLINK
                         else:
                             colour = MACROS[i]["colour"] if MACROS[i] else BLACK
+                    elif picking and not arming and not (opts and row0):
+                        sb = subs[i] if i < len(subs) else None
+                        colour, anim = (
+                            (BLACK, STATIC) if sb is None else
+                            (WHITE, STATIC) if subfocus and subfocus[1] == sb["id"]
+                            else (YELLOW, PULSE) if sb["running"]
+                            else (GREEN, STATIC))
                     else:
                         colour = (RED if arming else
                                   (WHITE if row0 and i < len(opts) else
@@ -1738,21 +1956,13 @@ def run():
                         strip_level, shown = None, None
                 elif msg.type == "control_change" and msg.control in SESSION_CCS:
                     slot = SESSION_CCS.index(msg.control)
-                    if closing and msg.value:
+                    if confirm and msg.value:
                         if slot == YES_SLOT:
-                            kill = closing[0]
-                            pane = (by_id.get(slots.get(kill)) or {}).get("pane_id")
-                            print(f"confirmed -> closing {pane}", flush=True)
-                            if pane:
-                                herdr("pane", "close", pane)
-                                slots.pop(kill, None)
-                            if current == kill:
-                                current = step_slot(current, 1, slots)
-                            closing, shown = None, None
+                            say_yes()
                         elif slot == NO_SLOT:
-                            print("close cancelled", flush=True)
-                            closing, shown = None, None
-                    elif closing:
+                            print(f"{confirm[0]} cancelled", flush=True)
+                            confirm, shown = None, None
+                    elif confirm:
                         pass                        # ignore the release
                     elif msg.value:
                         if slots.get(slot):
@@ -1762,19 +1972,29 @@ def run():
                         talk_slot, talk_src, pad_down = None, None, None
                     elif pad_down and pad_down[0] == slot:
                         if shifted:
-                            closing, shown = (slot, now + CONFIRM_S), None
+                            confirm = ("close", now + CONFIRM_S, slot,
+                                       agent_name(by_id.get(slots.get(slot))))
+                            shown = None
                             print(f"shift+pad {slot} -> confirm close?", flush=True)
                             pad_down = None
                             continue
                         herdr("agent", "focus", slots[slot])   # short press = focus
-                        current, pad_down, shown = slot, None, None
+                        # back out of a subagent: the seat you pressed is the
+                        # session, not something it spawned
+                        current, pad_down, shown, subfocus = slot, None, None, None
                         scrolls[slot] = 0
                 elif (msg.type == "control_change" and msg.control in TAB_CCS
                       and msg.value):
                     i = TAB_CCS.index(msg.control)
                     if i < len(VIEWS):
+                        modes = VIEW_MODES.get(VIEWS[i], 1)
+                        # already here: the same button walks that view's modes,
+                        # so one button owns one subject however deep it goes
+                        mode = (mode + 1) % modes if i == view else mode % modes
                         view, shown = i, None       # force a redraw
-                        print(f"view -> {VIEWS[i]}", flush=True)
+                        print(f"view -> {VIEWS[i]}" +
+                              (f" {mode + 1}/{modes}" if modes > 1 else ""),
+                              flush=True)
                 elif (msg.type == "control_change" and msg.control == ADD_DEVICE_CC
                       and msg.value):
                     where = (cur or {}).get("cwd") or os.getcwd()
@@ -1809,9 +2029,9 @@ def run():
                         if chain.phase in ("running", "waiting"):
                             herdr("agent", "send", chain.target, ESCAPE)
                         chain, shown = None, None
-                    elif closing:
-                        print("close cancelled", flush=True)
-                        closing, shown = None, None
+                    elif confirm:
+                        print(f"{confirm[0]} cancelled", flush=True)
+                        confirm, shown = None, None
                     elif target:
                         print(f"stop -> escape -> {target}", flush=True)
                         herdr("agent", "send", target, ESCAPE)
@@ -1838,7 +2058,8 @@ def run():
                     herdr("agent", "send", target, cmd)
                 elif (msg.type == "control_change" and msg.control == DELETE_CC
                       and msg.value and cur):
-                    closing, shown = (current, now + CONFIRM_S), None
+                    confirm = ("close", now + CONFIRM_S, current, agent_name(cur))
+                    shown = None
                     print(f"delete -> confirm close slot {current}?", flush=True)
                 elif (msg.type == "control_change" and msg.control == SELECT_CC
                       and msg.value):
@@ -1867,9 +2088,10 @@ def run():
                     print(f"chain: sequence {here + 1}/{total}, "
                           f"{len(chain.steps)} steps", flush=True)
                 elif (msg.type == "control_change" and msg.control in PICK_CCS
-                      and msg.value and VIEWS[view] == "plan"):
-                    mode, shown = (mode + PICK_CCS[msg.control]) % PLAN_MODES, None
-                    print(f"plan -> mode {mode + 1}/{PLAN_MODES}", flush=True)
+                      and msg.value and VIEW_MODES.get(VIEWS[view], 1) > 1):
+                    modes = VIEW_MODES[VIEWS[view]]
+                    mode, shown = (mode + PICK_CCS[msg.control]) % modes, None
+                    print(f"{VIEWS[view]} -> mode {mode + 1}/{modes}", flush=True)
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
                       and msg.value and target):
                     herdr("agent", "send", target, ARROW_CCS[msg.control])
@@ -1955,16 +2177,8 @@ def run():
                             chain.phase = "running"
                         else:                   # the whole row went empty
                             chain.phase, chain.done_at = "done", now
-                    elif closing:                   # Play is yes to the question
-                        slot = closing[0]
-                        pane = (by_id.get(slots.get(slot)) or {}).get("pane_id")
-                        print(f"confirmed -> closing {pane}", flush=True)
-                        if pane:
-                            herdr("pane", "close", pane)
-                            slots.pop(slot, None)
-                        if current == slot:
-                            current = step_slot(current, 1, slots)
-                        closing, shown = None, None
+                    elif confirm:                   # Play is yes to the question
+                        say_yes()
                     elif target:
                         print(f"play -> enter -> {target}", flush=True)
                         herdr("agent", "send", target, ENTER)
@@ -1982,7 +2196,10 @@ def run():
                         macro_down = None
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if testing:
+                    # the live view, not the flag the last poll painted with:
+                    # a tab press between polls would otherwise fire a macro
+                    # into an agent from a pad that is lit as something else
+                    if VIEWS[view] == "tests":
                         if i < len(titems):
                             it = titems[i]
                             if it["dir"]:
@@ -2055,6 +2272,15 @@ def run():
                         print(f"answer {i + 1}/{len(opts)}: {opts[i][1]!r} "
                               f"-> {target}", flush=True)
                         herdr("agent", "send", target, answer_keys(i, pick))
+                    elif VIEWS[view] == "agents":
+                        # last, under every mode: the pads only stand for the
+                        # subagents when nothing louder has borrowed them
+                        if i < len(subs):
+                            confirm = ("focus", now + CONFIRM_S, i,
+                                       subs[i]["label"])
+                            shown = None
+                            print(f"agents: pad {i} -> focus "
+                                  f"{subs[i]['label']!r}?", flush=True)
                     elif MACROS[i] and target:
                         m = MACROS[i]
                         # the text goes in now so it reads back immediately, but
@@ -2171,7 +2397,45 @@ def selftest():
     assert kept == {"opus 5": {"out": 5, "inp": 1, "cread": 2, "cwrite": 3}}, kept
     assert "<synthetic>" not in kept, "not a model, and it spends nothing"
     del _model_tok["/fake"]
-    assert "plan" in VIEWS and len(VIEWS) <= len(TAB_CCS), "a button per view"
+    assert len(VIEWS) <= len(TAB_CCS), "a button per view"
+    assert set(VIEW_MODES) <= set(VIEWS), "a mode count for a view that is gone"
+
+    # subagents live on disk: their log is what they said, and the parent's
+    # transcript is the only thing that says whether one has come back
+    import tempfile
+    row = lambda **kw: json.dumps(kw) + "\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        parent = os.path.join(tmp, "session.jsonl")
+        with open(parent, "w") as f:
+            f.write(row(message={"content": [{"type": "tool_use", "id": "t1",
+                                              "name": "Task"}]}))
+            f.write(row(message={"content": "a plain string, not blocks"}))
+            f.write(row(message={"content": [{"type": "tool_result",
+                                              "tool_use_id": "t1"}]}))
+        assert finished_calls(parent) == {"t1"}, "the one that came back"
+        assert finished_calls(parent + ".nope") == set(), "no file, no crash"
+        log = os.path.join(tmp, "agent-a1.jsonl")
+        with open(log, "w") as f:
+            f.write(row(message={"content": [{"type": "text", "text": "found it"},
+                                             {"type": "tool_use", "name": "Read",
+                                              "input": {"file_path": "/a/b.py"}}]}))
+            f.write(row(message={"content": [{"type": "text",
+                                              "text": "TLDR\n- done"}]}))
+        lines = sub_lines(log)
+        assert lines == ["found it", "  Read(/a/b.py)", "TLDR", "- done"], lines
+        info = sub_info({"label": "find it", "type": "Explore", "model": "sonnet",
+                         "running": True, "log": log}, 2)
+        assert info["status"] == "working" and info["effort"] == "Explore", info
+        assert info["tldr"] == ["- done"], info["tldr"]
+        assert info["say"] == "- done", info["say"]
+        # every key render_focus reads, or it draws a KeyError instead of a pane
+        assert set(info) >= set(focus_info(0, {"cwd": "/x"}, {})), info
+    assert tool_line({"name": "Bash", "input": {}}) == "Bash", "no argument, no ()"
+    # every question the surface can ask has a screen that asks it
+    import display as _d
+    for kind in ("close", "focus"):
+        assert kind in _d.CONFIRMS, kind
+        assert _d.render_confirm("repo", 0, 5, kind).size == (_d.WIDTH, _d.HEIGHT)
 
     assert len(MACROS) == MACRO_SLOTS, "one entry per macro pad"
     # the text itself never carries a newline; submitting is the flag's job, so
