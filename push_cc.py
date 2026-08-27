@@ -79,7 +79,7 @@ MACRO_SLOTS = len(MACRO_NOTES)
 TAB_CCS = list(range(102, 110))    # buttons above the display -> view switcher
 # focus first: it is the one you actually watch, and view defaults to 0 so
 # it is also what comes up on start
-VIEWS = ["focus", "agents", "usage", "tests", "macros", "prs"]
+VIEWS = ["focus", "agents", "tests", "macros", "prs", "usage"]
 # a view with more than one mode: its own button cycles them, Left/Right too.
 # One button per subject beats two buttons for two halves of one question.
 VIEW_MODES = {"usage": 3}
