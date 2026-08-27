@@ -97,9 +97,15 @@ UP, DOWN = "\x1b[A", "\x1b[B"   # also used to walk a select widget's caret
 # they mean in context -- caret in a dialog, history at an empty prompt, cursor
 # in text -- and second-guessing that from here only ever gets it wrong.
 ARROW_CCS = {44: "\x1b[D", 45: "\x1b[C", 46: UP, 47: DOWN}
+# While a chain is armed the same two buttons choose which of the row's
+# sequences to run. They go back to being arrow keys the moment it is not.
+PICK_CCS = {44: -1, 45: 1}
 RECORD_CC = 86                     # hold Record, tap a pad: saves the prompt to it
-SELECT_CC = 48                     # Select does the same; either hand can reach one
-ARM_CCS = (RECORD_CC, SELECT_CC)
+ARM_CCS = (RECORD_CC,)
+# Select rearranges the grid instead of arming with Record: tap it, tap a pad to
+# pick it up, tap another to put it down. mapui has done this by dragging since
+# it existed; doing it on the device means never leaving the device.
+SELECT_CC = 48
 DELETE_CC = 118                    # Delete -> close the current agent's pane
 ADD_DEVICE_CC = 52                 # Add Device -> split, new claude in auto mode
 ADD_TRACK_CC = 53                  # Add Track -> new worktree
@@ -358,6 +364,15 @@ def slug(text):
     return name[:60] or "push/" + time.strftime("%H%M%S")
 
 
+def swap_pads(macros, a, b):
+    """Exchange two pads, in place.
+
+    There is no separate move: an empty destination holds None, and None swaps
+    in as happily as anything else. One operation covers both, so there is no
+    second path to get wrong."""
+    macros[a], macros[b] = macros[b], macros[a]
+
+
 def answer_keys(pick, sel):
     """Keys that move a select widget's caret from `sel` to `pick` and commit.
 
@@ -381,15 +396,36 @@ def step_slot(current, delta, slots):
 
 # ---------------------------------------------------------------- chains
 
-def chain_steps(macros, start):
-    """The pads from `start` rightward to the end of its row, empties dropped.
+def row_blocks(macros, row):
+    """A row's sequences: runs of filled pads, split wherever one is blank.
 
-    A row IS the chain. The grid already groups eight pads under one hand and
-    mapui already reorders them by dragging, so a sequence needs no storage of
-    its own -- and a pad's text lives in exactly one place, which a separate
-    sequence file would quietly duplicate."""
-    row_end = (start // 8 + 1) * 8
-    return [i for i in range(start, row_end) if macros[i]]
+    A blank pad is a break, not a gap to step over. Two things that merely
+    share a row are usually two sequences, and joining them silently is how
+    `commit this` ends up in front of `merge every PR`. The gap was already
+    there in every layout anyone had built; it just did not mean anything."""
+    blocks, run = [], []
+    for i in range(row * 8, row * 8 + 8):
+        if macros[i]:
+            run.append(i)
+        elif run:
+            blocks.append(run)
+            run = []
+    if run:
+        blocks.append(run)
+    return blocks
+
+
+def chain_steps(macros, start):
+    """The whole sequence `start` belongs to.
+
+    A block is the unit, not the pad you happened to hit: the pads either side
+    of a gap are one thought, and you pick between thoughts with left/right
+    rather than by aiming at a different pad. Still no storage of its own --
+    mapui reorders by dragging and the row is still the record."""
+    for block in row_blocks(macros, start // 8):
+        if start in block:
+            return block
+    return []
 
 
 def chain_step_done(saw_working, status, waited, idle_polls):
@@ -442,9 +478,33 @@ class Chain:
               f"{m['label']!r} -> {self.target}", flush=True)
         return True
 
+    def cycle(self, macros, delta):
+        """Left/right walks the row's other sequences, while still armed.
+
+        Recomputed rather than remembered: mapui can rewrite the row between
+        arming and choosing, and a stale block list would arm pads that moved."""
+        if not self.steps:
+            return False
+        blocks = row_blocks(macros, self.steps[0] // 8)
+        if len(blocks) < 2:
+            return False
+        here = next((k for k, b in enumerate(blocks) if b[0] == self.steps[0]), 0)
+        self.steps = blocks[(here + delta) % len(blocks)]
+        self.index = 0
+        return True
+
+    def seq(self, macros):
+        """Which of the row's sequences this is, and how many there are."""
+        if not self.steps:
+            return 0, 1
+        blocks = row_blocks(macros, self.steps[0] // 8)
+        here = next((k for k, b in enumerate(blocks) if b[0] == self.steps[0]), 0)
+        return here, max(1, len(blocks))
+
     def info(self, macros):
+        here, total = self.seq(macros)
         return {"agent": self.name, "slot": self.slot, "index": self.index,
-                "phase": self.phase,
+                "phase": self.phase, "seq": here, "seqs": total,
                 "steps": [{"label": (macros[i] or {}).get("label", "?"),
                            "colour": (macros[i] or {}).get("colour", BLUE)}
                           for i in self.steps]}
@@ -881,6 +941,7 @@ def run():
     asking, next_sweep, was_asking = set(), 0.0, False
     chain, automating = None, False   # a row of pads queued at one agent
     strip_level, strip_touch = None, False  # uncommitted until the finger lifts
+    moving = None        # None off, -1 waiting for a pad, >=0 the pad in hand
     print(f"connected to {name}. ctrl-c to quit.", flush=True)
     try:
         while True:
@@ -1022,8 +1083,9 @@ def run():
                             lambda: disp_mod.render((None,) * SLOTS))
                     elif VIEWS[view] == "macros":
                         cols = tuple(MACROS)
-                        state = (view, cols, arming)
-                        drawn = lambda: disp_mod.render_macros(cols, arming)
+                        state = (view, cols, arming, moving)
+                        drawn = (lambda c=cols, a=arming, m=moving:
+                                 disp_mod.render_macros(c, a, m))
                     else:
                         build, draw = ((panel_col, disp_mod.render)
                                        if VIEWS[view] == "agents"
@@ -1064,6 +1126,8 @@ def run():
                 push.cc("shift", 0, [SHIFT_CC], BRIGHT if shifted else DIM)
                 for i, cc in enumerate(ARM_CCS):
                     push.cc(f"arm{i}", 0, [cc], RED if arming else DIM)
+                push.cc("select", 0, [SELECT_CC],
+                        GREEN if moving is not None else DIM)
                 push.cc("del", 0, [DELETE_CC], RED if cur else BLACK)
                 push.cc("undo", 0, [UNDO_CC],
                         WHITE if summary.get("pending") else BLACK)
@@ -1093,6 +1157,13 @@ def run():
                              (RED, BLINK) if chain.phase == "waiting" else
                              (BLUE, PULSE)) if k == chain.index else     # up next
                             (MACROS[i]["colour"] if MACROS[i] else BLACK, STATIC))
+                    elif moving is not None:
+                        # the one in hand blinks; the rest just show what they
+                        # hold, because that is what you are choosing between
+                        if i == moving:
+                            colour, anim = GREEN, BLINK
+                        else:
+                            colour = MACROS[i]["colour"] if MACROS[i] else BLACK
                     else:
                         colour = (RED if arming else
                                   (WHITE if row0 and i < len(opts) else
@@ -1239,12 +1310,28 @@ def run():
                       and msg.value and cur):
                     closing, shown = (current, now + CONFIRM_S), None
                     print(f"delete -> confirm close slot {current}?", flush=True)
+                elif (msg.type == "control_change" and msg.control == SELECT_CC
+                      and msg.value):
+                    if moving is None:
+                        moving, view = -1, VIEWS.index("macros")  # show the grid
+                        print("move on -> tap a pad to pick it up", flush=True)
+                    else:
+                        moving = None
+                        print("move off", flush=True)
+                    shown = None
                 elif msg.type == "control_change" and msg.control in ARM_CCS:
                     arm_held[msg.control] = bool(msg.value)
                     was, arming = arming, any(arm_held.values())
                     shown = None
                     if arming and not was:
                         view = VIEWS.index("macros")   # show what you would overwrite
+                elif (msg.type == "control_change" and msg.control in PICK_CCS
+                      and msg.value and chain and chain.phase == "armed"
+                      and chain.cycle(MACROS, PICK_CCS[msg.control])):
+                    here, total = chain.seq(MACROS)
+                    shown = None
+                    print(f"chain: sequence {here + 1}/{total}, "
+                          f"{len(chain.steps)} steps", flush=True)
                 elif (msg.type == "control_change" and msg.control in ARROW_CCS
                       and msg.value and target):
                     herdr("agent", "send", target, ARROW_CCS[msg.control])
@@ -1339,7 +1426,25 @@ def run():
                         macro_down = None
                 elif msg.type == "note_on" and msg.velocity and msg.note in MACRO_NOTES:
                     i = MACRO_NOTES.index(msg.note)
-                    if automating:
+                    if moving is not None:
+                        if moving < 0:
+                            if MACROS[i]:
+                                moving = i
+                                print(f"move: picked up pad {i} "
+                                      f"({MACROS[i]['label']!r})", flush=True)
+                            else:
+                                print(f"move: pad {i} is empty", flush=True)
+                        elif i == moving:
+                            moving = -1          # tapped again: put it back down
+                            print("move: put back down", flush=True)
+                        else:
+                            swap_pads(MACROS, moving, i)
+                            save_macros(MACROS)
+                            print(f"move: pad {moving} <-> pad {i}", flush=True)
+                            # stay in move mode: rearranging is rarely one pad
+                            moving = -1
+                        shown = None
+                    elif automating:
                         steps = chain_steps(MACROS, i)
                         if steps and target:
                             chain = Chain(steps, target, current,
@@ -1470,14 +1575,38 @@ def selftest():
     # a row is the chain: from a pad to the end of ITS row, never into the next
     pads = [{"text": "t", "label": "t", "colour": BLUE, "tag": None,
              "submit": False} for _ in range(MACRO_SLOTS)]
-    assert chain_steps(pads, 0) == list(range(0, 8)), "row 0 stops at 8"
-    assert chain_steps(pads, 5) == [5, 6, 7], "starts where you tapped"
-    assert chain_steps(pads, 8) == list(range(8, 16)), "row 1 is its own chain"
-    assert chain_steps(pads, 63) == [63], "last pad is a chain of one"
-    holes = list(pads)
-    holes[1] = holes[2] = None
-    assert chain_steps(holes, 0) == [0, 3, 4, 5, 6, 7], "empties drop out"
+    assert chain_steps(pads, 0) == list(range(0, 8)), "a full row is one sequence"
+    assert chain_steps(pads, 5) == list(range(0, 8)), "tapping inside picks the block"
+    assert chain_steps(pads, 8) == list(range(8, 16)), "row 1 is its own"
+    assert chain_steps(pads, 63) == [56 + k for k in range(8)], "last row, whole"
     assert chain_steps([None] * MACRO_SLOTS, 0) == [], "an empty row is no chain"
+
+    # a blank pad splits the row: two sequences, not one with a hole in it
+    split = list(pads)
+    split[3] = None
+    assert row_blocks(split, 0) == [[0, 1, 2], [4, 5, 6, 7]], "the gap is a break"
+    assert chain_steps(split, 0) == [0, 1, 2], "left of the gap"
+    assert chain_steps(split, 5) == [4, 5, 6, 7], "right of it is a different one"
+    assert chain_steps(split, 3) == [], "the gap itself runs nothing"
+    edges = list(pads)
+    edges[0] = edges[7] = None
+    assert row_blocks(edges, 0) == [[1, 2, 3, 4, 5, 6]], "gaps at the ends do not split"
+    lone = [None] * MACRO_SLOTS
+    lone[2] = lone[5] = pads[0]
+    assert row_blocks(lone, 0) == [[2], [5]], "two sequences of one"
+
+    # left/right walk them, and wrap
+    ch = Chain(chain_steps(split, 0), "t", 0, "n")
+    assert ch.seq(split) == (0, 2), "first of two"
+    assert ch.cycle(split, 1) and ch.steps == [4, 5, 6, 7], "right moves along"
+    assert ch.seq(split) == (1, 2)
+    assert ch.cycle(split, 1) and ch.steps == [0, 1, 2], "and wraps"
+    assert ch.cycle(split, -1) and ch.steps == [4, 5, 6, 7], "left goes back"
+    assert not Chain(chain_steps(pads, 0), "t", 0, "n").cycle(pads, 1), \
+        "one sequence has nowhere to go"
+    ch.index = 2
+    ch.cycle(split, 1)
+    assert ch.index == 0, "a different sequence starts at its own beginning"
 
     # the whole point: a step is not done just because the agent still reads
     # idle in the poll right after its enter landed
@@ -1498,7 +1627,8 @@ def selftest():
     assert ch.fire([None] * MACRO_SLOTS, 0.0) is False, "an emptied row just ends"
     assert ch.index == 2, "and it does not sit on a pad that is gone"
     info = Chain([0, 1], "t", 0, "n").info(pads)
-    assert set(info) == {"agent", "slot", "steps", "index", "phase"}, info
+    assert set(info) == {"agent", "slot", "steps", "index", "phase",
+                         "seq", "seqs"}, info
     assert len(info["steps"]) == 2 and set(info["steps"][0]) == {"label", "colour"}
     assert AUTOMATE_CC not in TAB_CCS + SESSION_CCS + list(COMMAND_CCS)
     assert AUTOMATE_CC not in (PLAY_CC, STOP_CC, SHIFT_CC) + ARM_CCS
@@ -1508,6 +1638,19 @@ def selftest():
 
     # the strip is absolute: both ends must be reachable, and reachable at the
     # very edge, or the two levels people most want are the two they cannot hit
+    # moving pads: one operation, because an empty destination is just None
+    a = [{"label": "a", "text": "a", "colour": BLUE, "tag": None, "submit": False},
+         None,
+         {"label": "c", "text": "c", "colour": RED, "tag": None, "submit": False}]
+    swap_pads(a, 0, 2)
+    assert [x and x["label"] for x in a] == ["c", None, "a"], "two full pads swap"
+    swap_pads(a, 0, 1)
+    assert [x and x["label"] for x in a] == [None, "c", "a"], "an empty one is a move"
+    swap_pads(a, 1, 1)
+    assert [x and x["label"] for x in a] == [None, "c", "a"], "onto itself is a no-op"
+    assert SELECT_CC not in ARM_CCS, "Select rearranges now, it does not arm"
+    assert SELECT_CC not in (PLAY_CC, STOP_CC, SHIFT_CC, AUTOMATE_CC, BROWSE_CC)
+
     # answering: walk the caret to the pad you pressed, then commit
     assert answer_keys(0, 0) == ENTER, "already on it, just commit"
     assert answer_keys(2, 0) == DOWN * 2 + ENTER, "down to a later option"

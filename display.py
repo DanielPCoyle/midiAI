@@ -287,31 +287,56 @@ def render_pad(macro, index):
     return img
 
 
-def render_macros(macros, arming=False):
+def render_macros(macros, arming=False, moving=None):
     """All 64 pads. Drawn the way the grid sits under your hands: note 36 is
     bottom-left on the Push, so it is bottom-left here too. Getting that
-    backwards would make the screen actively misleading."""
+    backwards would make the screen actively misleading.
+
+    moving: None       -- not in move mode
+            -1         -- move mode on, no source pad picked yet
+            0..63      -- move mode on, this pad index is the picked source
+    """
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
-    accent = (240, 60, 60) if arming else (150, 175, 215)
+    MOVE_ACCENT = (60, 208, 90)
+    accent = ((240, 60, 60) if arming else
+              MOVE_ACCENT if moving is not None else (150, 175, 215))
     rows, cell_h = 8, (HEIGHT - 14) // 8
     # approximate: the Push owns the real palette, this only has to be
     # recognisable next to it
     swatches = {127: (224, 60, 60), 3: (224, 138, 44), 8: (224, 208, 44),
                 126: (60, 208, 90), 125: (74, 134, 208), 122: (230, 230, 230)}
-    d.text((WIDTH - 250, 2), "RECORD - tap a pad to save the prompt" if arming
-           else "SHORTCUTS", font=font(11), fill=accent if arming else (80, 80, 80))
+    if moving == -1:
+        header = "MOVE - tap a pad to pick it up"
+    elif moving is not None and moving >= 0:
+        header = "MOVE - tap where it goes"
+    else:
+        header = "RECORD - tap a pad to save the prompt" if arming else "SHORTCUTS"
+    d.text((WIDTH - 250, 2), header, font=font(11),
+           fill=accent if (arming or moving is not None) else (80, 80, 80))
+
+    # the carried pad -- out of range or empty just means no source to show
+    source = moving if (moving is not None and moving >= 0 and
+                         moving < len(macros) and macros[moving]) else None
+
     for r in range(rows):
         for c in range(8):
             i = (rows - 1 - r) * 8 + c          # screen top row = top pad row
             x, y = c * COL_W, 12 + r * cell_h
             m = macros[i] if i < len(macros) else None
-            d.rectangle([x + 2, y, x + COL_W - 4, y + cell_h - 2],
-                        outline=(38, 38, 38))
+            box = [x + 2, y, x + COL_W - 4, y + cell_h - 2]
+            if i == source:
+                # this is the thing in hand -- loudest mark on the screen
+                d.rectangle(box, fill=tuple(v // 4 for v in MOVE_ACCENT),
+                            outline=MOVE_ACCENT, width=3)
+            else:
+                pickable = moving == -1 and m
+                d.rectangle(box, outline=(64, 84, 64) if pickable else (38, 38, 38))
             if not m:
                 continue
-            hue = accent if arming else swatches.get(m["colour"], (150, 175, 215))
-            d.rectangle([x + 2, y, x + 5, y + cell_h - 2], fill=hue)
+            if i != source:
+                hue = accent if arming else swatches.get(m["colour"], (150, 175, 215))
+                d.rectangle([x + 2, y, x + 5, y + cell_h - 2], fill=hue)
             s, ff = fit(d, m["label"], COL_W - 20, 11)
             d.text((x + 9, y + 1), s, font=ff, fill=(215, 215, 215))
             if m.get("submit"):        # this one fires the moment you tap it
@@ -341,6 +366,8 @@ def render_chain(chain):
     steps = chain.get("steps") or []
     n = len(steps)
     index = chain.get("index", 0)
+    seq = chain.get("seq", 0)
+    seqs = chain.get("seqs", 1)
     accent, hint = CHAIN_PHASE.get(chain.get("phase"), CHAIN_PHASE["armed"])
 
     # header: who, which slot (1-based for humans), how far through the queue
@@ -349,7 +376,17 @@ def render_chain(chain):
     s, f = fit(d, chain.get("agent", "?"), 260, 20)
     d.text((38, 9), s, font=f, fill=(235, 235, 235))
     ctr, cf = fit(d, f"step {min(index, max(n - 1, 0)) + 1}/{n}", 160, 16)
-    d.text((WIDTH - 16 - d.textlength(ctr, font=cf), 11), ctr, font=cf, fill=(150, 150, 150))
+    ctr_x = WIDTH - 16 - d.textlength(ctr, font=cf)
+    d.text((ctr_x, 11), ctr, font=cf, fill=(150, 150, 150))
+
+    # a blank pad can split a row into more than one runnable sequence -- when
+    # it does, say which one is picked and that Left/Right switch it, right
+    # next to the step counter it sits alongside
+    if seqs > 1:
+        pick = max(0, min(seq, seqs - 1)) + 1
+        sel, sf = fit(d, f"← {pick}/{seqs} →", 150, 16)
+        d.text((ctr_x - 14 - d.textlength(sel, font=sf), 11), sel, font=sf, fill=accent)
+
     d.line([(10, 34), (WIDTH - 10, 34)], fill=(50, 50, 50))
 
     # the row of steps, left to right in run order
