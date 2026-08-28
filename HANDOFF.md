@@ -1,14 +1,34 @@
 # Handoff — replacing herdr
 
-Branch `worktree-herdr-replacement-research`, nine commits, `0860cf7..69984ba`.
-Board: SimplerDevelopment project **216**, map card **1805**.
-Worktree at `.claude/worktrees/herdr-replacement-research`.
+**Merged to main.** `0860cf7..60b84df`, eighteen commits.
+Board: SimplerDevelopment project **216**, map card **1805**. Every lane empty
+except Validating.
+The worktree at `.claude/worktrees/herdr-replacement-research` is spent; the
+branch is in main and it can be removed.
 
 ## Goal
 
 Close herdr entirely and keep the Push 2 surface working, then create, delete,
 rename and prompt agents from the Expo app — so the whole thing runs contained
 in this application.
+
+## Where it ended
+
+herdr is gone as a dependency and unneeded as a UI. push_cc and mapui run from
+main on tmux, driving the real Push 2. The iPad app can create, rename, close,
+prompt and branch a session, and list, open and remove worktrees — everything
+herdr gave a human, minus the things tmux owns (splitting, layout, persistence,
+remote attach), which the app has no business duplicating.
+
+Four gates, all green:
+
+    .venv/bin/python push_cc.py --selftest
+    python3 term.py
+    python3 smoke_tmux.py          (kills the tmux server — it will take live panes with it)
+    node app/check.js
+
+Plus `mission_check.py`, `mission_api.py`, `mission_wt.py`, `mission_wtman.py`,
+`mission_wtguard.py` — the live-server checks. They need mapui on 8765.
 
 ## Current progress
 
@@ -68,32 +88,16 @@ record.
 
 ## Next steps
 
-0. **Two operator-only blockers, both on the board** — MIDI-005 (card 1810)
-   and MIDI-006 (card 1811). Merge `worktree-herdr-replacement-research` into
-   main, commit the app files there, and stop the running push_cc (pid 76178)
-   so this branch's can drive the Push. Nothing else is waiting on anything.
-
-1. **Commit the app files in the main checkout.** `Pane.js`, `Rail.js`,
-   `Pads.js` are untracked and `theme.js` / `PushMirror.js` are newer there.
-   Any UI work here forks against a stale app until that lands and this branch
-   rebases onto it.
-2. ~~Chart the wayfinder map.~~ **Done — map card 1805 on board 216**, with
-   the settled items in Decisions-so-far and six tickets, four of them closed.
-   Fog still genuinely open: what replaces herdr's UI for the human, and where
-   agent management lives in the iPad UI (the latter waits on the app files).
-   `done`-vs-`idle` moved to Out of scope — MIDI-002 showed it cannot
-   distinguish the case it was wanted for.
-3. **Drive the Push with `PUSH_BACKEND=tmux`** (MIDI-005, card 1810). The
-   device is on USB; what blocks it is the push_cc already running on the herdr
-   backend, which owns the MIDI port. Everything reachable without the hardware
-   is verified — `mission_check.py` walks the data path, `mission_api.py` the
-   routes.
-4. ~~Settle blocked-detection.~~ **Done — the answer is no.** An
-   AskUserQuestion widget reports `waiting`, but so does herdr see it (the
-   widget draws the same "esc to cancel" chrome its rules match). A *pure
-   prose* question reports **`idle`** — same blind spot as herdr, because the
-   agent genuinely is idle: it asked and stopped. `sweep_panes` is
-   load-bearing. Reproduce with `mission_q.py` / `mission_p.py`.
+1. **Drive the finished UI on the iPad** (MIDI-005, card 1810; MIDI-007, card
+   1821). Routes and components are verified against the live API; nobody has
+   looked at the result on glass. Pad colours, hold-to-talk, the question grid,
+   the composer, the ⋯ menu, the worktrees sheet.
+2. **`app/src/Pads.js` and `macros.json` are uncommitted** — yours, in flight,
+   deliberately untouched all night.
+3. **Board 216 carries ~40 junk labels** from cloning bugcast for its lanes
+   (`VANTA`, `LFQA`, `COOK`, the `*79` set). Harmless, undeleted.
+4. Fog left on the map, and it is design rather than plumbing: what replaces
+   herdr's UI for you as a human, if anything.
 
 ## Two things worth knowing
 
