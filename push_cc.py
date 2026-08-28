@@ -95,7 +95,7 @@ ENC_TOUCH = list(range(0, 8))      # touching one is a note, not a CC
 SHIFT_CC = 49                      # held modifier, the standard Push idiom
 SOLO_CC = 61                       # pin: neither questions nor herdr move it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
-PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next session
+PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next pad page
 CONFIRM_S = 10                     # a question that goes unanswered expires
 YES_SLOT, NO_SLOT = 0, 1           # while confirming, the first two session buttons
 MAX_STEPS = 8                      # a fast spin must not fire fifty keypresses
@@ -248,24 +248,10 @@ def label_for(text):
     return short if len(short) <= 14 else short[:13] + "\u2026"
 
 
-def load_macros():
-    """macros.json if present, defaults otherwise. Hand-editable on purpose.
-
-    Accepts a bare list, which is what the file used to be, as well as the
-    {labels, pads} form -- an older file must not lose its pads to a schema
-    it was written before."""
-    try:
-        with open(MACRO_FILE) as f:
-            raw = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        raw = DEFAULT_MACROS
-    if isinstance(raw, dict):
-        labels, pads = raw.get("labels") or DEFAULT_LABELS, raw.get("pads") or []
-    else:
-        labels, pads = DEFAULT_LABELS, raw or []
-    by_name = {l["name"]: l.get("colour", BLUE) for l in labels if l.get("name")}
+def read_page(pads, by_name):
+    """One grid's worth of entries, normalised, always exactly MACRO_SLOTS."""
     out = []
-    for entry in pads[:MACRO_SLOTS]:
+    for entry in (pads or [])[:MACRO_SLOTS]:
         if isinstance(entry, str):
             entry = {"text": entry}
         text = (entry or {}).get("text", "")
@@ -280,19 +266,71 @@ def load_macros():
                     # off unless asked for: a pad that fires on contact is how
                     # /handoff went into a live session three times
                     "submit": bool(entry.get("submit"))})
-    return labels, out + [None] * (MACRO_SLOTS - len(out))
+    return out + [None] * (MACRO_SLOTS - len(out))
 
 
-def save_macros(macros, labels=None):
+def load_macros():
+    """macros.json if present, defaults otherwise. Hand-editable on purpose.
+
+    Three shapes, because each of them was the file once and none should lose
+    its pads to a schema written after it: a bare list, {labels, pads}, and
+    {labels, pages}. The first two are page one of the third.
+
+    Trailing empty pages are dropped here rather than on save, so a page you
+    emptied leaves by itself and the file never fills up with blank grids."""
+    try:
+        with open(MACRO_FILE) as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        raw = DEFAULT_MACROS
+    if isinstance(raw, dict):
+        labels = raw.get("labels") or DEFAULT_LABELS
+        pages = raw.get("pages") or [raw.get("pads") or []]
+    else:
+        labels, pages = DEFAULT_LABELS, [raw or []]
+    by_name = {l["name"]: l.get("colour", BLUE) for l in labels if l.get("name")}
+    out = [read_page(p, by_name) for p in pages] or [read_page([], by_name)]
+    while len(out) > 1 and not any(out[-1]):
+        out.pop()
+    return labels, out
+
+
+def save_macros(pages=None, labels=None):
+    """Write the whole store. The live page is PAGES[page] by identity, so a
+    caller that mutated MACROS has already mutated what gets written."""
+    store = PAGES if pages is None else pages
+    if store and not isinstance(store[0], list):
+        store = [store]          # a bare page, from a caller older than pages
     tmp = MACRO_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"labels": labels if labels is not None else LABELS,
-                   "pads": list(macros)}, f, indent=2)
+                   "pages": [list(pg) for pg in store]}, f, indent=2)
     os.replace(tmp, MACRO_FILE)   # never leave a half-written file behind
 
 
-LABELS, MACROS = load_macros()
+LABELS, PAGES = load_macros()
+page = 0
+MACROS = PAGES[page]        # the live page, by identity -- not a copy of one
 _macros_mtime = 0.0
+
+
+def set_page(delta):
+    """Page left or right across the banks. True if anywhere was gone to.
+
+    Right off the end mints a new page, but only from one with something on
+    it, or leaning on the button would make empty grids forever. Left of the
+    first does nothing: pages are a line, not a ring, and falling from page
+    one to page nine is never what the hand meant."""
+    global MACROS, page
+    want = page + delta
+    if want < 0 or want == page:
+        return False
+    if want >= len(PAGES):
+        if want > len(PAGES) or not any(PAGES[-1]):
+            return False
+        PAGES.append([None] * MACRO_SLOTS)
+    page, MACROS = want, PAGES[want]
+    return True
 
 
 def publish_target(agent):
@@ -343,7 +381,7 @@ def take_command():
 
 def reload_macros():
     """Pick up edits from mapui.py without a restart. Cheap: one stat a poll."""
-    global _macros_mtime
+    global _macros_mtime, MACROS, page
     try:
         mtime = os.path.getmtime(MACRO_FILE)
     except OSError:
@@ -351,7 +389,10 @@ def reload_macros():
     if mtime == _macros_mtime:
         return False
     _macros_mtime = mtime
-    LABELS[:], MACROS[:] = load_macros()
+    labels, pages = load_macros()
+    LABELS[:], PAGES[:] = labels, pages
+    # the page you were on may have been the one that just went empty
+    page, MACROS = min(page, len(PAGES) - 1), PAGES[min(page, len(PAGES) - 1)]
     return True
 
 
@@ -1860,6 +1901,8 @@ def run():
                         tap_tab(int(cmd["tab"]))
                     if "seat" in cmd:
                         tap_seat(int(cmd["seat"]))
+                    if "page" in cmd and set_page(int(cmd["page"])):
+                        shown = None
                 if reload_macros():
                     shown = None
                     print("macros reloaded", flush=True)
@@ -2037,7 +2080,8 @@ def run():
                         try:
                             shown, frame = state, drawn()
                             if banded:
-                                frame = disp_mod.view_strip(frame, VIEWS, view)
+                                frame = disp_mod.view_strip(frame, VIEWS, view,
+                                                            page, len(PAGES))
                                 frame = disp_mod.seat_strip(frame, seats, current)
                             publish_frame(frame, {
                                 "views": VIEWS, "view": view,
@@ -2050,6 +2094,7 @@ def run():
                                     disp_mod.VIEW_RGB.get(v, (200, 200, 200))
                                     for v in VIEWS],
                                 "seats": seats, "current": current,
+                                "page": page, "pages": len(PAGES),
                                 # the two label bands, so the mirror can crop
                                 # them: the page's own buttons already say it
                                 "bands": [disp_mod.STRIP_H, disp_mod.SEAT_H],
@@ -2077,8 +2122,11 @@ def run():
                         BRIGHT if (automating or chain) else DIM)
                 push.cc("solo", 0, [SOLO_CC], WHITE if pinned else BLACK)
                 push.cc("dup", 0, [DUPLICATE_CC], GREEN if cur else BLACK)
-                for cc in PAGE_CCS:
-                    push.cc(f"page{cc}", 0, [cc], WHITE if cur else BLACK)
+                for cc in PAGE_CCS:     # lit for the directions that go somewhere
+                    step = page + PAGE_CCS[cc]
+                    push.cc(f"page{cc}", 0, [cc],
+                            WHITE if 0 <= step < len(PAGES) + bool(any(PAGES[-1]))
+                            else BLACK)
                 for cc in ARROW_CCS:
                     push.cc(f"arrow{cc}", 0, [cc], WHITE if target else BLACK)
                 for cc in SCROLL_CCS:      # lit only when there is a pane to page
@@ -2360,9 +2408,9 @@ def run():
                     print(f"duplicate -> {name or 'FAILED'} in {where}", flush=True)
                 elif (msg.type == "control_change" and msg.control in PAGE_CCS
                       and msg.value):
-                    current = step_slot(current, PAGE_CCS[msg.control], slots)
-                    shown, scrolls[current] = None, 0
-                    print(f"page -> slot {current} ({slots.get(current)})", flush=True)
+                    if set_page(PAGE_CCS[msg.control]):
+                        shown = None
+                        print(f"page {page + 1}/{len(PAGES)}", flush=True)
                 elif msg.type == "control_change" and msg.control in ENC_CCS:
                     # each knob scrolls the column beneath it, no switching needed
                     slot = ENC_CCS.index(msg.control)
@@ -2920,9 +2968,24 @@ def selftest():
     assert label_for("/handoff") == "/handoff"
     assert label_for("run the tests and report what fails") == "run the"
     assert len(label_for("supercalifragilistic expialidocious")) == 14
-    assert len(load_macros()[1]) == MACRO_SLOTS   # always exactly one per pad
+    assert all(len(pg) == MACRO_SLOTS for pg in load_macros()[1])  # one per pad
     assert len(MACRO_NOTES) == len(set(MACRO_NOTES)) == MACRO_ROWS * SLOTS
     assert min(MACRO_NOTES) == 36 and max(MACRO_NOTES) == 99
+
+    # pages are a line you can extend, not a ring you can spin
+    _keep = [list(pg) for pg in PAGES]
+    PAGES[:] = [[None] * MACRO_SLOTS]
+    while page:
+        set_page(-1)
+    assert not set_page(-1), "left of the first page is not page zero"
+    assert not set_page(1), "an empty page has not earned another"
+    PAGES[0][0] = {"label": "x", "text": "x", "colour": BLUE,
+                   "tag": None, "submit": False}
+    assert set_page(1) and len(PAGES) == 2, "a used page earns the next one"
+    assert MACROS is PAGES[1], "the live page is the store's page, not a copy"
+    assert set_page(-1) and MACROS is PAGES[0], "and back again"
+    assert not set_page(2), "pages are stepped, never jumped over"
+    PAGES[:] = _keep
 
     assert slug("Fix The Parser") == "fix-the-parser"
     assert slug("feat/thing") == "feat/thing"

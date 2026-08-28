@@ -21,184 +21,186 @@
       "colour": 122
     }
   ],
-  "pads": [
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    {
-      "label": "commit this",
-      "text": "commit this",
-      "colour": 3,
-      "tag": "Git",
-      "submit": false
-    },
-    {
-      "label": "PR",
-      "text": "Make a pull request against main for the work currently on this branch.",
-      "colour": 3,
-      "tag": "Git",
-      "submit": false
-    },
-    {
-      "label": "Review All Pull Requests",
-      "text": "Review all pull requests and merge them into main when green.",
-      "colour": 3,
-      "tag": "Git",
-      "submit": false
-    },
-    null,
-    null,
-    {
-      "label": "Drift Diff Check",
-      "text": "Based on the current Diff, review the ADRs for any document drifts.",
-      "colour": 125,
-      "tag": null,
-      "submit": false
-    },
-    null,
-    null,
-    {
-      "label": "Test the Diff",
-      "text": "Write or run tests on current diff and validate things are working as intended.",
-      "colour": 8,
-      "tag": "Testing",
-      "submit": true
-    },
-    {
-      "label": "E2E Current Feat",
-      "text": "Run e2e tests in the browser on the current feature being developed.",
-      "colour": 8,
-      "tag": "Testing",
-      "submit": false
-    },
-    {
-      "label": "Bugcast Follower",
-      "text": "/bugcast-follower",
-      "colour": 8,
-      "tag": "Testing",
-      "submit": true
-    },
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    {
-      "label": "Notebook LM (Day)",
-      "text": "Make a notebook LM audio overview of the work done today.",
-      "colour": 125,
-      "tag": null,
-      "submit": false
-    },
-    {
-      "label": "Notebook LM (Branch)",
-      "text": "Make a notebook LM audio overview of the work done on this branch.",
-      "colour": 125,
-      "tag": null,
-      "submit": false
-    },
-    null,
-    {
-      "label": "continue",
-      "text": "continue",
-      "colour": 125,
-      "tag": null,
-      "submit": false
-    },
-    {
-      "label": "explain what",
-      "text": "explain what you just did and why",
-      "colour": 125,
-      "tag": null,
-      "submit": false
-    },
-    {
-      "label": "stop and",
-      "text": "stop and summarise where you are",
-      "colour": 125,
-      "tag": null,
-      "submit": false
-    },
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    {
-      "label": "/graphify",
-      "text": "/graphify",
-      "colour": 127,
-      "tag": "Slash Command",
-      "submit": false
-    },
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    {
-      "label": "/handoff",
-      "text": "/handoff",
-      "colour": 127,
-      "tag": "Slash Command",
-      "submit": false
-    },
-    {
-      "label": "/code-review",
-      "text": "/code-review",
-      "colour": 127,
-      "tag": "Slash Command",
-      "submit": false
-    },
-    {
-      "label": "/mission",
-      "text": "/mission",
-      "colour": 127,
-      "tag": "Slash Command",
-      "submit": false
-    },
-    null,
-    null,
-    {
-      "label": "/plan-then-delegate",
-      "text": "/plan-then-delegate",
-      "colour": 122,
-      "tag": "Planning",
-      "submit": false
-    },
-    {
-      "label": "/way-finder",
-      "text": "/way-finder",
-      "colour": 122,
-      "tag": "Planning",
-      "submit": false
-    },
-    {
-      "label": "/grill-me",
-      "text": "/grill-me",
-      "colour": 122,
-      "tag": "Planning",
-      "submit": false
-    }
+  "pages": [
+    [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      {
+        "label": "commit this",
+        "text": "commit this",
+        "colour": 3,
+        "tag": "Git",
+        "submit": false
+      },
+      {
+        "label": "PR",
+        "text": "Make a pull request against main for the work currently on this branch.",
+        "colour": 3,
+        "tag": "Git",
+        "submit": false
+      },
+      {
+        "label": "Review All Pull Requests",
+        "text": "Review all pull requests and merge them into main when green.",
+        "colour": 3,
+        "tag": "Git",
+        "submit": false
+      },
+      null,
+      null,
+      {
+        "label": "Drift Diff Check",
+        "text": "Based on the current Diff, review the ADRs for any document drifts.",
+        "colour": 125,
+        "tag": null,
+        "submit": false
+      },
+      null,
+      null,
+      {
+        "label": "Test the Diff",
+        "text": "Write or run tests on current diff and validate things are working as intended.",
+        "colour": 8,
+        "tag": "Testing",
+        "submit": true
+      },
+      {
+        "label": "E2E Current Feat",
+        "text": "Run e2e tests in the browser on the current feature being developed.",
+        "colour": 8,
+        "tag": "Testing",
+        "submit": false
+      },
+      {
+        "label": "Bugcast Follower",
+        "text": "/bugcast-follower",
+        "colour": 8,
+        "tag": "Testing",
+        "submit": true
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      {
+        "label": "Notebook LM (Day)",
+        "text": "Make a notebook LM audio overview of the work done today.",
+        "colour": 125,
+        "tag": null,
+        "submit": false
+      },
+      {
+        "label": "Notebook LM (Branch)",
+        "text": "Make a notebook LM audio overview of the work done on this branch.",
+        "colour": 125,
+        "tag": null,
+        "submit": false
+      },
+      null,
+      {
+        "label": "continue",
+        "text": "continue",
+        "colour": 125,
+        "tag": null,
+        "submit": false
+      },
+      {
+        "label": "explain what",
+        "text": "explain what you just did and why",
+        "colour": 125,
+        "tag": null,
+        "submit": false
+      },
+      {
+        "label": "stop and",
+        "text": "stop and summarise where you are",
+        "colour": 125,
+        "tag": null,
+        "submit": false
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      {
+        "label": "/graphify",
+        "text": "/graphify",
+        "colour": 127,
+        "tag": "Slash Command",
+        "submit": false
+      },
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      {
+        "label": "/handoff",
+        "text": "/handoff",
+        "colour": 127,
+        "tag": "Slash Command",
+        "submit": false
+      },
+      {
+        "label": "/code-review",
+        "text": "/code-review",
+        "colour": 127,
+        "tag": "Slash Command",
+        "submit": false
+      },
+      {
+        "label": "/mission",
+        "text": "/mission",
+        "colour": 127,
+        "tag": "Slash Command",
+        "submit": false
+      },
+      null,
+      null,
+      {
+        "label": "/plan-then-delegate",
+        "text": "/plan-then-delegate",
+        "colour": 122,
+        "tag": "Planning",
+        "submit": false
+      },
+      {
+        "label": "/way-finder",
+        "text": "/way-finder",
+        "colour": 122,
+        "tag": "Planning",
+        "submit": false
+      },
+      {
+        "label": "/grill-me",
+        "text": "/grill-me",
+        "colour": 122,
+        "tag": "Planning",
+        "submit": false
+      }
+    ]
   ]
 }

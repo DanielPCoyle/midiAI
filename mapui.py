@@ -70,6 +70,17 @@ API_NOTE = (
 )
 
 
+def live_page():
+    """Which bank of pads the Push is showing. push_cc owns that number -- this
+    process imports the same module but never runs its loop, so asking our own
+    copy would always answer page one."""
+    try:
+        with open(push_cc.SURFACE_FILE) as f:
+            return int(json.load(f).get("page") or 0)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return 0
+
+
 def read_target():
     """Which session the Push is on. Empty if push_cc is not running."""
     try:
@@ -128,8 +139,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({**read_target(), **push_state()}),
                               "application/json")
         if self.path == "/macros":
-            labels, macros = push_cc.load_macros()
-            self._send(200, json.dumps({"labels": labels, "pads": macros}),
+            labels, pages = push_cc.load_macros()
+            self._send(200, json.dumps({"labels": labels, "pages": pages,
+                                        # the page the Push is on, so the app
+                                        # opens on the grid you are looking at
+                                        "page": live_page()}),
                        "application/json")
         else:
             self._send(200, API_NOTE, "text/plain")
@@ -150,29 +164,33 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._send(400, "bad json", "text/plain")
         # go through load_macros' shape so the file can only ever hold what the
-        # Push can actually use -- 64 slots, label derived when it is missing
+        # Push can actually use -- 64 slots a page, label derived when missing
         labels = entries.get("labels") or []
-        pads = entries.get("pads") or []
+        pages = entries.get("pages") or [entries.get("pads") or []]
         push_cc.save_macros(
-            [None if not e else
-             {"label": e.get("label") or push_cc.label_for(e.get("text", "")),
-              "text": e.get("text", ""),
-              "colour": int(e.get("colour", push_cc.BLUE)) & 0x7F,
-              "tag": e.get("tag"), "submit": bool(e.get("submit"))}
-             for e in pads[:push_cc.MACRO_SLOTS]], labels)
+            [[None if not e else
+              {"label": e.get("label") or push_cc.label_for(e.get("text", "")),
+               "text": e.get("text", ""),
+               "colour": int(e.get("colour", push_cc.BLUE)) & 0x7F,
+               "tag": e.get("tag"), "submit": bool(e.get("submit"))}
+              for e in (pg or [])[:push_cc.MACRO_SLOTS]] for pg in pages],
+            labels)
         self._send(200, "ok", "text/plain")
 
     def _fire(self):
         """Run a pad against whichever session the Push has selected."""
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
-            index = int(json.loads(raw)["index"])
+            body = json.loads(raw)
+            index = int(body["index"])
+            page = int(body.get("page", live_page()))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return self._send(400, "bad request", "text/plain")
         target = read_target().get("terminal_id")
         if not target:
             return self._send(409, "no session selected on the Push", "text/plain")
-        _, macros = push_cc.load_macros()
+        _, pages = push_cc.load_macros()
+        macros = pages[page] if 0 <= page < len(pages) else []
         m = macros[index] if 0 <= index < len(macros) else None
         if not m:
             return self._send(404, "empty pad", "text/plain")
@@ -188,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
             cmd = json.loads(raw)
-            keep = {k: int(cmd[k]) for k in ("tab", "seat") if k in cmd}
+            keep = {k: int(cmd[k]) for k in ("tab", "seat", "page") if k in cmd}
         except (json.JSONDecodeError, TypeError, ValueError):
             return self._send(400, "bad request", "text/plain")
         if not keep:

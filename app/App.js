@@ -21,14 +21,16 @@ import { C, KEY, S, SEAT_HEX } from './src/theme';
 
 const SURFACE_MS = 400; // the screen mirror; anything slower reads as laggy
 const TARGET_MS = 2500; // which session is selected, and whether push_cc is up
+const EMPTY = Array(64).fill(null); // a page that has not loaded yet
 
 export default function App() {
   const [host, setHost] = useState(defaultHost);
   const [surface, setSurface] = useState({});
   const [target, setTarget] = useState({});
   const [api, setApi] = useState(true); // did mapui.py answer at all
-  const [macros, setMacros] = useState([]);
+  const [pages, setPages] = useState([]);
   const [labels, setLabels] = useState([]);
+  const [ownPage, setOwnPage] = useState(0); // only until the surface says
   const [sel, setSel] = useState(null);
   const [moving, setMoving] = useState(null);
   const [armed, setArmed] = useState(false);
@@ -39,6 +41,20 @@ export default function App() {
   const base = baseFor(host);
   const noteAt = useRef(null);
 
+  // The page belongs to push_cc, the way the view and the seat already do --
+  // the app shows the bank the Push is on rather than keeping an opinion of
+  // its own. Derived here, above the callbacks that close over it.
+  // push_cc owns the count as well as the index: a page it has just minted is
+  // not in the file yet, and taking the total from macros.json would leave the
+  // app a page behind the surface it is mirroring
+  const total = Math.max(surface.pages ?? pages.length, 1);
+  const page = Math.min(surface.page ?? ownPage, total - 1);
+  const macros = pages[page] || EMPTY;
+  // push_cc's own rule, in the only terms the app has: within the range you
+  // can always go right, and off the end only from a page with something on it
+  const onward = page + 1 < total || macros.some(Boolean);
+
+
   const say = useCallback((text) => {
     setNote(text);
     clearTimeout(noteAt.current);
@@ -48,8 +64,9 @@ export default function App() {
   const loadMacros = useCallback(async () => {
     try {
       const d = await getJSON(base, '/macros');
-      setMacros(d.pads || []);
+      setPages(d.pages || [d.pads || []]);
       setLabels(d.labels || []);
+      setOwnPage(d.page || 0);
       setReady(true);
     } catch (e) {
       setReady(false);
@@ -111,16 +128,20 @@ export default function App() {
 
   const putMacros = useCallback(
     async (pads, labs) => {
-      setMacros(pads);
+      // a page minted on the Push has no entry in the file until something
+      // lands on it, so grow to reach it rather than dropping the write
+      const next = Array.from({ length: Math.max(pages.length, page + 1) },
+                              (_, i) => (i === page ? pads : pages[i] || EMPTY));
+      setPages(next);
       setLabels(labs);
       try {
-        await post(base, '/macros', { labels: labs, pads });
+        await post(base, '/macros', { labels: labs, pages: next });
         say('saved — live on the Push');
       } catch (e) {
         say('save failed');
       }
     },
-    [base, say]
+    [base, page, pages, say]
   );
 
   const press = useCallback(
@@ -322,9 +343,30 @@ export default function App() {
         />
       </View>
 
+      <View style={styles.pager}>
+        <PushButton
+          label="‹"
+          colour={C.accentText}
+          lit={page > 0}
+          onPress={() => press({ page: -1 })}
+          style={styles.pageKey}
+        />
+        <Text style={styles.pageAt}>
+          page {page + 1}/{total}
+        </Text>
+        <PushButton
+          label="›"
+          colour={C.accentText}
+          lit={onward}
+          onPress={() => press({ page: 1 })}
+          style={styles.pageKey}
+        />
+      </View>
+
       <View style={styles.body}>
         {ready ? (
           <PadGrid
+            key={page}
             macros={macros}
             sel={sel}
             moving={moving !== null && moving >= 0 ? moving : null}
@@ -435,6 +477,15 @@ const styles = StyleSheet.create({
   },
   mirror: { paddingHorizontal: S.pad, paddingBottom: 6 },
   body: { flex: 1, padding: S.pad },
+  pager: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: S.gap,
+    paddingHorizontal: S.pad,
+  },
+  pageKey: { width: 56, height: 32, minHeight: 32, minWidth: 0 },
+  pageAt: { color: C.dim, fontSize: 12, minWidth: 74, textAlign: 'center' },
   scrim: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.72)',

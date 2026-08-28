@@ -16,12 +16,25 @@ without touching the keyboard.
 | **Touchstrip** | pitchbend | slide to set reasoning effort, `low` → `max` |
 | **Buttons above screen** | CC 102–109 | pick a view — each with its own colour, named on the screen above it; press the one you are on to walk its modes |
 | **Buttons below screen** | CC 20–27 | the sessions: tap = focus · hold = talk · named on the screen above them |
+| **Page ‹ ›** | CC 62–63 | walk the pad pages — right off the end makes a new one |
 | **Solo** | CC 61 | pin: stop the surface following herdr's focus, and stop questions pulling it |
 
 Focus goes both ways. Tapping a session button focuses that pane in herdr,
 and clicking a pane on the computer moves the Push to it — one set of
 sessions, two pairs of hands, never two different ideas of where you are.
 Solo opts out.
+
+The grid is one **page** of pads, and Page ‹ › walk between them. Paging right
+off the end mints a new one, but only from a page with something on it —
+otherwise leaning on the button would make empty grids forever. Left of the
+first does nothing: pages are a line, not a ring, and falling from page one to
+page nine is never what the hand meant. A page you empty is gone the next time
+the file is read, so there is nothing to delete and nothing to accumulate. The
+count appears on the glass beside the view names only once there are two, so
+the tag showing up *is* the news that a second page exists.
+
+Those two buttons used to step between sessions, which the eight buttons under
+the display and the top pad row already did.
 
 Pad colour follows herdr's `agent_status`:
 

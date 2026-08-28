@@ -126,10 +126,13 @@ VIEW_RGB = {"focus": (235, 235, 240), "sessions": (110, 150, 240),
             "usage": (240, 80, 80)}
 
 
-def view_strip(img, names, current):
+def view_strip(img, names, current, page=0, pages=1):
     """names: list of view names, in button order, up to 8 (e.g.
               ["focus", "sessions", "usage", "plan", "macros"])
        current: index of the active view
+       page, pages: which bank of pads the grid is showing, and how many
+              there are -- drawn only once there is more than one, so the
+              tag appearing is itself the news that a second page exists
        Draws in place on `img` and returns it.
 
     A thin band across the very top -- the Push's 8 view-picker buttons sit
@@ -154,6 +157,12 @@ def view_strip(img, names, current):
         colour = rgb if active else tuple(int(c * 0.42) for c in rgb)
         d.text((x + (COL_W - tw) / 2, (STRIP_H - f.size) / 2 - 1), s, font=f,
                fill=colour)
+    if pages > 1 and len(names) < 8:
+        # in the first column no view is using: beside the names, never over
+        # one, and it costs the strip nothing while there is only one page
+        s, f = fit(d, f"{page + 1}/{pages}", COL_W - 8, 12)
+        d.text((len(names) * COL_W + 6, (STRIP_H - f.size) / 2 - 1), s, font=f,
+               fill=(150, 150, 160))
     return img
 
 
