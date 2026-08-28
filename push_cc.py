@@ -405,12 +405,20 @@ def reload_macros():
 
 # ---------------------------------------------------------------- herdr
 
+BACKEND = os.environ.get("PUSH_BACKEND", "herdr")
+
+
 def herdr(*args):
     """herdr reports failure as a JSON error on stdout with exit 0, so a helper
     that only returns stdout swallows it. Add Device was failing silently for
     hours that way."""
-    out = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=10)
-    text = out.stdout.strip()
+    if BACKEND == "tmux":
+        import term  # lazy: a broken term.py should not stop push_cc importing
+        text, stderr = term.dispatch(args), ""     # same logging: an error the
+    else:                                          # backend reports still gets
+        out = subprocess.run(["herdr", *args],     # said out loud, which is the
+                             capture_output=True, text=True, timeout=10)
+        text, stderr = out.stdout.strip(), out.stderr.strip()   # whole point here
     if '"error"' in text:
         try:
             err = json.loads(text)["error"]
@@ -418,8 +426,8 @@ def herdr(*args):
                   f"{err.get('message', '')[:120]}", file=sys.stderr, flush=True)
         except (json.JSONDecodeError, KeyError, IndexError):
             print(f"herdr {' '.join(args[:2])}: {text[:160]}", file=sys.stderr, flush=True)
-    elif out.stderr.strip():
-        print(f"herdr {' '.join(args[:2])}: {out.stderr.strip()[:160]}",
+    elif stderr:
+        print(f"herdr {' '.join(args[:2])}: {stderr[:160]}",
               file=sys.stderr, flush=True)
     return text
 
