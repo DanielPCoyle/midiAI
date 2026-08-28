@@ -1,24 +1,8 @@
 {
   "labels": [
     {
-      "name": "prompt",
-      "colour": 45
-    },
-    {
-      "name": "Slash Command",
+      "name": "Slash Commands",
       "colour": 120
-    },
-    {
-      "name": "Git",
-      "colour": 60
-    },
-    {
-      "name": "Testing",
-      "colour": 13
-    },
-    {
-      "name": "Planning",
-      "colour": 3
     }
   ],
   "pages": [
@@ -35,21 +19,21 @@
         "label": "commit this",
         "text": "commit this",
         "colour": 60,
-        "tag": "Git",
+        "tag": null,
         "submit": false
       },
       {
         "label": "PR",
         "text": "Make a pull request against main for the work currently on this branch.",
         "colour": 60,
-        "tag": "Git",
+        "tag": null,
         "submit": false
       },
       {
         "label": "Review All Pull Requests",
         "text": "Review all pull requests and merge them into main when green.",
         "colour": 60,
-        "tag": "Git",
+        "tag": null,
         "submit": false
       },
       null,
@@ -57,7 +41,7 @@
       {
         "label": "Drift Diff Check",
         "text": "Based on the current Diff, review the ADRs for any document drifts.",
-        "colour": 45,
+        "colour": 125,
         "tag": null,
         "submit": false
       },
@@ -67,21 +51,21 @@
         "label": "Test the Diff",
         "text": "Write or run tests on current diff and validate things are working as intended.",
         "colour": 13,
-        "tag": "Testing",
+        "tag": null,
         "submit": true
       },
       {
         "label": "E2E Current Feat",
         "text": "Run e2e tests in the browser on the current feature being developed.",
-        "colour": 13,
-        "tag": "Testing",
+        "colour": 49,
+        "tag": null,
         "submit": false
       },
       {
         "label": "Bugcast Follower",
         "text": "/bugcast-follower",
         "colour": 13,
-        "tag": "Testing",
+        "tag": null,
         "submit": true
       },
       null,
@@ -147,7 +131,7 @@
         "label": "/graphify",
         "text": "/graphify",
         "colour": 120,
-        "tag": "Slash Command",
+        "tag": null,
         "submit": false
       },
       null,
@@ -161,21 +145,21 @@
         "label": "/handoff",
         "text": "/handoff",
         "colour": 120,
-        "tag": "Slash Command",
+        "tag": "Slash Commands",
         "submit": false
       },
       {
         "label": "/code-review",
         "text": "/code-review",
         "colour": 120,
-        "tag": "Slash Command",
+        "tag": null,
         "submit": false
       },
       {
         "label": "/mission",
         "text": "/mission",
         "colour": 120,
-        "tag": "Slash Command",
+        "tag": null,
         "submit": false
       },
       null,
@@ -184,21 +168,21 @@
         "label": "/plan-then-delegate",
         "text": "/plan-then-delegate",
         "colour": 3,
-        "tag": "Planning",
+        "tag": null,
         "submit": false
       },
       {
         "label": "/way-finder",
         "text": "/way-finder",
         "colour": 3,
-        "tag": "Planning",
+        "tag": null,
         "submit": false
       },
       {
         "label": "/grill-me",
         "text": "/grill-me",
         "colour": 3,
-        "tag": "Planning",
+        "tag": null,
         "submit": false
       }
     ]

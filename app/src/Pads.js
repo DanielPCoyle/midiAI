@@ -1,4 +1,5 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Inspector from './Inspector';
 import PadGrid from './PadGrid';
 import PushButton from './PushButton';
@@ -36,6 +37,8 @@ export default function Pads({
   onClose,
   onAnswer,
 }) {
+  const [q, setQ] = useState('');
+
   // whatever the view, a pending question is what the pads are
   if (opts && opts.length) {
     return (
@@ -141,7 +144,7 @@ export default function Pads({
     <View style={[styles.rail, grid && styles.railWide]}>
       <View style={styles.headCol}>
         <View style={styles.head}>
-          <Text style={styles.label}>MACROS · {filled}</Text>
+          <Text style={styles.label}>Prompts · {filled}</Text>
           <View style={styles.spacer} />
           <View style={styles.seg}>
             <Text
@@ -177,6 +180,18 @@ export default function Pads({
             />
           </View>
         )}
+        {!grid && (
+          <TextInput
+            value={q}
+            onChangeText={setQ}
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="while-editing"
+            style={styles.find}
+            placeholder="search prompts"
+            placeholderTextColor={C.faint}
+          />
+        )}
       </View>
 
       {grid ? (
@@ -199,6 +214,7 @@ export default function Pads({
         <Library
           macros={macros}
           labels={labels}
+          q={q}
           sel={sel}
           onPress={onPress}
           onExecute={onExecute}
@@ -223,21 +239,31 @@ function Shell({ title, sub, children }) {
 
 // Grouped by the colour labels themselves: the tag is already how you think
 // about a pad, and the grid could only ever show it as a stripe.
-function Library({ macros, labels, sel, onPress, onExecute, onEdit }) {
+function Library({ macros, labels, q, sel, onPress, onExecute, onEdit }) {
+  // label, prompt body and tag all: you look for a prompt by whichever of
+  // the three you happen to remember
+  const find = q.trim().toLowerCase();
+  const hit = (m) =>
+    !find || `${m.label} ${m.text} ${m.tag || ''}`.toLowerCase().includes(find);
   const groups = labels.map((l) => ({
     name: l.name,
     colour: l.colour,
     items: macros
-      .map((m, i) => (m && m.tag === l.name ? { m, i } : null))
+      .map((m, i) => (m && m.tag === l.name && hit(m) ? { m, i } : null))
       .filter(Boolean),
   }));
   const loose = macros
-    .map((m, i) => (m && !labels.some((l) => l.name === m.tag) ? { m, i } : null))
+    .map((m, i) =>
+      m && !labels.some((l) => l.name === m.tag) && hit(m) ? { m, i } : null
+    )
     .filter(Boolean);
   if (loose.length) groups.push({ name: 'untagged', colour: null, items: loose });
 
   return (
     <ScrollView contentContainerStyle={styles.list}>
+      {!!find && !groups.some((g) => g.items.length) && (
+        <Text style={styles.none}>nothing matches “{q.trim()}”</Text>
+      )}
       {groups
         .filter((g) => g.items.length)
         .map((g) => (
@@ -321,6 +347,16 @@ const styles = StyleSheet.create({
   segAt: { color: C.faint, fontSize: 11, paddingHorizontal: 11, paddingVertical: 5 },
   segOn: { color: C.text, backgroundColor: C.line },
   pageKey: { width: 52, height: 30, minHeight: 30, minWidth: 0 },
+  find: {
+    height: 32,
+    color: C.text,
+    backgroundColor: C.panel,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    fontSize: 13,
+  },
   pageAt: { color: C.dim, fontSize: 11, flex: 1, textAlign: 'center' },
   gridWrap: { flex: 1, padding: 8 },
   list: { padding: 12, gap: 4 },
