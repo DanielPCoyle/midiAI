@@ -86,9 +86,15 @@ code, body = call("POST", "/agents/rename", {"terminal_id": tid, "name": "Not Va
 check("an invalid name is refused with 400", code == 400, f"{code} {body[:70]}")
 
 print("\n== POST /prompt ==")
-target = json.loads(call("GET", "/agents")[1])["agents"][0]["terminal_id"]
-subprocess.run(["tmux", "respawn-pane", "-k", "-t", target, "cat"],
-               capture_output=True)
+# Its OWN pane, never an existing one. This used to respawn agents[0] with
+# `cat` to get something that echoes -- which killed a live claude on the
+# session the surface was driving, and left the Push showing a pane that was
+# no longer an agent. A test may not eat the thing it is testing on.
+made = subprocess.run(["tmux", "new-window", "-P", "-F", "#{pane_id}",
+                       "-c", "/tmp", "--", "cat"],
+                      capture_output=True, text=True)
+target = made.stdout.strip()
+check("the prompt test made its own pane", target.startswith("%"), target)
 time.sleep(0.6)
 code, body = call("POST", "/prompt",
                   {"terminal_id": target, "text": "prompt-from-the-api", "submit": False})
@@ -100,6 +106,8 @@ check("the text landed in that pane", "prompt-from-the-api" in seen)
 
 code, body = call("POST", "/prompt", {"terminal_id": target, "text": ""})
 check("empty prompt refused with 400", code == 400, f"{code} {body[:70]}")
+
+subprocess.run(["tmux", "kill-pane", "-t", target], capture_output=True)
 
 print("\n== POST /agents/close ==")
 before = len(json.loads(call("GET", "/agents")[1])["agents"])
