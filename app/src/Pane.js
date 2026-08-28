@@ -1,4 +1,6 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { promptAgent } from './api';
 import PushButton from './PushButton';
 import { ANSWER_HEX, C, S, SEAT_HEX, mono } from './theme';
 
@@ -7,7 +9,17 @@ const CI_HEX = { pass: '#3cd05a', fail: '#e03c3c', pending: '#e0d02c', none: C.e
 
 // The centre pane: the active view, drawn at sizes a person reads from a desk
 // rather than scaled up off a 960x160 strip meant to be read from a keyboard.
-export default function Pane({ data, opts, cols, current, onAnswer }) {
+//
+// New props, for the composer on the focus view (the contract to wire from
+// App.js against):
+//   base    - string, server base url (api.baseFor(host)). Required for the
+//             composer to send anything; omit it and Send/Send ↵ still
+//             render but every send rejects, same as any other bad host.
+//   onSent  - optional (): void, called after a send lands. The composer
+//             clears itself either way it can tell the send worked; this is
+//             for the app to refresh sooner than its next poll, not for the
+//             composer's own state.
+export default function Pane({ data, opts, cols, current, onAnswer, base, onSent }) {
   const kind = (data || {}).kind;
   // A question takes the glass only where the glass was already about this
   // session. Walk to tests or prs with one pending and the Push keeps drawing
@@ -16,7 +28,8 @@ export default function Pane({ data, opts, cols, current, onAnswer }) {
   if (opts && opts.length && (!kind || kind === 'focus')) {
     return <Question opts={opts} onAnswer={onAnswer} />;
   }
-  if (kind === 'focus') return <Focus info={data.info} sub={data.sub} />;
+  if (kind === 'focus')
+    return <Focus info={data.info} sub={data.sub} base={base} onSent={onSent} />;
   if (kind === 'sessions') return <Sessions cols={cols} current={current} />;
   if (kind === 'subs') return <Subs data={data} />;
   if (kind === 'tests') return <Tests data={data} />;
@@ -63,7 +76,7 @@ function Question({ opts, onAnswer }) {
   );
 }
 
-function Focus({ info, sub }) {
+function Focus({ info, sub, base, onSent }) {
   if (!info) return <Empty what="no session selected" />;
   const hue = SEAT_HEX[info.status] || C.faint;
   const tldr = info.tldr || [];
@@ -124,6 +137,73 @@ function Focus({ info, sub }) {
             </Text>
           ))}
         </ScrollView>
+      </View>
+
+      <Composer info={info} base={base} onSent={onSent} />
+    </View>
+  );
+}
+
+// The only way to talk to an agent used to be a macro pad -- fixed text,
+// picked in advance. This is the other half: whatever you type, right now.
+// Two buttons rather than one because a macro pad draws that same line --
+// loading a prompt and firing it are different acts, and collapsing them
+// into one button would make this the one control that can't tell you which
+// it just did.
+function Composer({ info, base, onSent }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState('');
+
+  // a question is answered from the opt rows, not typed over -- two ways to
+  // answer the same thing could disagree, so while one is open the composer
+  // steps back rather than competing with it.
+  if (info.opts && info.opts.length) return null;
+
+  const empty = !text.trim();
+  const disabled = empty || sending;
+
+  async function send(submit) {
+    setSending(true);
+    setErr('');
+    try {
+      await promptAgent(base, text, submit, info.tid);
+      setText(''); // only on success -- a failed send keeps what you typed
+      onSent && onSent();
+    } catch (e) {
+      setErr(String((e && e.message) || e));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <View style={styles.composer}>
+      <TextInput
+        style={styles.composerInput}
+        value={text}
+        onChangeText={setText}
+        placeholder="type to the agent"
+        placeholderTextColor={C.faint}
+        multiline
+        editable={!sending}
+      />
+      {!!err && <Text style={styles.err}>{err}</Text>}
+      <View style={styles.composerRow}>
+        <PushButton
+          label="Send"
+          disabled={disabled}
+          onPress={() => send(false)}
+          style={styles.composerBtn}
+        />
+        <PushButton
+          label="Send ↵"
+          colour={C.accent}
+          lit={!disabled}
+          disabled={disabled}
+          onPress={() => send(true)}
+          style={styles.composerBtn}
+        />
       </View>
     </View>
   );
@@ -388,6 +468,21 @@ const styles = StyleSheet.create({
   },
   lines: { gap: 2 },
   line: { color: C.dim, fontSize: 12, lineHeight: 18, ...mono },
+  composer: { gap: 8 },
+  composerInput: {
+    minHeight: 60,
+    maxHeight: 140,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: S.radius,
+    backgroundColor: C.raised,
+    color: C.text,
+    fontSize: 14,
+    padding: 12,
+    ...mono,
+  },
+  composerRow: { flexDirection: 'row', gap: 8 },
+  composerBtn: { flex: 1, paddingHorizontal: 16 },
   rows: { gap: 5, paddingBottom: 8 },
   row: {
     minHeight: 44,
