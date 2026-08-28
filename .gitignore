@@ -4,3 +4,4 @@ __pycache__/
 .frame.png
 .surface.json
 .command.json
+.claude/

@@ -353,9 +353,11 @@ def publish_target(agent):
     os.replace(tmp, TARGET_FILE)
 
 
-def publish_frame(frame, surface):
-    """Hand the browser the exact image the Push is showing, plus what the
-    buttons around it currently mean.
+_frame_stamp = 0.0
+
+
+def publish_frame(frame):
+    """Hand the browser the exact image the Push is showing.
 
     The mirror renders nothing of its own: two drawings of one screen drift
     apart the day someone edits only one of them."""
@@ -363,11 +365,36 @@ def publish_frame(frame, surface):
         tmp = FRAME_FILE + ".tmp"
         frame.save(tmp, format="PNG")   # the name says .tmp; PIL needs telling
         os.replace(tmp, FRAME_FILE)
+        globals()["_frame_stamp"] = time.time()
+    except (OSError, ValueError) as e:      # a mirror is never worth a crash
+        print(f"mirror: {e}", file=sys.stderr, flush=True)
+
+
+_surface_was = None
+
+
+def publish_surface(surface):
+    """What the buttons mean, and what the app needs to draw this view itself.
+
+    Written on its own clock rather than with the frame. The glass redraws only
+    when the glass changes, and half of what the app shows -- which seat you are
+    on, a question arriving, the page -- can change without moving a pixel of
+    it. Tying the two put the app a redraw behind its own state."""
+    global _surface_was
+    try:
+        text = json.dumps(surface, default=str)
+    except (TypeError, ValueError) as e:
+        print(f"mirror: {e}", file=sys.stderr, flush=True)
+        return
+    if text == _surface_was:
+        return
+    _surface_was = text
+    try:
         tmp = SURFACE_FILE + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(surface, f)
+            f.write(text)
         os.replace(tmp, SURFACE_FILE)
-    except (OSError, ValueError) as e:      # a mirror is never worth a crash
+    except OSError as e:
         print(f"mirror: {e}", file=sys.stderr, flush=True)
 
 
@@ -2014,6 +2041,13 @@ def run():
 
                 mode = view_mode.get(VIEWS[view], 0)
                 if disp_mod:            # drawn for the glass and the mirror both
+                    # The app draws every view itself rather than scaling up a
+                    # photograph of the glass, so it is handed the same dicts
+                    # the renderers get. Assembled alongside them, never
+                    # instead: one truth, two consumers.
+                    data = {}
+                    seat_cols = [panel_col(by_id.get(slots.get(s)))
+                                 for s in range(SLOTS)]
                     if strip_level:
                         # outranks the chain: your finger is on the strip now
                         state = ("effort", strip_level)
@@ -2053,6 +2087,7 @@ def run():
                         idx = next(i for i, x in enumerate(subs)
                                    if x["id"] == subfocus[1])
                         sinfo = sub_info(subs[idx], idx, scrolls.get(current, 0))
+                        data = {"kind": "focus", "info": sinfo, "sub": True}
                         state = (view, "sub", repr(sinfo))
                         drawn = (lambda i=sinfo: disp_mod.render_focus(i))
                     elif VIEWS[view] == "focus":
@@ -2060,6 +2095,7 @@ def run():
                         info = (focus_info(seat, cur, summary, scroll,
                                            bool(pend) and pend == inserted.strip())
                                 if cur else None)
+                        data = {"kind": "focus", "info": info}
                         state = (view, repr(info))
                         drawn = (lambda: disp_mod.render_focus(info)) if info else (
                             lambda: disp_mod.render((None,) * SLOTS))
@@ -2069,17 +2105,22 @@ def run():
                         # spent on, then the agents that did the spending
                         if mode == 1:
                             tot = model_totals(live)
+                            data = {"kind": "usage", "at": mode,
+                                    "models": sorted(tot.items())}
                             state = (view, "tokens", repr(sorted(tot.items())), mode)
                             drawn = (lambda t=tot, m=mode:
                                      disp_mod.render_models(t, m, USAGE_MODES))
                         elif mode == 2:
                             cols = tuple(usage_col(by_id.get(slots.get(s)))
                                          for s in range(SLOTS))
+                            data = {"kind": "usage", "at": mode, "agents": cols}
                             state = (view, "agents", cols, mode)
                             drawn = (lambda c=cols, m=mode:
                                      disp_mod.render_usage(c, m, USAGE_MODES))
                         else:                       # first: what you glance at
                             bars, uerr = plan_usage(now)
+                            data = {"kind": "usage", "at": mode, "bars": bars,
+                                    "err": uerr}
                             state = (view, "plan", repr(bars), uerr, mode)
                             drawn = (lambda b=bars, e=uerr, m=mode:
                                      disp_mod.render_plan(b, e, m, USAGE_MODES))
@@ -2088,6 +2129,8 @@ def run():
                                       "running": x["running"],
                                       "focused": bool(subfocus)
                                       and subfocus[1] == x["id"]} for x in subs)
+                        data = {"kind": "subs", "rows": rows,
+                                "repo": agent_name(cur)}
                         state = (view, "subs", rows)
                         drawn = (lambda r=rows, n=agent_name(cur):
                                  disp_mod.render_subs({"repo": n, "subs": r}))
@@ -2095,6 +2138,7 @@ def run():
                         rows, perr = open_prs(troot, now)
                         pinfo = {"repo": agent_name(cur), "rows": rows,
                                  "err": perr}
+                        data = {"kind": "prs", **pinfo}
                         state = (view, repr(pinfo))
                         drawn = (lambda i=pinfo: disp_mod.render_prs(i))
                     elif VIEWS[view] == "tests":
@@ -2106,9 +2150,18 @@ def run():
                                  "passed": ok, "failed": bad,
                                  "slow": any(p["slow"] for p in
                                              scope_packages(tpkgs, test_path, True))}
+                        data = {"kind": "tests", **tinfo}
                         state = (view, repr(tinfo))
                         drawn = (lambda i=tinfo: disp_mod.render_tests(i))
                     else:
+                        # the pads in this view are the subagents whichever mode
+                        # the glass is in, so the app gets them either way
+                        data = {"kind": "sessions", "repo": agent_name(cur),
+                                "rows": [{"label": x["label"], "type": x["type"],
+                                          "running": x["running"],
+                                          "focused": bool(subfocus)
+                                          and subfocus[1] == x["id"]}
+                                         for x in subs]}
                         cols = tuple(panel_col(by_id.get(slots.get(s)))
                                      for s in range(SLOTS))
                         state = (view, cols)
@@ -2128,31 +2181,35 @@ def run():
                                 frame = disp_mod.view_strip(frame, VIEWS, view,
                                                             page, len(PAGES))
                                 frame = disp_mod.seat_strip(frame, seats, current)
-                            publish_frame(frame, {
-                                "views": VIEWS, "view": view,
-                                "modes": [VIEW_MODES.get(v, 1) for v in VIEWS],
-                                "mode": mode,
-                                # every view's own place, not just this one's:
-                                # the mirror labels them all
-                                "at": [view_mode.get(v, 0) for v in VIEWS],
-                                "colours": [
-                                    disp_mod.VIEW_RGB.get(v, (200, 200, 200))
-                                    for v in VIEWS],
-                                "seats": seats, "current": current,
-                                # the mirror hides its own grid for these
-                                "opts": opts,
-                                "page": page, "pages": len(PAGES),
-                                # the two label bands, so the mirror can crop
-                                # them: the page's own buttons already say it
-                                "bands": [disp_mod.STRIP_H, disp_mod.SEAT_H],
-                                "size": [disp_mod.WIDTH, disp_mod.HEIGHT],
-                                "stamp": time.time()})
+                            publish_frame(frame)
                         except Exception as e:
                             # the pads are the product, the screen is the label:
                             # a drawing bug must not take the surface down
                             print(f"render failed ({VIEWS[view]}): {e}",
                                   file=sys.stderr, flush=True)
                             shown, disp, disp_mod = state, None, None
+                    publish_surface({
+                        "views": VIEWS, "view": view,
+                        "modes": [VIEW_MODES.get(v, 1) for v in VIEWS],
+                        "mode": mode,
+                        # every view's own place, not just this one's: the
+                        # mirror labels them all
+                        "at": [view_mode.get(v, 0) for v in VIEWS],
+                        "colours": [disp_mod.VIEW_RGB.get(v, (200, 200, 200))
+                                    for v in VIEWS],
+                        "seats": seats, "current": current,
+                        # a question is answerable from wherever you are, so
+                        # the app is told about one in every view
+                        "opts": opts,
+                        "page": page, "pages": len(PAGES),
+                        # what the app needs to draw this view itself, and
+                        # every seat in enough detail for its rail
+                        "data": data, "cols": seat_cols,
+                        # the two label bands, so the mirror can crop them:
+                        # the page's own buttons already say it
+                        "bands": [disp_mod.STRIP_H, disp_mod.SEAT_H],
+                        "size": [disp_mod.WIDTH, disp_mod.HEIGHT],
+                        "stamp": _frame_stamp})
                     try:
                         if disp:        # every poll: it blanks after about 2s
                             disp.show(frame)
