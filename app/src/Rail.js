@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
 import Worktrees from './Worktrees';
@@ -32,18 +32,19 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
   const free = 8 - cols.filter(Boolean).length;
 
   // PushButton doesn't forward onLongPress (it wraps children in its own
-  // Pressable and only wires onPress) and it is out of scope here to add
-  // that -- so the secondary action is a small "⋯" control inside the card
-  // instead of a long press. It opens a native action list rather than a
-  // custom menu component, which keeps this file free of new UI plumbing.
-  const openMenu = (i, col) => {
-    Alert.alert(col.name, 'choose an action', [
-      { text: 'rename', onPress: () => setSheet({ mode: 'rename', seatIndex: i }) },
-      { text: 'new worktree', onPress: () => setSheet({ mode: 'worktree', seatIndex: i }) },
-      { text: 'worktrees…', onPress: () => setWtSeat(i) },
-      { text: 'close', style: 'destructive', onPress: () => setSheet({ mode: 'close', seatIndex: i }) },
-      { text: 'cancel', style: 'cancel' },
-    ]);
+  // Pressable and only wires onPress), so the secondary action is a small
+  // "⋯" control inside the card rather than a long press.
+  //
+  // It draws its own menu rather than calling Alert.alert, which looked like
+  // the cheaper answer and is a no-op on web: react-native-web ships
+  // `class Alert { static alert() {} }`. On the browser build the menu did
+  // nothing at all, silently -- rename, close and worktrees were simply
+  // unreachable, and nothing said so. A menu the app draws works on both.
+  const [menu, setMenu] = useState(null);   // seat index, or null
+  const menuCol = menu != null ? cols[menu] : null;
+  const act = (fn) => {
+    setMenu(null);
+    fn();
   };
 
   const seatFor = (i) => (i != null ? cols[i] : null);
@@ -75,7 +76,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                   <View style={[styles.dot, { backgroundColor: hue }]} />
                   <Text style={[styles.status, { color: hue }]}>{col.status}</Text>
                   <Pressable
-                    onPress={() => openMenu(i, col)}
+                    onPress={() => setMenu(i)}
                     hitSlop={8}
                     style={styles.menuBtn}>
                     <Text style={styles.menuDots}>⋯</Text>
@@ -103,6 +104,37 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
           </PushButton>
         )}
       </ScrollView>
+
+      <Modal
+        visible={menu != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenu(null)}>
+        <Pressable style={styles.backdrop} onPress={() => setMenu(null)}>
+          <View style={styles.menu}>
+            <Text style={styles.menuHead} numberOfLines={1}>
+              {menuCol?.name || ''}
+            </Text>
+            {[
+              ['rename', () => setSheet({ mode: 'rename', seatIndex: menu })],
+              ['new worktree', () => setSheet({ mode: 'worktree', seatIndex: menu })],
+              ['worktrees…', () => setWtSeat(menu)],
+            ].map(([label, fn]) => (
+              <Pressable key={label} style={styles.menuRow} onPress={() => act(fn)}>
+                <Text style={styles.menuText}>{label}</Text>
+              </Pressable>
+            ))}
+            {/* close kills something that is running, so it sits apart and
+                reads in the colour everything else dangerous does */}
+            <Pressable
+              style={[styles.menuRow, styles.menuLast]}
+              onPress={() => act(() => setSheet({ mode: 'close', seatIndex: menu }))}>
+              <Text style={[styles.menuText, styles.menuBad]}>close</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
       {sheet && (
         <SessionSheet
           visible
@@ -170,4 +202,28 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
   },
   freeText: { color: C.edge, fontSize: 11 },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menu: {
+    width: 240,
+    backgroundColor: C.panel,
+    borderRadius: S.radius,
+    borderWidth: 1,
+    borderColor: C.line,
+    paddingVertical: 6,
+  },
+  menuHead: {
+    color: C.faint,
+    fontSize: 11,
+    paddingHorizontal: 14,
+    paddingBottom: 6,
+  },
+  menuRow: { minHeight: S.hit, justifyContent: 'center', paddingHorizontal: 14 },
+  menuLast: { borderTopWidth: 1, borderTopColor: C.line, marginTop: 4 },
+  menuText: { color: C.text, fontSize: 14 },
+  menuBad: { color: C.bad },
 });
