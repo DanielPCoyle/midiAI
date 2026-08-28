@@ -17,31 +17,31 @@ export const C = {
   bad: '#e08a8a',
 };
 
+// keyed by the Push's own colour numbers, so a pad is the same colour in both
+// places. macros.json was remapped to these in the same commit.
 export const PAD_HEX = {
-  127: '#e03c3c',
-  3: '#e08a2c',
-  8: '#e0d02c',
-  126: '#3cd05a',
-  // added, never substituted: the indices already in macros.json keep meaning
-  // what they meant, or every saved pad would change colour underneath you
-  33: '#2cd0d0',
-  125: '#4a86d0',
-  49: '#6a5ae0',
-  53: '#b04ae0',
-  122: '#e6e6e6',
+  120: '#e03c3c', // red
+  60: '#e08a2c', // orange
+  13: '#e0d02c', // yellow
+  21: '#3cd05a', // green
+  33: '#2cd0d0', // cyan
+  45: '#4a86d0', // blue
+  49: '#6a5ae0', // indigo
+  53: '#b04ae0', // violet
+  3: '#e6e6e6', // white
 };
 export const PALETTE = [
-  ['red', 127],
-  ['orange', 3],
-  ['yellow', 8],
-  ['green', 126],
+  ['red', 120],
+  ['orange', 60],
+  ['yellow', 13],
+  ['green', 21],
   ['cyan', 33],
-  ['blue', 125],
+  ['blue', 45],
   ['indigo', 49],
   ['violet', 53],
-  ['white', 122],
+  ['white', 3],
 ];
-export const hexFor = (colour) => PAD_HEX[colour] || PAD_HEX[125];
+export const hexFor = (colour) => PAD_HEX[colour] || PAD_HEX[45];
 
 // push_cc.ANSWER_CC, in the browser's approximations of the same palette --
 // derived from PAD_HEX rather than retyped, so the pad you press on the Push

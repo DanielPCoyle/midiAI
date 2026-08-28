@@ -191,13 +191,14 @@ SWEEP_LINES = "40"                 # enough to spot a question at the foot of a 
 SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
-BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
-ORANGE = 3
-# Added, never substituted: three hues the palette had no name for. The indices
-# already in macros.json keep meaning exactly what they meant -- renumbering the
-# old ones would repaint every saved pad, and pad 44 is orange because someone
-# chose orange, not because 3 is a nice number.
-CYAN, INDIGO, VIOLET = 33, 49, 53
+# The Push 2's own colour numbers. These replaced an earlier set that had been
+# arrived at by trial; macros.json was remapped in the same commit, so no pad
+# changed colour. Note 3 means white here and meant orange before -- which is
+# why that migration had to be one pass of a lookup and not a run of
+# substitutions, or every orange pad would have ended up white.
+BLACK, WHITE, RED, ORANGE = 0, 3, 120, 60
+YELLOW, GREEN, CYAN = 13, 21, 33
+BLUE, INDIGO, VIOLET = 45, 49, 53
 # Shift and Record are white-only buttons: the value is brightness, not a
 # palette index, so they need their own two levels.
 DIM, BRIGHT = 20, 127
