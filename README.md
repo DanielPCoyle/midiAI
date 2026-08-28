@@ -254,6 +254,13 @@ the whole record/transcribe/submit path and there is no seam to read it first.
 
 ## Notes
 
+- A question is only a question if the pane draws a **caret** on one of its
+  options. The pattern that finds them matches anything opening with `1.`, and
+  Claude writes numbered lists in prose constantly — a two-bullet recap read as
+  a two-option question, blanked the macro grid, and offered to answer it. The
+  select widget always carets its current choice, and answering *is* walking
+  that caret, so with none to walk from there was nothing to answer with except
+  arrow keys and Enter fired into whatever the agent was really doing.
 - Only agents in herdr panes appear. `claude agents --json` sees every session
   but offers no focus or send, so herdr is the substrate.
 - Slots pin per terminal id: an agent exiting does not shuffle the others, so

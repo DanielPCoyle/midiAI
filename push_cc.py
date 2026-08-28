@@ -1549,6 +1549,32 @@ def turn(value):
     return value if value < 64 else value - 128
 
 
+def read_pane(lines):
+    """The question, the activity, and the options, out of a rendered pane.
+
+    A caret is required before any of it counts. _OPT_RE matches anything that
+    opens with "1." and Claude writes numbered lists in prose all day; without
+    this, a recap with two bullets became a two-option question, which now
+    takes the whole grid and offers to answer it. The select widget always
+    draws its caret on one option -- and answer_keys walks that caret, so with
+    no caret to walk from, "answering" is arrow keys and Enter fired into
+    whatever the agent was actually doing."""
+    opts, say, act, sel = [], "", "", None
+    for line in lines:
+        m = _OPT_RE.match(line)
+        if m and not line.lstrip().startswith(("⏺", "✻")):
+            if m.group(1):
+                sel = len(opts)                # caret: this is a select widget
+            opts.append((m.group(2), m.group(3)))
+        elif line.startswith("⏺"):
+            say, opts, sel = line[1:].strip(), [], None   # new answer, stale choice
+        elif line.startswith("✻"):
+            act = line[1:].strip()
+    if sel is None:
+        opts = []                              # numbered prose, not a question
+    return {"say": say, "act": act, "opts": opts, "sel": sel}
+
+
 def pane_summary(agent, depth=SCRAPE_LINES):
     """What this agent is doing, scraped from its rendered pane.
 
@@ -1563,21 +1589,10 @@ def pane_summary(agent, depth=SCRAPE_LINES):
     except (json.JSONDecodeError, KeyError, OSError, subprocess.SubprocessError):
         return {}
     body = [l for l in lines if not set(l.strip()) <= set("─━ ")]   # drop rules
-    opts, say, act, sel = [], "", "", None
-    for line in lines:
-        m = _OPT_RE.match(line)
-        if m and not line.lstrip().startswith(("⏺", "✻")):
-            if m.group(1):
-                sel = len(opts)                # caret: this is a select widget
-            opts.append((m.group(2), m.group(3)))
-        elif line.startswith("⏺"):
-            say, opts, sel = line[1:].strip(), [], None   # new answer, stale choice
-        elif line.startswith("✻"):
-            act = line[1:].strip()
+    scan = read_pane(lines)
     pending = prompt_text(lines)
-    return {"say": say, "act": act, "opts": opts, "sel": sel,
-            "lines": body, "tldr": tldr(body),
-            "pending": "" if opts else pending}
+    return {**scan, "lines": body, "tldr": tldr(body),
+            "pending": "" if scan["opts"] else pending}
 
 
 def sweep_panes(slots, by_id, current):
@@ -2997,6 +3012,17 @@ def selftest():
     assert [int(m) for m in _re.findall(_USAGE_FIELDS["out"], line)] == [1017]
 
     assert _OPT_RE.match("❯ 1. Yes").groups() == ("❯", "1", "Yes")
+    # a numbered list in prose is not a question, however well it matches
+    prose = ["Two things you should know:",
+             "1. The Push is off USB right now, so the hardware is unverified",
+             "2. A pre-existing screen bug this made visible"]
+    assert read_pane(prose)["opts"] == [], "prose numbering is not a widget"
+    assert read_pane(prose)["sel"] is None, "and there is no caret to walk"
+    widget = ["Commit this?", "❯ 1. Yes", "  2. Hold"]
+    seen = read_pane(widget)
+    assert [o[1] for o in seen["opts"]] == ["Yes", "Hold"], "a real one still reads"
+    assert seen["sel"] == 0, "and the caret says where the walk starts"
+    assert read_pane(["⏺ done", "1. a note"])["opts"] == [], "nor after an answer"
     assert _OPT_RE.match("  2. No, exit").groups() == (None, "2", "No, exit")
     assert _OPT_RE.match("  ⏵⏵ auto mode on") is None
     assert _OPT_RE.match("❯ commit the fix") is None   # typed text, not a choice
