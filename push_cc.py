@@ -410,17 +410,38 @@ def reload_macros():
 BACKEND = os.environ.get("PUSH_BACKEND", "tmux")
 
 
+def backend_said(stdout, stderr):
+    """Which stream carried the answer.
+
+    herdr 0.6.8 reports an error as JSON on stdout and exits 0. 0.8.2 moved it
+    to stderr with exit 1. start_agent greps this function's RETURN VALUE for
+    agent_name_taken to find a free name, so an error arriving on the stream
+    we do not read looks exactly like success -- and it names the second agent
+    the same as the first, quietly. Read whichever stream actually spoke.
+
+    Only a stream carrying an error object wins; a bare warning on stderr is
+    not an answer and must not replace one."""
+    if '"error"' not in stdout and '"error"' in stderr:
+        return stderr
+    return stdout
+
+
 def herdr(*args):
-    """herdr reports failure as a JSON error on stdout with exit 0, so a helper
-    that only returns stdout swallows it. Add Device was failing silently for
-    hours that way."""
+    """The one call every pane operation goes through, and the one place that
+    knows which backend is answering.
+
+    A backend reports failure as a JSON error object, and a helper that only
+    returned stdout swallowed it -- Add Device failed silently for hours that
+    way. Which stream it arrives on is backend_said's problem, not this
+    function's; both get said out loud either way."""
     if BACKEND == "tmux":
         import term  # lazy: a broken term.py should not stop push_cc importing
-        text, stderr = term.dispatch(args), ""     # same logging: an error the
-    else:                                          # backend reports still gets
-        out = subprocess.run(["herdr", *args],     # said out loud, which is the
+        text, stderr = term.dispatch(args), ""
+    else:
+        out = subprocess.run(["herdr", *args],
                              capture_output=True, text=True, timeout=10)
-        text, stderr = out.stdout.strip(), out.stderr.strip()   # whole point here
+        text, stderr = backend_said(out.stdout.strip(), out.stderr.strip()), \
+            out.stderr.strip()
     if '"error"' in text:
         try:
             err = json.loads(text)["error"]
@@ -2787,6 +2808,16 @@ def selftest():
     assert follow_focus(None, seats, 1) == 1, "nothing focused, nothing to do"
     assert follow_focus("gone", seats, 1) == 1, "focused pane holds no slot"
     assert follow_focus("x", seats, 0) == 0, "already there"
+
+    # an error on the stream we do not read is indistinguishable from success,
+    # and start_agent answers "is this name free?" with exactly that
+    ok, taken = '{"result":{}}', '{"error":{"code":"agent_name_taken"}}'
+    assert backend_said(ok, "") == ok, "0.6.8: the answer is on stdout"
+    assert backend_said(taken, "") == taken, "0.6.8: so is the error"
+    assert "agent_name_taken" in backend_said("", taken), "0.8.2 moved it to stderr"
+    assert backend_said(ok, "warning: something") == ok, \
+        "a bare warning is not an answer and must not replace one"
+    assert backend_said("", "") == "", "nothing said, nothing returned"
 
     assert check_state([]) == "none"
     assert check_state([{"conclusion": "SUCCESS", "status": "COMPLETED"},
