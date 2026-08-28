@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
+import Worktrees from './Worktrees';
 import { C, S, SEAT_HEX } from './theme';
 
 // The sessions, as a rail you can read rather than eight anonymous buttons.
@@ -23,6 +24,11 @@ import { C, S, SEAT_HEX } from './theme';
 export default function Rail({ cols, current, onSeat, base, onChanged }) {
   // { mode: 'new'|'rename'|'close'|'worktree', seatIndex: number|null } | null
   const [sheet, setSheet] = useState(null);
+  // Worktrees is its own component, not another SessionSheet mode -- it lists
+  // rather than errands, so it gets its own bit of state rather than being
+  // squeezed into `sheet`'s shape. Just the seat index; the modal reads
+  // cols[wtSeat].cwd itself.
+  const [wtSeat, setWtSeat] = useState(null);
   const free = 8 - cols.filter(Boolean).length;
 
   // PushButton doesn't forward onLongPress (it wraps children in its own
@@ -34,6 +40,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
     Alert.alert(col.name, 'choose an action', [
       { text: 'rename', onPress: () => setSheet({ mode: 'rename', seatIndex: i }) },
       { text: 'new worktree', onPress: () => setSheet({ mode: 'worktree', seatIndex: i }) },
+      { text: 'worktrees…', onPress: () => setWtSeat(i) },
       { text: 'close', style: 'destructive', onPress: () => setSheet({ mode: 'close', seatIndex: i }) },
       { text: 'cancel', style: 'cancel' },
     ]);
@@ -109,6 +116,15 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
             setSheet(null);
             onChanged && onChanged();
           }}
+        />
+      )}
+      {wtSeat != null && (
+        <Worktrees
+          visible
+          base={base}
+          cwd={seatFor(wtSeat)?.cwd}
+          onClose={() => setWtSeat(null)}
+          onChanged={() => onChanged && onChanged()}
         />
       )}
     </View>

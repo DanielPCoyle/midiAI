@@ -59,3 +59,17 @@ export const promptAgent = (base, text, submit, terminal_id) =>
 
 export const makeWorktree = (base, cwd, branch) =>
   post(base, '/worktree', { cwd, branch });
+
+// Worktrees. `cwd` says which repo to ask about; the server defaults it to
+// whichever session the Push is pointed at when omitted.
+export const listWorktrees = async (base, cwd) =>
+  (await getJSON(base, `/worktrees${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`))
+    .worktrees || [];
+
+export const openWorktree = (base, cwd, path) =>
+  post(base, '/worktrees/open', { cwd, path });
+
+// force is about uncommitted changes only -- the server refuses either way
+// while an agent is living in it, and that refusal is not overridable.
+export const removeWorktree = (base, cwd, path, force) =>
+  post(base, '/worktrees/remove', { cwd, path, force: !!force });
