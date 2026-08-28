@@ -22,7 +22,12 @@ export const PAD_HEX = {
   3: '#e08a2c',
   8: '#e0d02c',
   126: '#3cd05a',
+  // added, never substituted: the indices already in macros.json keep meaning
+  // what they meant, or every saved pad would change colour underneath you
+  33: '#2cd0d0',
   125: '#4a86d0',
+  49: '#6a5ae0',
+  53: '#b04ae0',
   122: '#e6e6e6',
 };
 export const PALETTE = [
@@ -30,7 +35,10 @@ export const PALETTE = [
   ['orange', 3],
   ['yellow', 8],
   ['green', 126],
+  ['cyan', 33],
   ['blue', 125],
+  ['indigo', 49],
+  ['violet', 53],
   ['white', 122],
 ];
 export const hexFor = (colour) => PAD_HEX[colour] || PAD_HEX[125];

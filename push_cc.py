@@ -193,6 +193,11 @@ SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
 ORANGE = 3
+# Added, never substituted: three hues the palette had no name for. The indices
+# already in macros.json keep meaning exactly what they meant -- renumbering the
+# old ones would repaint every saved pad, and pad 44 is orange because someone
+# chose orange, not because 3 is a nice number.
+CYAN, INDIGO, VIOLET = 33, 49, 53
 # Shift and Record are white-only buttons: the value is brightness, not a
 # palette index, so they need their own two levels.
 DIM, BRIGHT = 20, 127
@@ -202,8 +207,9 @@ TAB_DIM = 124   # (20,20,20): present, clearly not the one
 
 # Palette indices the Push 2 spec guarantees, plus the blue above. Any 0-127
 # index works on the hardware; these are the ones worth offering by name.
-PALETTE = [("red", RED), ("orange", 3), ("yellow", YELLOW), ("green", GREEN),
-           ("blue", BLUE), ("white", WHITE)]
+PALETTE = [("red", RED), ("orange", ORANGE), ("yellow", YELLOW),
+           ("green", GREEN), ("cyan", CYAN), ("blue", BLUE),
+           ("indigo", INDIGO), ("violet", VIOLET), ("white", WHITE)]
 # A hue per view, on its button and on its label -- six views, and six palette
 # indices this hardware is known to render honestly. Selection is the
 # animation rather than the brightness: an arbitrary palette index has no dim

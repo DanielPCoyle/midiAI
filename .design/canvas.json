@@ -1,0 +1,166 @@
+{
+  "pages": [
+    {
+      "id": "page-1",
+      "name": "The layout"
+    },
+    {
+      "id": "page-2",
+      "name": "Every view"
+    }
+  ],
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1194,
+      "h": 834,
+      "title": "At rest",
+      "page": "page-1"
+    },
+    {
+      "file": "Question.dc.html",
+      "x": 1314,
+      "y": 0,
+      "w": 1194,
+      "h": 834,
+      "title": "A question",
+      "page": "page-1"
+    },
+    {
+      "file": "GridMode.dc.html",
+      "x": 2628,
+      "y": 0,
+      "w": 1194,
+      "h": 834,
+      "title": "Grid mode",
+      "page": "page-1"
+    },
+    {
+      "file": "EditPad.dc.html",
+      "x": 0,
+      "y": 1010,
+      "w": 1194,
+      "h": 834,
+      "title": "Editing a pad",
+      "page": "page-1"
+    },
+    {
+      "file": "PushMirror.dc.html",
+      "x": 1314,
+      "y": 1010,
+      "w": 1194,
+      "h": 834,
+      "title": "Push mirror mode",
+      "page": "page-1"
+    },
+    {
+      "file": "Desktop.dc.html",
+      "x": 2628,
+      "y": 1010,
+      "w": 1728,
+      "h": 1000,
+      "title": "Desktop full screen",
+      "page": "page-1"
+    },
+    {
+      "file": "ViewSessions.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1194,
+      "h": 834,
+      "title": "sessions \u2014 pads are subagents",
+      "page": "page-2"
+    },
+    {
+      "file": "ViewTests.dc.html",
+      "x": 1314,
+      "y": 0,
+      "w": 1194,
+      "h": 834,
+      "title": "tests \u2014 pads are test items",
+      "page": "page-2"
+    },
+    {
+      "file": "ViewPrs.dc.html",
+      "x": 0,
+      "y": 1010,
+      "w": 1194,
+      "h": 834,
+      "title": "prs \u2014 pads stay macros",
+      "page": "page-2"
+    },
+    {
+      "file": "ViewUsage.dc.html",
+      "x": 1314,
+      "y": 1010,
+      "w": 1194,
+      "h": 834,
+      "title": "usage \u2014 three altitudes",
+      "page": "page-2"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "thesis",
+      "x": 0,
+      "y": -190,
+      "w": 620,
+      "page": "page-1",
+      "text": "The thesis: stop mirroring the Push's geometry.\n\nThe iPad has a better screen than the Push and no reason to be 8x8. Same state, rendered natively \u2014 sessions as a rail with what each is doing, the live session at real type sizes, macros as the 19 things you actually have rather than 64 cells of which 45 are blank."
+    },
+    {
+      "id": "tension",
+      "x": 2628,
+      "y": -190,
+      "w": 620,
+      "page": "page-1",
+      "text": "The tension, not papered over: position is meaningful.\n\nA row is a chain, and muscle memory on the hardware depends on where a pad sits. So the macro pane has two modes \u2014 Library to find and fire, Grid to arrange and see chains at 1:1 with the Push."
+    },
+    {
+      "id": "question-note",
+      "x": 1314,
+      "y": -190,
+      "w": 620,
+      "page": "page-1",
+      "text": "A question hides the macros outright, exactly as the Push does \u2014 the grid goes dark there because there is one grid, and the same rule holds here for the same reason: while a session is waiting on you there is one thing to do."
+    },
+    {
+      "id": "palette-note",
+      "x": 0,
+      "y": 1900,
+      "w": 620,
+      "page": "page-1",
+      "text": "Pad colours expanded to ten: Black, White, Red, Orange, Yellow, Green, Cyan, Blue, Indigo, Violet.\n\nThe indices under each swatch are the ones you gave me \u2014 they disagree with what push_cc.py uses today on every existing colour. Worth settling before this is built."
+    },
+    {
+      "id": "mirror-note",
+      "x": 1314,
+      "y": 1900,
+      "w": 620,
+      "page": "page-1",
+      "text": "Today's entire app, kept as one mode rather than the frame everything hangs off. Every row shares the same eight columns, so a pad sits under the button that governs its column."
+    },
+    {
+      "id": "views-rule",
+      "x": 0,
+      "y": -230,
+      "w": 900,
+      "page": "page-2",
+      "text": "Every view has two halves on the Push: what the screen shows, and what the 64 pads become. The rail on the right is that second half \u2014 it is always \"what the pads are right now\".\n\nfocus \u2192 the macros.  sessions \u2192 the subagents this session spawned.  tests \u2192 the test items at this zoom.  prs and usage \u2192 the Push darkens the grid, because 64 lit pads about something else says nothing; the iPad has the room, so the macros stay reachable there."
+    },
+    {
+      "id": "modes-note",
+      "x": 1314,
+      "y": -230,
+      "w": 900,
+      "page": "page-2",
+      "text": "The second modes mostly dissolve. focus 2/2 is the shortcuts grid \u2014 the session shown as what you can say to it \u2014 which is just the macro library, already on screen. sessions 2/2 names the subagents on the glass because the pads cannot; here they are named in the rail already. usage keeps its three altitudes as a segmented walk.\n\nSubagent rows are illustrative: none are on disk right now. Everything else is real."
+    }
+  ],
+  "launch": {
+    "view": "canvas",
+    "page": "page-2"
+  }
+}

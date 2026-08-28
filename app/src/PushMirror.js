@@ -1,6 +1,6 @@
 import { Image, StyleSheet, Text, View } from 'react-native';
 import PushButton from './PushButton';
-import { C, S, SEAT_HEX } from './theme';
+import { C, S, SEAT_HEX, hexFor } from './theme';
 
 const SLOTS = 8;
 const rgb = ([r, g, b]) => `rgb(${r}, ${g}, ${b})`;
@@ -11,7 +11,7 @@ const rgb = ([r, g, b]) => `rgb(${r}, ${g}, ${b})`;
 // hanging under the buttons that replace them.
 const BLEED = 2;
 
-export default function PushMirror({ base, surface, onTab, onSeat }) {
+export default function PushMirror({ base, surface, macros, onTab, onSeat }) {
   const views = Array.isArray(surface?.views) ? surface.views : null;
   const hasSurface = !!views;
 
@@ -20,6 +20,7 @@ export default function PushMirror({ base, surface, onTab, onSeat }) {
       <TabRow surface={surface} views={views} onTab={onTab} />
       <Frame base={base} surface={hasSurface ? surface : null} />
       <SeatRow surface={surface} onSeat={onSeat} />
+      <PadRows macros={macros || []} />
     </View>
   );
 }
@@ -80,6 +81,43 @@ function SeatRow({ surface, onSeat }) {
   );
 }
 
+// note 36 is the bottom-left pad, so the top screen row is the highest indices
+const ROWS = [7, 6, 5, 4, 3, 2, 1, 0];
+
+// The grid shares one 8-column track with the button rows above and below it,
+// so a pad sits under the button that governs its column. Centring it on its
+// own width made a tidier square and a worse mirror -- alignment is the only
+// thing this view owes you. The labels are the app's own addition: on the glass
+// a pad is light alone, and light alone is not readable across a desk.
+function PadRows({ macros }) {
+  return (
+    <View style={styles.pads}>
+      {ROWS.map((r) => (
+        <View key={r} style={styles.padRow}>
+          {Array.from({ length: SLOTS }, (_, c) => {
+            const i = r * SLOTS + c;
+            const m = macros[i];
+            return (
+              <View
+                key={c}
+                style={[
+                  styles.pad,
+                  m ? { backgroundColor: hexFor(m.colour) } : styles.padOff,
+                ]}>
+                {!!m && (
+                  <Text style={styles.padText} numberOfLines={2}>
+                    {m.label}
+                  </Text>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function Frame({ base, surface }) {
   if (!surface) {
     return (
@@ -110,6 +148,7 @@ function Frame({ base, surface }) {
 
 const styles = StyleSheet.create({
   wrap: {
+    flex: 1,
     gap: S.gap,
   },
   row: {
@@ -135,5 +174,22 @@ const styles = StyleSheet.create({
   waiting: {
     color: C.dim,
     fontSize: 13,
+  },
+  pads: { flex: 1, gap: S.gap / 2, minHeight: 0 },
+  padRow: { flex: 1, flexDirection: 'row', gap: S.gap / 2 },
+  pad: {
+    flex: 1,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    overflow: 'hidden',
+  },
+  padOff: { backgroundColor: '#141418' },
+  padText: {
+    color: C.bg,
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });
