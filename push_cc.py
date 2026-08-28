@@ -344,7 +344,7 @@ def publish_target(agent):
     """Tell mapui which session the Push is pointed at."""
     payload = {} if not agent else {
         "terminal_id": agent.get("terminal_id"),
-        "name": os.path.basename(agent.get("cwd", "")) or "?",
+        "name": agent_name(agent),
         "status": agent.get("agent_status"),
     }
     tmp = TARGET_FILE + ".tmp"
@@ -1480,7 +1480,7 @@ def usage_col(agent):
     if agent is None:
         return None
     u = usage_for(agent)
-    return (os.path.basename(agent.get("cwd", "")) or "?",
+    return (agent_name(agent),
             u.get("out", 0),
             u.get("cread", 0) + u.get("inp", 0) + u.get("cwrite", 0),
             bool(agent.get("focused")))
@@ -1628,7 +1628,7 @@ def sweep_panes(slots, by_id, current):
 def focus_info(slot, agent, summary, scroll=0, suggested=False):
     used, limit = context_for(agent)
     return {"slot": slot,
-            "name": os.path.basename(agent.get("cwd", "")) or "?",
+            "name": agent_name(agent),
             "model": model_for(agent),
             "effort": effort_for(agent),
             "status": agent.get("agent_status"),
@@ -1650,7 +1650,7 @@ def panel_col(agent):
     if agent is None:
         return None
     used, limit = context_for(agent)
-    return {"name": os.path.basename(agent.get("cwd", "")) or "?",
+    return {"name": agent_name(agent),
             "status": agent.get("agent_status"),
             "model": model_for(agent),
             "effort": effort_for(agent),
@@ -1674,7 +1674,8 @@ def follow_focus(focused, slots, current, pinned=False):
 
 
 def agent_name(agent):
-    return os.path.basename((agent or {}).get("cwd", "")) or "?"
+    agent = agent or {}
+    return agent.get("name") or os.path.basename(agent.get("cwd", "")) or "?"
 
 
 def colour_for(agent):
@@ -2578,9 +2579,7 @@ def run():
                     elif automating:
                         steps = chain_steps(MACROS, i)
                         if steps and target:
-                            chain = Chain(steps, target, current,
-                                          os.path.basename((cur or {}).get("cwd", ""))
-                                          or "?")
+                            chain = Chain(steps, target, current, agent_name(cur))
                             # the latch has done its job; leaving it on would
                             # turn the next ordinary pad press into a chain
                             automating, shown = False, None

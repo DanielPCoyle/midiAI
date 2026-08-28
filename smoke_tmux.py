@@ -87,6 +87,32 @@ after = len(tmux("list-panes", "-a", "-F", "#{pane_id}").stdout.split())
 check("close removes exactly one pane", "result" in r and after == before - 1,
       f"{before} -> {after}")
 
+print("\n== agent rename ==")
+r = j(term.dispatch(("agent", "start", "gamma", "--cwd", work,
+                     "--split", "right", "--focus", "--", "sleep", "600")))
+check("start gamma for rename test", "result" in r, str(r)[:90])
+r = j(term.dispatch(("agent", "start", "delta", "--cwd", work,
+                     "--split", "right", "--focus", "--", "sleep", "600")))
+check("start delta for rename test", "result" in r, str(r)[:90])
+
+
+def pane_names():
+    out = tmux("list-panes", "-a", "-F", "#{pane_id} #{@agent_name}").stdout.splitlines()
+    return dict(line.split(" ", 1) for line in out if line.strip())
+
+
+by_name = {v: k for k, v in pane_names().items()}
+gamma_pane, delta_pane = by_name["gamma"], by_name["delta"]
+
+r = j(term.dispatch(("agent", "rename", gamma_pane, "renamed-gamma")))
+check("rename to a free name succeeds", "result" in r, str(r)[:90])
+check("agent list reports the new name",
+      pane_names().get(gamma_pane) == "renamed-gamma", str(pane_names()))
+
+r = j(term.dispatch(("agent", "rename", delta_pane, "renamed-gamma")))
+check("renaming a second agent to the same name is refused",
+      r.get("error", {}).get("code") == "agent_name_taken", str(r)[:90])
+
 print("\n== worktree create ==")
 repo = tempfile.mkdtemp(prefix="smokerepo-")
 for cmd in (["git", "init", "-q", "-b", "main"], ["git", "config", "user.email", "s@x"],
@@ -134,6 +160,7 @@ try:
         ("agent", "read", "%0", "--lines", "40"),
         ("agent", "send", "%0", "x"),
         ("agent", "focus", "%0"),
+        ("agent", "rename", "%0", "zeta"),
         ("agent", "start", "gamma", "--cwd", work, "--split", "right",
          "--focus", "--", "sleep", "5"),
         ("pane", "close", "%0"),
@@ -147,7 +174,7 @@ finally:
     term.subprocess.run = real_run
     push_cc.subprocess.run = real_run
 
-check("all seven calls exercised", len(seen) > 0, f"{len(seen)} subprocesses")
+check("all eight calls exercised", len(seen) > 0, f"{len(seen)} subprocesses")
 check("herdr binary never invoked", "herdr" not in seen,
       f"binaries used: {sorted(set(seen))}")
 

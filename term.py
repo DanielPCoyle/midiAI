@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tmux backend for push_cc's herdr() -- same seven calls, same JSON shapes.
+"""tmux backend for push_cc's herdr() -- same eight calls, same JSON shapes.
 
 herdr never sees more than one screen of a claude pane either (it runs on the
 alternate screen and never scrolls), so nothing here is a downgrade. The one
@@ -14,7 +14,10 @@ import re
 import subprocess
 
 PANE_FORMAT = ("#{pane_id}\t#{pane_pid}\t#{pane_current_path}\t"
-               "#{pane_active}\t#{window_active}\t#{session_attached}")
+               "#{pane_active}\t#{window_active}\t#{session_attached}\t"
+               "#{@agent_name}")
+
+NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")  # herdr's own rule, adopted deliberately
 
 STATUS = {"busy": "working", "waiting": "blocked"}  # anything else -> idle
 
@@ -126,7 +129,7 @@ def _match_agents(rows, by_pid, table=None):
     wrong seat."""
     agents = []
     table = _proc_table() if table is None else table   # injectable for demo()
-    for pane_id, pane_pid, cwd, pa, wa, sattach in rows:
+    for pane_id, pane_pid, cwd, pa, wa, sattach, name in rows:
         cpid, running = _find_claude_pid(int(pane_pid), by_pid, table)
         if cpid is None and not running:
             continue                    # no agent here, just a shell
@@ -140,6 +143,7 @@ def _match_agents(rows, by_pid, table=None):
             "agent_status": _status(info.get("status")) if info else "unknown",
             "focused": pa == "1" and wa == "1" and sattach == "1",
             "agent_session": {"value": info.get("sessionId")},
+            "name": name or None,
         })
     return agents
 
@@ -159,7 +163,7 @@ def _agent_list():
         claude_agents = []
     by_pid = {a["pid"]: a for a in claude_agents if "pid" in a}
     rows = [tuple(line.split("\t")) for line in panes.stdout.splitlines() if line.strip()]
-    rows = [r for r in rows if len(r) == 6]
+    rows = [r for r in rows if len(r) == 7]
     return _ok({"agents": _match_agents(rows, by_pid), "type": "agent_list"})
 
 
@@ -218,6 +222,23 @@ def _agent_start(args):
     return _ok({})
 
 
+def _agent_rename(target, name):
+    if name == "--clear":
+        _run(["tmux", "set-option", "-p", "-u", "-t", target, "@agent_name"])
+        return _ok({})
+    if not NAME_RE.match(name or ""):
+        return _err("invalid_agent_name", f"{name!r} does not match {NAME_RE.pattern}")
+    # exclude target itself -- renaming a pane to the name it already holds
+    # is a no-op, not a collision with itself
+    taken = _run(["tmux", "list-panes", "-a", "-F", "#{pane_id} #{@agent_name}"])
+    others = [line.split(" ", 1)[1] for line in taken.stdout.splitlines()
+              if line.split(" ", 1)[0] != target and len(line.split(" ", 1)) == 2]
+    if name in others:
+        return _err("agent_name_taken", f"agent name {name!r} already in use")
+    _run(["tmux", "set-option", "-p", "-t", target, "@agent_name", name])
+    return _ok({})
+
+
 def _pane_close(pane_id):
     out = _run(["tmux", "kill-pane", "-t", pane_id])
     if out.returncode != 0:
@@ -268,6 +289,8 @@ def dispatch(args):
             return _agent_focus(args[2])
         if head == ("agent", "start"):
             return _agent_start(args)
+        if head == ("agent", "rename"):
+            return _agent_rename(args[2], args[3])
         if head == ("pane", "close"):
             return _pane_close(args[2])
         if head == ("worktree", "create"):
@@ -295,27 +318,29 @@ if __name__ == "__main__":
             111: {"cwd": "/repo", "sessionId": "aaa", "status": "busy"},
             222: {"cwd": "/repo", "sessionId": "bbb", "status": "waiting"},
         }
-        rows = [("%0", "111", "/repo", "1", "1", "1"),
-                ("%1", "222", "/repo", "1", "1", "0")]
+        rows = [("%0", "111", "/repo", "1", "1", "1", "alpha"),
+                ("%1", "222", "/repo", "1", "1", "0", "")]
         agents = _match_agents(rows, by_pid)
         assert len(agents) == 2, "same cwd, different pids -> two agents"
         assert {a["agent_session"]["value"] for a in agents} == {"aaa", "bbb"}
         by_tid = {a["terminal_id"]: a for a in agents}
         assert by_tid["%0"]["agent_status"] == "working"
         assert by_tid["%1"]["agent_status"] == "blocked"
+        assert by_tid["%0"]["name"] == "alpha", "@agent_name surfaces as name"
+        assert by_tid["%1"]["name"] is None, "unset @agent_name comes back empty -> None"
 
         # window_active is per-session -- two sessions can both show
         # window_active=1 at once. only session_attached narrows that to
         # the pane a human is actually looking at.
         by_pid2 = {111: {"cwd": "/a", "sessionId": "a"}, 222: {"cwd": "/b", "sessionId": "b"}}
-        rows2 = [("%0", "111", "/a", "1", "1", "0"),   # session a, detached
-                 ("%1", "222", "/b", "1", "1", "1")]   # session b, attached
+        rows2 = [("%0", "111", "/a", "1", "1", "0", ""),   # session a, detached
+                 ("%1", "222", "/b", "1", "1", "1", "")]   # session b, attached
         focused = [a for a in _match_agents(rows2, by_pid2) if a["focused"]]
         assert len(focused) == 1 and focused[0]["terminal_id"] == "%1", focused
 
         # nobody attached anywhere -> nobody is looking at anything
-        rows3 = [("%0", "111", "/a", "1", "1", "0"),
-                 ("%1", "222", "/b", "1", "1", "0")]
+        rows3 = [("%0", "111", "/a", "1", "1", "0", ""),
+                 ("%1", "222", "/b", "1", "1", "0", "")]
         assert not any(a["focused"] for a in _match_agents(rows3, by_pid2))
 
         # a claude that has not started a session yet: no entry in
@@ -323,19 +348,19 @@ if __name__ == "__main__":
         # it, so must we -- dropping it takes the pad off the Push until
         # someone types into it.
         table = {900: (1, "login"), 901: (900, "claude")}
-        rows4 = [("%9", "900", "/repo", "0", "0", "0")]
+        rows4 = [("%9", "900", "/repo", "0", "0", "0", "")]
         [a] = _match_agents(rows4, {}, table)
         assert a["agent_status"] == "unknown", a
         assert a["agent_session"]["value"] is None
         assert a["cwd"] == "/repo", "no session, so the pane's cwd is all we have"
 
         # a shell with no claude under it is not an agent and must not appear
-        assert _match_agents([("%8", "900", "/repo", "0", "0", "0")], {},
+        assert _match_agents([("%8", "900", "/repo", "0", "0", "0", "")], {},
                              {900: (1, "login")}) == []
 
         # a session found under a shell still wins over the bare-process path
         table5 = {800: (1, "login"), 801: (800, "claude")}
-        [b] = _match_agents([("%7", "800", "/x", "0", "0", "0")],
+        [b] = _match_agents([("%7", "800", "/x", "0", "0", "0", "")],
                             {801: {"cwd": "/real", "status": "busy",
                                    "sessionId": "ccc"}}, table5)
         assert (b["agent_status"], b["cwd"]) == ("working", "/real"), b
@@ -346,6 +371,37 @@ if __name__ == "__main__":
         assert _branch_slug("push/123456") == "push-123456"
         assert _branch_slug("Fix--The__Thing") == "fix-the-thing"
         assert _branch_slug("///") == "wt", "a path component is never empty"
+
+        # agent rename: bad names are rejected on format alone, before any
+        # tmux call is made
+        for bad in ("Uppercase", "9leading", "a" * 40, ""):
+            r = json.loads(_agent_rename("%0", bad))
+            assert r.get("error", {}).get("code") == "invalid_agent_name", (bad, r)
+
+        # valid-name acceptance and the duplicate check both need to know who
+        # else holds a name -- fake that one tmux call so this stays pure
+        # fixtures, same as the rest of demo()
+        global _run
+        real_run = _run
+
+        def fake_run(cmd, timeout=10):
+            if cmd[:2] == ["tmux", "list-panes"]:
+                return subprocess.CompletedProcess(cmd, 0, "%0 \n%1 bob\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        _run = fake_run
+        try:
+            r = json.loads(_agent_rename("%0", "alice"))
+            assert r.get("result") == {}, r
+
+            r = json.loads(_agent_rename("%0", "bob"))
+            assert r.get("error", {}).get("code") == "agent_name_taken", r
+
+            # %1 already IS bob -- that is not "another pane" holding the name
+            r = json.loads(_agent_rename("%1", "bob"))
+            assert r.get("result") == {}, "renaming to your own current name is not a collision"
+        finally:
+            _run = real_run
 
         assert "agent_name_taken" in _err("agent_name_taken", "window x taken")
 
