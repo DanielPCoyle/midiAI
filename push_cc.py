@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Ableton Push 2 as an AI command center, driven by herdr.
+"""Ableton Push 2 as an AI command center.
 
-Buttons under the display (CC 20-27) = up to 8 herdr agents, left to right.
+The agents live in a terminal multiplexer -- tmux by default, herdr if you set
+PUSH_BACKEND=herdr. Every pane call goes through herdr() below, which keeps
+its name because it is the dispatcher for both, and renaming it is thirty call
+sites of churn for a word.
+
+Buttons under the display (CC 20-27) = up to 8 agents, left to right.
   tap    -> drive that agent
   hold   -> talk to it, via that agent's own voice:pushToTalk
   colour -> green done / yellow working / red blocked / white the one you drive
@@ -22,7 +27,9 @@ screen; the buttons carry on.
 
 When any agent starts asking something the screen jumps to the focus view on
 it, once, on the edge -- navigate away and it will not drag you back. Its
-button blinks red, which herdr's status alone would never tell you. Answer a
+button blinks red, which no backend's status alone would ever tell you -- an
+agent that asks a question in prose reads as idle to tmux and to herdr both,
+because it genuinely is. Only the pane knows. Answer a
 select widget with the arrows or the master encoder, then Play.
 
 Closing asks first, on the Push: the screen turns red with the session name
@@ -93,7 +100,7 @@ VOLUME_CC = 79                     # master encoder -> up/down arrows at the age
 ENC_CCS = list(range(71, 79))      # the 8 encoders, one over each agent column
 ENC_TOUCH = list(range(0, 8))      # touching one is a note, not a CC
 SHIFT_CC = 49                      # held modifier, the standard Push idiom
-SOLO_CC = 61                       # pin: neither questions nor herdr move it
+SOLO_CC = 61                       # pin: neither questions nor the terminal move it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
 PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next pad page
 CONFIRM_S = 10                     # a question that goes unanswered expires
@@ -351,7 +358,7 @@ def publish_target(agent):
     """Tell mapui which session the Push is pointed at."""
     payload = {} if not agent else {
         "terminal_id": agent.get("terminal_id"),
-        "name": os.path.basename(agent.get("cwd", "")) or "?",
+        "name": agent_name(agent),
         "status": agent.get("agent_status"),
     }
     tmp = TARGET_FILE + ".tmp"
@@ -439,21 +446,53 @@ def reload_macros():
 
 # ---------------------------------------------------------------- herdr
 
+# tmux hosts the panes now, so herdr can be closed and the surface keeps
+# working. PUSH_BACKEND=herdr goes back, for as long as that is useful.
+BACKEND = os.environ.get("PUSH_BACKEND", "tmux")
+
+
+def backend_said(stdout, stderr):
+    """Which stream carried the answer.
+
+    herdr 0.6.8 reports an error as JSON on stdout and exits 0. 0.8.2 moved it
+    to stderr with exit 1. start_agent greps this function's RETURN VALUE for
+    agent_name_taken to find a free name, so an error arriving on the stream
+    we do not read looks exactly like success -- and it names the second agent
+    the same as the first, quietly. Read whichever stream actually spoke.
+
+    Only a stream carrying an error object wins; a bare warning on stderr is
+    not an answer and must not replace one."""
+    if '"error"' not in stdout and '"error"' in stderr:
+        return stderr
+    return stdout
+
+
 def herdr(*args):
-    """herdr reports failure as a JSON error on stdout with exit 0, so a helper
-    that only returns stdout swallows it. Add Device was failing silently for
-    hours that way."""
-    out = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=10)
-    text = out.stdout.strip()
+    """The one call every pane operation goes through, and the one place that
+    knows which backend is answering.
+
+    A backend reports failure as a JSON error object, and a helper that only
+    returned stdout swallowed it -- Add Device failed silently for hours that
+    way. Which stream it arrives on is backend_said's problem, not this
+    function's; both get said out loud either way."""
+    if BACKEND == "tmux":
+        import term  # lazy: a broken term.py should not stop push_cc importing
+        text, stderr = term.dispatch(args), ""
+    else:
+        out = subprocess.run(["herdr", *args],
+                             capture_output=True, text=True, timeout=10)
+        text, stderr = backend_said(out.stdout.strip(), out.stderr.strip()), \
+            out.stderr.strip()
     if '"error"' in text:
         try:
             err = json.loads(text)["error"]
-            print(f"herdr {args[0]} {args[1]}: {err.get('code')}: "
+            print(f"{BACKEND} {args[0]} {args[1]}: {err.get('code')}: "
                   f"{err.get('message', '')[:120]}", file=sys.stderr, flush=True)
         except (json.JSONDecodeError, KeyError, IndexError):
-            print(f"herdr {' '.join(args[:2])}: {text[:160]}", file=sys.stderr, flush=True)
-    elif out.stderr.strip():
-        print(f"herdr {' '.join(args[:2])}: {out.stderr.strip()[:160]}",
+            print(f"{BACKEND} {' '.join(args[:2])}: {text[:160]}",
+                  file=sys.stderr, flush=True)
+    elif stderr:
+        print(f"{BACKEND} {' '.join(args[:2])}: {stderr[:160]}",
               file=sys.stderr, flush=True)
     return text
 
@@ -1503,7 +1542,7 @@ def usage_col(agent):
     if agent is None:
         return None
     u = usage_for(agent)
-    return (os.path.basename(agent.get("cwd", "")) or "?",
+    return (agent_name(agent),
             u.get("out", 0),
             u.get("cread", 0) + u.get("inp", 0) + u.get("cwrite", 0),
             bool(agent.get("focused")))
@@ -1664,7 +1703,7 @@ def sweep_panes(slots, by_id, current):
 def focus_info(slot, agent, summary, scroll=0, suggested=False):
     used, limit = context_for(agent)
     return {"slot": slot,
-            "name": os.path.basename(agent.get("cwd", "")) or "?",
+            "name": agent_name(agent),
             "model": model_for(agent),
             "effort": effort_for(agent),
             "status": agent.get("agent_status"),
@@ -1686,7 +1725,7 @@ def panel_col(agent):
     if agent is None:
         return None
     used, limit = context_for(agent)
-    return {"name": os.path.basename(agent.get("cwd", "")) or "?",
+    return {"name": agent_name(agent),
             "status": agent.get("agent_status"),
             "model": model_for(agent),
             "effort": effort_for(agent),
@@ -1710,7 +1749,8 @@ def follow_focus(focused, slots, current, pinned=False):
 
 
 def agent_name(agent):
-    return os.path.basename((agent or {}).get("cwd", "")) or "?"
+    agent = agent or {}
+    return agent.get("name") or os.path.basename(agent.get("cwd", "")) or "?"
 
 
 def colour_for(agent):
@@ -2644,9 +2684,7 @@ def run():
                     elif automating:
                         steps = chain_steps(MACROS, i)
                         if steps and target:
-                            chain = Chain(steps, target, current,
-                                          os.path.basename((cur or {}).get("cwd", ""))
-                                          or "?")
+                            chain = Chain(steps, target, current, agent_name(cur))
                             # the latch has done its job; leaving it on would
                             # turn the next ordinary pad press into a chain
                             automating, shown = False, None
@@ -2854,6 +2892,16 @@ def selftest():
     assert follow_focus(None, seats, 1) == 1, "nothing focused, nothing to do"
     assert follow_focus("gone", seats, 1) == 1, "focused pane holds no slot"
     assert follow_focus("x", seats, 0) == 0, "already there"
+
+    # an error on the stream we do not read is indistinguishable from success,
+    # and start_agent answers "is this name free?" with exactly that
+    ok, taken = '{"result":{}}', '{"error":{"code":"agent_name_taken"}}'
+    assert backend_said(ok, "") == ok, "0.6.8: the answer is on stdout"
+    assert backend_said(taken, "") == taken, "0.6.8: so is the error"
+    assert "agent_name_taken" in backend_said("", taken), "0.8.2 moved it to stderr"
+    assert backend_said(ok, "warning: something") == ok, \
+        "a bare warning is not an answer and must not replace one"
+    assert backend_said("", "") == "", "nothing said, nothing returned"
 
     assert check_state([]) == "none"
     assert check_state([{"conclusion": "SUCCESS", "status": "COMPLETED"},

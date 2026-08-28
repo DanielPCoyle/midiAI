@@ -1,6 +1,6 @@
 # push-cc — Ableton Push 2 as an AI command center
 
-Eight herdr agents on the top pad row, named on the Push's own screen, driven
+Eight agents on the top pad row, named on the Push's own screen, driven
 without touching the keyboard.
 
 ## The surface
@@ -15,9 +15,10 @@ without touching the keyboard.
 | **Buttons above screen** | CC 102–109 | pick a view — each with its own colour, named on the screen above it; press the one you are on to walk its modes |
 | **Buttons below screen** | CC 20–27 | the sessions: tap = focus · hold = talk · named on the screen above them |
 | **Page ‹ ›** | CC 62–63 | walk the pad pages — right off the end makes a new one |
-| **Solo** | CC 61 | pin: stop the surface following herdr's focus, and stop questions pulling it |
+| **Solo** | CC 61 | pin: stop the surface following the terminal's focus, and stop questions pulling it |
 
-Focus goes both ways. Tapping a session button focuses that pane in herdr,
+Focus goes both ways. Tapping a session button focuses that pane in the
+terminal,
 and clicking a pane on the computer moves the Push to it — one set of
 sessions, two pairs of hands, never two different ideas of where you are.
 Solo opts out.
@@ -51,7 +52,7 @@ full-width rows, since it has the width for the text and no 64 identical
 squares to disambiguate. The pager and the pad editor withdraw for as long as
 the question stands.
 
-Pad colour follows herdr's `agent_status`:
+Pad colour follows the agent's status:
 
 | Colour | Status | Meaning |
 |---|---|---|
@@ -204,6 +205,68 @@ mode itself (`Set MIDI Mode`, sysex `0A 01`). Sysex is accepted on both ports in
 every mode, so that request lands whichever port the device is currently
 listening to, and Ableton never has to be opened to do it.
 
+## The panes
+
+The agents live in a terminal multiplexer, and the surface talks to it through
+one function. **tmux** is the default and the whole of it:
+
+    tmux new -s push        # or attach: tmux attach -t push
+    .venv/bin/python push_cc.py
+
+Nothing else is required — no server to keep running, no daemon of ours. With
+no tmux session at all the surface simply shows no agents, and **Add Device**
+starts the first one, session and all.
+
+Every call goes through `herdr()` in `push_cc.py`, which dispatches on
+`PUSH_BACKEND`:
+
+| `PUSH_BACKEND` | Substrate |
+|---|---|
+| `tmux` (default) | `term.py` — `tmux` plus `claude agents --json` |
+| `herdr` | the `herdr` CLI, as before |
+
+The seven calls the surface makes are `agent list`, `agent read`, `agent send`,
+`agent focus`, `agent start`, `pane close`, `worktree create`. `term.py`
+answers them in the same JSON, which is why nothing downstream knows or cares
+which one is running.
+
+Two things are worth knowing about the tmux backend. Agents are matched to
+panes on **pid**, never cwd, because two agents in one repo is the normal case
+and a cwd would silently fold them into one. And a pane holds a claude the
+moment the process is there, whether or not a session has started — a claude
+still sitting in the agents view reports `unknown` rather than vanishing off
+the surface until someone types into it.
+
+`smoke_tmux.py` exercises all eight against a live tmux server, including the
+one that matters here: that no call ever reaches for `herdr`. `mission_check.py`
+walks push_cc's own data path against real panes, and `mission_api.py` drives
+the routes below.
+
+## The app's own hands
+
+The Push can make an agent (Add Device) and a worktree (Add Track), but for a
+long time the app could only fire macros and press buttons. It can now do the
+rest over HTTP:
+
+| Route | Does |
+|---|---|
+| `GET /agents` | every agent, with cwd, status, focus and name |
+| `POST /agents` | `{cwd, name?, split?}` — a new claude in that directory |
+| `POST /agents/rename` | `{terminal_id, name}` |
+| `POST /agents/close` | `{terminal_id}` |
+| `POST /prompt` | `{text, submit?, terminal_id?}` — free text, not a macro |
+
+`/prompt` without a `terminal_id` goes to whichever session the Push is
+pointed at, which is the same target a pad fires into: one place decides what
+"the current session" means, so a tap and a typed sentence cannot disagree.
+
+A name is `[a-z][a-z0-9_-]{0,31}` and unique among live agents — herdr's rule,
+kept because it was already the right one. It lives in a tmux pane option
+rather than the pane title, which claude overwrites with its own.
+
+An agent with no name reads by the basename of its directory, exactly as
+before. Renaming is a convenience, not a requirement.
+
 ## Chains
 
 A **row is a chain**. Hold **Automate** and tap a pad: everything from that pad
@@ -257,7 +320,7 @@ key **auto-repeat** and calls it released after ~120ms of quiet. Holding a pad
 past 250ms replays `space` into that pane every 60ms; letting go stops the
 replay, and the gap *is* the release.
 
-`herdr agent send` writes into a pane's pty without focusing it, so you can
+The backend writes into a pane's pty without focusing it, so you can
 talk to one agent while watching another. It submits on release — Claude owns
 the whole record/transcribe/submit path and there is no seam to read it first.
 
@@ -270,17 +333,19 @@ the whole record/transcribe/submit path and there is no seam to read it first.
   select widget always carets its current choice, and answering *is* walking
   that caret, so with none to walk from there was nothing to answer with except
   arrow keys and Enter fired into whatever the agent was really doing.
-- Only agents in herdr panes appear. `claude agents --json` sees every session
-  but offers no focus or send, so herdr is the substrate.
+- Only agents in the multiplexer's panes appear. `claude agents --json` knows
+  every session's cwd, status and id but offers no focus, no send and no read,
+  so a pane is still the substrate — it is the half that has hands.
 - Slots pin per terminal id: an agent exiting does not shuffle the others, so
   muscle memory survives. A 9th agent is invisible.
 - Macros insert and do not submit. Pressing a pad is the only way to learn what
   it does, so a surface you explore by touching must not fire on contact. Load
   one, read it, hit Play.
-- Approve/deny refuse to send unless herdr reports that agent `blocked`, so a
+- Approve/deny refuse to send unless that agent reports `blocked`, so a
   stray press cannot type a bare `y` into someone's prompt.
-- The model comes from the session's own transcript — herdr does not track it,
-  but its record carries the Claude Code session id, which locates the file.
+- The model comes from the session's own transcript — no multiplexer tracks
+  it, but the Claude Code session id locates the file, and the id is the one
+  thing every backend can hand over.
 - Usage is accumulated incrementally off a byte offset. Transcripts only
   append, run to megabytes, and we poll twice a second.
 - The screen is BGR565, blue in the high bits, confirmed against the hardware

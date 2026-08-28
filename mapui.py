@@ -90,6 +90,15 @@ def read_target():
         return {}
 
 
+def herdr_error(text):
+    """herdr()'s stdout, parsed for an error object -- None on success or on
+    anything that fails to parse, same leniency herdr() itself uses."""
+    try:
+        return json.loads(text).get("error")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     # the app runs from Metro or Expo Go, never this origin, so every
     # response needs this or the browser build just can't read it
@@ -145,6 +154,9 @@ class Handler(BaseHTTPRequestHandler):
                                         # opens on the grid you are looking at
                                         "page": live_page()}),
                        "application/json")
+        elif self.path == "/agents":
+            self._send(200, json.dumps({"agents": push_cc.agents()}),
+                      "application/json")
         else:
             self._send(200, API_NOTE, "text/plain")
 
@@ -156,6 +168,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/relaunch":
             state = relaunch()
             return self._send(200, json.dumps(state), "application/json")
+        if self.path == "/agents":
+            return self._agents_create()
+        if self.path == "/agents/close":
+            return self._agents_close()
+        if self.path == "/agents/rename":
+            return self._agents_rename()
+        if self.path == "/prompt":
+            return self._prompt()
         if self.path != "/macros":
             return self._send(404, "no", "text/plain")
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -216,6 +236,78 @@ class Handler(BaseHTTPRequestHandler):
         with open(tmp, "w") as f:
             json.dump(keep, f)
         os.replace(tmp, push_cc.CMD_FILE)
+        self._send(200, "ok", "text/plain")
+
+    def _agents_create(self):
+        """A new claude, split into the tmux server. Named agents go straight
+        through herdr so a taken name comes back as 409, not a silent -2."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            cwd = body["cwd"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not cwd or not os.path.isdir(cwd):
+            return self._send(400, "cwd is not a directory", "text/plain")
+        split = body.get("split") or "right"
+        name = body.get("name")
+        if name:
+            out = push_cc.herdr("agent", "start", name, "--cwd", cwd, "--split", split,
+                                "--focus", "--", "claude", "--permission-mode", "auto")
+            err = herdr_error(out)
+            if err:
+                code = 409 if err.get("code") == "agent_name_taken" else 500
+                return self._send(code, err.get("message", "start failed"), "text/plain")
+        else:
+            name = push_cc.start_agent(cwd, split)
+            if not name:
+                return self._send(500, "could not start agent", "text/plain")
+        self._send(200, json.dumps({"name": name}), "application/json")
+
+    def _agents_close(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            terminal_id = json.loads(raw)["terminal_id"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not terminal_id:
+            return self._send(400, "bad request", "text/plain")
+        push_cc.herdr("pane", "close", terminal_id)
+        self._send(200, "ok", "text/plain")
+
+    def _agents_rename(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            terminal_id, name = body["terminal_id"], body["name"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not terminal_id or not name:
+            return self._send(400, "bad request", "text/plain")
+        out = push_cc.herdr("agent", "rename", terminal_id, name)
+        err = herdr_error(out)
+        if err:
+            code = {"invalid_agent_name": 400,
+                    "agent_name_taken": 409}.get(err.get("code"), 500)
+            return self._send(code, err.get("message", "rename failed"), "text/plain")
+        self._send(200, "ok", "text/plain")
+
+    def _prompt(self):
+        """Free text to an agent, same target rule _fire uses: whichever
+        session the Push is sitting on, unless the caller names one."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            text = body["text"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not text:
+            return self._send(400, "bad request", "text/plain")
+        target = body.get("terminal_id") or read_target().get("terminal_id")
+        if not target:
+            return self._send(409, "no session selected on the Push", "text/plain")
+        push_cc.herdr("agent", "send", target,
+                      text + ("\r" if body.get("submit") else ""))
         self._send(200, "ok", "text/plain")
 
     def log_message(self, *_):
