@@ -1579,27 +1579,40 @@ def turn(value):
 def read_pane(lines):
     """The question, the activity, and the options, out of a rendered pane.
 
-    A caret is required before any of it counts. _OPT_RE matches anything that
-    opens with "1." and Claude writes numbered lists in prose all day; without
-    this, a recap with two bullets became a two-option question, which now
-    takes the whole grid and offers to answer it. The select widget always
-    draws its caret on one option -- and answer_keys walks that caret, so with
-    no caret to walk from, "answering" is arrow keys and Enter fired into
-    whatever the agent was actually doing."""
-    opts, say, act, sel = [], "", "", None
+    A caret is required before any of it counts, and only the list the caret is
+    actually in survives. _OPT_RE matches anything that opens with "1." and
+    Claude writes numbered lists in prose all day; without the caret, a recap
+    with two bullets became a two-option question, which takes the whole grid
+    and offers to answer it. Without the run-splitting, a pane holding prose
+    counting to four above a widget counting to six answered as one list of
+    ten -- and answer_keys walks the caret from where it is to where you
+    pointed, so a caret at the wrong index sends the wrong number of downs into
+    a live session."""
+    runs, cur, say, act, at_run, at_opt = [], [], "", "", None, None
     for line in lines:
         m = _OPT_RE.match(line)
         if m and not line.lstrip().startswith(("⏺", "✻")):
+            n = int(m.group(2))
+            # numbering that does not carry on from the line above starts a new
+            # list. A pane holds more than one at a time -- prose that counts to
+            # four, then the widget counting to six -- and reading them as one
+            # run puts the caret at an index in a list that does not exist.
+            if cur and n != cur[-1][0] + 1:
+                runs.append(cur)
+                cur = []
             if m.group(1):
-                sel = len(opts)                # caret: this is a select widget
-            opts.append((m.group(2), m.group(3)))
+                at_run, at_opt = len(runs), len(cur)
+            cur.append((n, m.group(2), m.group(3)))
         elif line.startswith("⏺"):
-            say, opts, sel = line[1:].strip(), [], None   # new answer, stale choice
+            say = line[1:].strip()             # new answer, every stale list with it
+            runs, cur, at_run, at_opt = [], [], None, None
         elif line.startswith("✻"):
             act = line[1:].strip()
-    if sel is None:
-        opts = []                              # numbered prose, not a question
-    return {"say": say, "act": act, "opts": opts, "sel": sel}
+    runs.append(cur)
+    if at_run is None:                         # numbered prose, not a question
+        return {"say": say, "act": act, "opts": [], "sel": None}
+    return {"say": say, "act": act, "sel": at_opt,
+            "opts": [(num, label) for _, num, label in runs[at_run]]}
 
 
 def pane_summary(agent, depth=SCRAPE_LINES):
@@ -3080,6 +3093,17 @@ def selftest():
     assert [o[1] for o in seen["opts"]] == ["Yes", "Hold"], "a real one still reads"
     assert seen["sel"] == 0, "and the caret says where the walk starts"
     assert read_pane(["⏺ done", "1. a note"])["opts"] == [], "nor after an answer"
+    # a pane holds more than one numbered list; only the one with the caret is
+    # a question, and the caret's index is an index into that list alone
+    both = ["The dependency is one function.", "1. Every herdr call funnels",
+            "2. Only seven distinct calls", "3. Two of the four fields",
+            "4. What is left is a terminal-host problem", "Run it?",
+            "  1. Run the probe", "❯ 2. Build the shim now", "  3. Stop here"]
+    seen = read_pane(both)
+    assert [o[1] for o in seen["opts"]] == ["Run the probe", "Build the shim now",
+                                            "Stop here"], "the widget, not the prose"
+    assert seen["sel"] == 1, "and the caret indexes that list, not the pane"
+    assert answer_keys(2, seen["sel"]) == DOWN + ENTER, "one step, not five"
     assert _OPT_RE.match("  2. No, exit").groups() == (None, "2", "No, exit")
     assert _OPT_RE.match("  ⏵⏵ auto mode on") is None
     assert _OPT_RE.match("❯ commit the fix") is None   # typed text, not a choice
