@@ -351,13 +351,28 @@ Those regexes are known to break on a UI change and need an update pipeline to
 stay alive. We would have no such pipeline. Taking state from the program
 itself has no such failure mode.
 
-Caveat, stated honestly: I confirmed `claude agents --json` reports
-`waiting`/`"input needed"` for a genuinely blocked agent, but I did not manage
-to build a controlled permission-prompt-vs-prose-question comparison — driving
-a live TUI into each state proved fiddly. If it turns out to report `waiting`
-for both, our backend is strictly better than herdr here. The A/B on hardware
-will settle it, and push_cc's own scraping covers the gap either way, because
-it needs the option *text*, not just the state.
+**It is not, however, better at spotting a stuck agent — settled by
+measurement, not left open.** I earlier guessed it might be. It is not.
+
+| What the agent does | `claude agents --json` | herdr |
+|---|---|---|
+| AskUserQuestion widget | `waiting` / `input needed` | also sees it |
+| Pure prose question, back at `❯` | **`idle`** | `idle` |
+
+The widget case looks like a win until you read the pane: it draws
+`Enter to select · ↑/↓ to navigate · Esc to cancel`, which is exactly the
+chrome herdr's `live_blocked_form` rule matches. Both see it.
+
+The case that matters is a plain question with no widget. Measured: the pane
+showed `⏺ Should I use approach A or approach B?`, then `✻ Crunched for 2s ·
+done`, then the prompt — and the status stayed `idle` throughout.
+
+**Same blind spot as herdr, for the same reason**: the agent genuinely *is*
+idle. It asked and stopped. Nothing but the words on screen distinguishes
+"asked you something" from "finished". Which is why `sweep_panes` scrapes, and
+why push_cc's comment about it is right as written.
+
+Reproduce with `mission_q.py` (widget) and `mission_p.py` (prose).
 
 ## Worth adopting later — the `done` state
 

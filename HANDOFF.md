@@ -79,9 +79,12 @@ record.
    herdr's `done`-vs-`idle` split is worth adopting.
 3. **Drive the Push with `PUSH_BACKEND=tmux`.** Nothing here has been tested
    with the hardware attached — it is all smoke tests.
-4. **Settle blocked-detection.** Unknown whether `claude agents --json` reports
-   `waiting` for a prose question as well as a permission prompt. If it does,
-   this backend is better than herdr at spotting a stuck agent.
+4. ~~Settle blocked-detection.~~ **Done — the answer is no.** An
+   AskUserQuestion widget reports `waiting`, but so does herdr see it (the
+   widget draws the same "esc to cancel" chrome its rules match). A *pure
+   prose* question reports **`idle`** — same blind spot as herdr, because the
+   agent genuinely is idle: it asked and stopped. `sweep_panes` is
+   load-bearing. Reproduce with `mission_q.py` / `mission_p.py`.
 
 ## Two things worth knowing
 
