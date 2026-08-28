@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Ableton Push 2 as an AI command center, driven by herdr.
+"""Ableton Push 2 as an AI command center.
 
-Buttons under the display (CC 20-27) = up to 8 herdr agents, left to right.
+The agents live in a terminal multiplexer -- tmux by default, herdr if you set
+PUSH_BACKEND=herdr. Every pane call goes through herdr() below, which keeps
+its name because it is the dispatcher for both, and renaming it is thirty call
+sites of churn for a word.
+
+Buttons under the display (CC 20-27) = up to 8 agents, left to right.
   tap    -> drive that agent
   hold   -> talk to it, via that agent's own voice:pushToTalk
   colour -> green done / yellow working / red blocked / white the one you drive
@@ -22,7 +27,9 @@ screen; the buttons carry on.
 
 When any agent starts asking something the screen jumps to the focus view on
 it, once, on the edge -- navigate away and it will not drag you back. Its
-button blinks red, which herdr's status alone would never tell you. Answer a
+button blinks red, which no backend's status alone would ever tell you -- an
+agent that asks a question in prose reads as idle to tmux and to herdr both,
+because it genuinely is. Only the pane knows. Answer a
 select widget with the arrows or the master encoder, then Play.
 
 Closing asks first, on the Push: the screen turns red with the session name
@@ -93,7 +100,7 @@ VOLUME_CC = 79                     # master encoder -> up/down arrows at the age
 ENC_CCS = list(range(71, 79))      # the 8 encoders, one over each agent column
 ENC_TOUCH = list(range(0, 8))      # touching one is a note, not a CC
 SHIFT_CC = 49                      # held modifier, the standard Push idiom
-SOLO_CC = 61                       # pin: neither questions nor herdr move it
+SOLO_CC = 61                       # pin: neither questions nor the terminal move it
 DUPLICATE_CC = 88                  # fork the current agent into a new session
 PAGE_CCS = {62: -1, 63: 1}         # page left/right -> previous/next pad page
 CONFIRM_S = 10                     # a question that goes unanswered expires

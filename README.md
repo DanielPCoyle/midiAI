@@ -237,8 +237,35 @@ moment the process is there, whether or not a session has started — a claude
 still sitting in the agents view reports `unknown` rather than vanishing off
 the surface until someone types into it.
 
-`smoke_tmux.py` exercises all seven against a live tmux server, including the
-one that matters here: that no call ever reaches for `herdr`.
+`smoke_tmux.py` exercises all eight against a live tmux server, including the
+one that matters here: that no call ever reaches for `herdr`. `mission_check.py`
+walks push_cc's own data path against real panes, and `mission_api.py` drives
+the routes below.
+
+## The app's own hands
+
+The Push can make an agent (Add Device) and a worktree (Add Track), but for a
+long time the app could only fire macros and press buttons. It can now do the
+rest over HTTP:
+
+| Route | Does |
+|---|---|
+| `GET /agents` | every agent, with cwd, status, focus and name |
+| `POST /agents` | `{cwd, name?, split?}` — a new claude in that directory |
+| `POST /agents/rename` | `{terminal_id, name}` |
+| `POST /agents/close` | `{terminal_id}` |
+| `POST /prompt` | `{text, submit?, terminal_id?}` — free text, not a macro |
+
+`/prompt` without a `terminal_id` goes to whichever session the Push is
+pointed at, which is the same target a pad fires into: one place decides what
+"the current session" means, so a tap and a typed sentence cannot disagree.
+
+A name is `[a-z][a-z0-9_-]{0,31}` and unique among live agents — herdr's rule,
+kept because it was already the right one. It lives in a tmux pane option
+rather than the pane title, which claude overwrites with its own.
+
+An agent with no name reads by the basename of its directory, exactly as
+before. Renaming is a convenience, not a requirement.
 
 ## Chains
 
