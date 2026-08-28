@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -10,12 +11,94 @@ import {
 } from 'react-native';
 import PushButton from './PushButton';
 import { C, S } from './theme';
-import { createAgent, renameAgent, closeAgent, makeWorktree } from './api';
+import { createAgent, renameAgent, closeAgent, makeWorktree, listDirs } from './api';
 
 // The same rule mapui.py enforces server-side -- checked here too so a typo
 // is caught before the round trip rather than after a 400 comes back.
 const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const NAME_HELP = 'lowercase letters, digits, _ or - only, must start with a letter, 32 chars max';
+
+// Folders come from the server, not the tablet: a file picker here would
+// browse the iPad, and the repos are on the machine running the agents.
+//
+// The path field and the list are one control, not two. Typing jumps, tapping
+// walks, and either way the field IS the answer -- there is no separate
+// "use this folder", because the folder you are looking at is the one you get.
+function FolderPick({ base, value, onChange }) {
+  const [listing, setListing] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = async (path) => {
+    setLoading(true);
+    setErr('');
+    try {
+      setListing(await listDirs(base, path));
+    } catch (e) {
+      setListing(null);
+      setErr(String(e.message || e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load(value || undefined);
+    // only on open: after that, navigation drives it
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const go = (path) => {
+    onChange(path);
+    load(path);
+  };
+
+  // a repo is nearly always what you mean, so they sort first
+  const entries = [...(listing?.entries || [])].sort(
+    (a, b) => (b.git ? 1 : 0) - (a.git ? 1 : 0) || a.name.localeCompare(b.name)
+  );
+
+  return (
+    <View style={styles.pick}>
+      <TextInput
+        style={styles.input}
+        value={value}
+        onChangeText={onChange}
+        onSubmitEditing={() => load(value)}
+        placeholder="/path/to/project"
+        placeholderTextColor={C.faint}
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="go"
+      />
+      <View style={styles.pickHead}>
+        <Text style={styles.hint} numberOfLines={1}>
+          {listing?.git ? 'a repo · ' : ''}
+          {entries.length} folder{entries.length === 1 ? '' : 's'}
+        </Text>
+        {loading && <ActivityIndicator size="small" color={C.faint} />}
+      </View>
+      {!!err && <Text style={styles.error}>{err}</Text>}
+      <ScrollView style={styles.pickList} keyboardShouldPersistTaps="handled">
+        {!!listing?.parent && (
+          <Pressable style={styles.pickRow} onPress={() => go(listing.parent)}>
+            <Text style={styles.pickUp}>..</Text>
+          </Pressable>
+        )}
+        {entries.map((e) => (
+          <Pressable key={e.path} style={styles.pickRow} onPress={() => go(e.path)}>
+            <Text style={[styles.pickName, e.git && styles.pickRepo]} numberOfLines={1}>
+              {e.name}
+            </Text>
+            {/* an agent already lives here; starting a second is allowed but
+                worth knowing before you do it */}
+            {e.busy && <Text style={styles.pickTag}>in use</Text>}
+          </Pressable>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
 
 const TITLE = {
   new: 'new session',
@@ -90,16 +173,8 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
 
           {mode === 'new' && (
             <>
-              <Text style={styles.label}>cwd</Text>
-              <TextInput
-                style={styles.input}
-                value={cwdField}
-                onChangeText={setCwdField}
-                placeholder="/path/to/project"
-                placeholderTextColor={C.faint}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+              <Text style={styles.label}>folder</Text>
+              <FolderPick base={base} value={cwdField} onChange={setCwdField} />
               <Text style={styles.label}>name <Text style={styles.hint}>(optional)</Text></Text>
               <TextInput
                 style={styles.input}
@@ -210,6 +285,26 @@ const styles = StyleSheet.create({
     fontSize: 14,
     minHeight: S.hit,
   },
+  pick: { gap: 6 },
+  pickHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  pickList: {
+    maxHeight: 190,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: S.radius,
+    backgroundColor: C.bg,
+  },
+  pickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    minHeight: 34,
+  },
+  pickName: { color: C.dim, fontSize: 13, flexShrink: 1 },
+  pickRepo: { color: C.text, fontWeight: '600' },
+  pickUp: { color: C.faint, fontSize: 13 },
+  pickTag: { color: C.faint, fontSize: 10 },
   rule: { color: C.warn, fontSize: 11 },
   error: { color: C.bad, fontSize: 12 },
   confirmText: { color: C.text, fontSize: 14, lineHeight: 20 },

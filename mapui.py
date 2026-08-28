@@ -167,6 +167,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/target":
             return self._send(200, json.dumps({**read_target(), **push_state()}),
                               "application/json")
+        if self.path.startswith("/dirs"):
+            return self._dirs()
         if self.path == "/macros":
             labels, pages = push_cc.load_macros()
             self._send(200, json.dumps({"labels": labels, "pages": pages,
@@ -291,6 +293,47 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 return self._send(500, "could not start agent", "text/plain")
         self._send(200, json.dumps({"name": name}), "application/json")
+
+    def _dirs(self):
+        """Folders on THIS machine, so the iPad can pick one.
+
+        A file picker on the tablet would browse the tablet, which is not
+        where the repos are -- the agents run here. So the browsing happens
+        here and the app renders the answer.
+
+        Read-only, and it lists directory names only. Worth knowing before
+        --lan: the same warning that already applies to this server applies
+        here, and this one hands out a little of the shape of your disk."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        path = (q.get("path") or [""])[0] or target_cwd()
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isdir(path):
+            return self._send(404, "not a directory", "text/plain")
+        try:
+            names = sorted(os.listdir(path))
+        except OSError as e:
+            return self._send(403, str(e), "text/plain")
+        here = {a.get("cwd") for a in push_cc.agents()}
+        entries = []
+        for n in names:
+            full = os.path.join(path, n)
+            if not os.path.isdir(full):
+                continue        # a session starts in a folder, not a file
+            entries.append({
+                "name": n, "path": full,
+                # a repo is the thing you almost always mean, so say which
+                # ones are, and let the app put them first
+                "git": os.path.isdir(os.path.join(full, ".git"))
+                or os.path.isfile(os.path.join(full, ".git")),
+                "busy": full in here,   # an agent already lives here
+            })
+        parent = os.path.dirname(path)
+        self._send(200, json.dumps({
+            "path": path,
+            "parent": None if parent == path else parent,
+            "git": os.path.exists(os.path.join(path, ".git")),
+            "entries": entries,
+        }), "application/json")
 
     def _worktree(self):
         """A new worktree, and an agent in it. The Push has had this on Add

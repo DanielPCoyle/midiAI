@@ -117,6 +117,34 @@ after = len(json.loads(call("GET", "/agents")[1])["agents"])
 check("close accepted and the agent is gone", code == 200 and after == before - 1,
       f"{code} {before} -> {after}")
 
+print("\n== GET /dirs \u2014 the folder picker's server half ==")
+code, body = call("GET", "/dirs?path=/Users/dancoyle/midiAI")
+d = json.loads(body) if code == 200 else {}
+check("lists a folder", code == 200 and "entries" in d, str(code))
+check("knows it is a repo", d.get("git") is True)
+check("offers a way up", d.get("parent") == "/Users/dancoyle", str(d.get("parent")))
+names = [e["name"] for e in d.get("entries", [])]
+check("only folders, no files", "app" in names and "push_cc.py" not in names)
+check("marks which are repos", any(e["git"] for e in d.get("entries", []))
+      or all(not e["git"] for e in d.get("entries", [])))
+
+code, body = call("GET", "/dirs?path=/Users/dancoyle")
+d = json.loads(body) if code == 200 else {}
+mine = next((e for e in d.get("entries", []) if e["name"] == "midiAI"), None)
+check("a repo below is marked git", bool(mine and mine["git"]), str(mine))
+check("a folder an agent lives in is marked in use", bool(mine and mine["busy"]),
+      str(mine))
+
+code, body = call("GET", "/dirs?path=/Users/dancoyle/midiAI/push_cc.py")
+check("a file is not a folder", code == 404, f"{code} {body[:50]}")
+
+code, body = call("GET", "/dirs?path=/no/such/dir")
+check("a missing path is refused", code == 404, f"{code} {body[:50]}")
+
+code, body = call("GET", "/dirs")
+check("no path falls back to somewhere real",
+      code == 200 and os.path.isdir(json.loads(body).get("path", "")), str(code))
+
 print("\n== the two files the app polls ==")
 code, body = call("GET", "/macros")
 check("/macros serves the grid", code == 200 and "pages" in body, str(code))

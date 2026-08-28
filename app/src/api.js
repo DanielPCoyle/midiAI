@@ -73,3 +73,8 @@ export const openWorktree = (base, cwd, path) =>
 // while an agent is living in it, and that refusal is not overridable.
 export const removeWorktree = (base, cwd, path, force) =>
   post(base, '/worktrees/remove', { cwd, path, force: !!force });
+
+// The folders on the machine running the agents. A picker on the tablet would
+// browse the tablet, which is not where the repos are.
+export const listDirs = (base, path) =>
+  getJSON(base, `/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`);
