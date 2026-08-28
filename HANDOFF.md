@@ -1,6 +1,7 @@
 # Handoff — replacing herdr
 
-Branch `worktree-herdr-replacement-research`, four commits, `0860cf7..a10a440`.
+Branch `worktree-herdr-replacement-research`, nine commits, `0860cf7..69984ba`.
+Board: SimplerDevelopment project **216**, map card **1805**.
 Worktree at `.claude/worktrees/herdr-replacement-research`.
 
 ## Goal
@@ -66,6 +67,11 @@ record.
   which is tmux.
 
 ## Next steps
+
+0. **Two operator-only blockers, both on the board** — MIDI-005 (card 1810)
+   and MIDI-006 (card 1811). Merge `worktree-herdr-replacement-research` into
+   main, commit the app files there, and stop the running push_cc (pid 76178)
+   so this branch's can drive the Push. Nothing else is waiting on anything.
 
 1. **Commit the app files in the main checkout.** `Pane.js`, `Rail.js`,
    `Pads.js` are untracked and `theme.js` / `PushMirror.js` are newer there.
