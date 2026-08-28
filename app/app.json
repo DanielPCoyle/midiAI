@@ -9,7 +9,13 @@
     "backgroundColor": "#0b0b0d",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "dev.midiai.push"
+      "bundleIdentifier": "dev.midiai.push",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "midiAI talks to push_cc on your Mac to drive the Push 2."
+      }
     },
     "android": {
       "adaptiveIcon": {

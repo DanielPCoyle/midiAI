@@ -150,6 +150,15 @@ Claude Code sessions, so anything on that network can too. Without it the
 server stays on 127.0.0.1 and only `npx expo start --web` — the same app in a
 browser on the Mac — can reach it.
 
+Expo Go needs nothing built. A standalone app — its own icon, no Expo Go —
+is `npx expo run:ios` with Xcode, or an EAS build; `app.json` carries the two
+Info.plist keys that path needs, because both of its failures are silent. The
+API speaks plain http to an address on the LAN, so App Transport Security
+refuses it, and since iOS 14 anything reaching for a local address needs its
+own permission before the prompt is ever shown. Expo Go supplies both itself,
+which is exactly why the browser and Expo Go work and a built app would have
+come up with an empty grid and nothing in the log but a refused fetch.
+
 The iPad does not have to be told where the Mac is. Expo Go loads the bundle
 from it, so `Constants.expoConfig.hostUri` already holds the address; the host
 field at the top is only there for when that guess is wrong.
