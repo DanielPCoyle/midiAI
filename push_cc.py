@@ -192,6 +192,7 @@ SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
 
 # Palette indices guaranteed by the Ableton Push 2 spec, and animation channels.
 BLACK, WHITE, GREEN, RED, YELLOW = 0, 122, 126, 127, 8
+ORANGE = 3
 # Shift and Record are white-only buttons: the value is brightness, not a
 # palette index, so they need their own two levels.
 DIM, BRIGHT = 20, 127
@@ -210,6 +211,12 @@ PALETTE = [("red", RED), ("orange", 3), ("yellow", YELLOW), ("green", GREEN),
 # display.VIEW_RGB carries the same assignment in screen colours; change both.
 VIEW_CC = {"focus": WHITE, "sessions": BLUE, "tests": GREEN,
            "prs": YELLOW, "usage": RED}
+# One hue per option, so the pad under your finger and the number on the glass
+# are the same colour. display.ANSWER_RGB carries the same list in screen
+# colours; change both. Six rather than eight: an option seven that repeats
+# option one is better than a palette index guessed blind on hardware I cannot
+# see, and the number is printed beside it either way.
+ANSWER_CC = [GREEN, BLUE, YELLOW, ORANGE, RED, WHITE]
 DEFAULT_LABELS = [{"name": "prompt", "colour": BLUE}]
 STATIC, PULSE, BLINK = 0, 9, 14
 
@@ -483,6 +490,22 @@ def answer_keys(pick, sel):
     is how the encoder already answers; this just aims it at a pad."""
     step = pick - sel
     return (DOWN if step > 0 else UP) * abs(step) + ENTER
+
+
+def answer_pad(i, count):
+    """Which option a pad stands for while a question is up, or None.
+
+    The left column, down from the top, one pad an option -- the order the
+    glass lists them in. A column of lit pads on an otherwise dark grid reads
+    as a list; the same options as whole rows read as a grid that has caught
+    fire, which is what six of them looked like.
+
+    Note 36 is the bottom-left pad, so the top of the column is the highest
+    multiple of eight."""
+    if i % SLOTS:
+        return None
+    row = SLOTS - 1 - i // SLOTS
+    return row if row < count else None
 
 
 def page_scroll(scroll, delta, page=PAGE_LINES):
@@ -1903,6 +1926,13 @@ def run():
                         tap_seat(int(cmd["seat"]))
                     if "page" in cmd and set_page(int(cmd["page"])):
                         shown = None
+                    if "answer" in cmd and target:
+                        k = int(cmd["answer"])
+                        if 0 <= k < len(opts):
+                            herdr("agent", "send", target,
+                                  answer_keys(k, summary.get("sel") or 0))
+                            print(f"answer {k + 1}/{len(opts)} from the mirror",
+                                  flush=True)
                 if reload_macros():
                     shown = None
                     print("macros reloaded", flush=True)
@@ -1945,7 +1975,7 @@ def run():
                         chain, shown = None, None
                     # blocked pauses instead of advancing. The chain waiting on
                     # an answer is the feature, not a case to engineer around --
-                    # the approve/deny rows do their ordinary job and it resumes.
+                    # the grid becomes the options, and answering resumes it.
                     elif status == "blocked" or chain.slot in asking:
                         if chain.phase != "waiting":
                             chain.phase, shown = "waiting", None
@@ -2094,6 +2124,8 @@ def run():
                                     disp_mod.VIEW_RGB.get(v, (200, 200, 200))
                                     for v in VIEWS],
                                 "seats": seats, "current": current,
+                                # the mirror hides its own grid for these
+                                "opts": opts,
                                 "page": page, "pages": len(PAGES),
                                 # the two label bands, so the mirror can crop
                                 # them: the page's own buttons already say it
@@ -2167,8 +2199,8 @@ def run():
                 # before you could press one here.
                 picking = VIEWS[view] == "sessions"
                 chain_at = {p: k for k, p in enumerate(chain.steps)} if chain else {}
-                for i in range(MACRO_SLOTS):        # bottom row changes job when asked
-                    row0, anim = i < SLOTS, STATIC
+                for i in range(MACRO_SLOTS):        # the grid changes job when asked
+                    anim = STATIC
                     if testing:
                         colour, anim = (TEST_LEDS[titems[i]["state"]]
                                         if i < len(titems) else (BLACK, STATIC))
@@ -2188,19 +2220,24 @@ def run():
                             colour, anim = GREEN, BLINK
                         else:
                             colour = MACROS[i]["colour"] if MACROS[i] else BLACK
-                    elif picking and not arming and not (opts and row0):
+                    elif picking and not arming and not opts:
                         sb = subs[i] if i < len(subs) else None
                         colour, anim = (
                             (BLACK, STATIC) if sb is None else
                             (WHITE, STATIC) if subfocus and subfocus[1] == sb["id"]
                             else (YELLOW, PULSE) if sb["running"]
                             else (GREEN, STATIC))
+                    elif opts and not arming:
+                        # a question takes the whole grid. The macros go dark
+                        # rather than sitting there looking pressable next to
+                        # an answer -- there is one thing to do here now.
+                        k = answer_pad(i, len(opts))
+                        colour = (BLACK if k is None
+                                  else ANSWER_CC[k % len(ANSWER_CC)])
                     else:
                         colour = (RED if arming else
-                                  (WHITE if row0 and i < len(opts) else
-                                   (BLACK if opts and row0 else
-                                    (MACROS[i]["colour"]
-                                     if MACROS[i] and lit_macros else BLACK))))
+                                  (MACROS[i]["colour"]
+                                   if MACROS[i] and lit_macros else BLACK))
                     push.note("macro", i, MACRO_NOTES[i], colour, anim)
 
             for msg in inp.iter_pending():
@@ -2543,15 +2580,16 @@ def run():
                         # ask what a pad does without finding out the hard way
                         previewing, shown = i, None
                         print(f"shift+pad {i} -> preview", flush=True)
-                    elif opts and i < SLOTS and i < len(opts) and target:
+                    elif opts and answer_pad(i, len(opts)) is not None and target:
                         # exactly the pads painted white above: what lights is
                         # what answers. Ahead of the macro branch so a pad that
                         # is currently an answer cannot fire its old text into
                         # a question instead.
+                        k = answer_pad(i, len(opts))
                         pick = summary.get("sel") or 0
-                        print(f"answer {i + 1}/{len(opts)}: {opts[i][1]!r} "
+                        print(f"answer {k + 1}/{len(opts)}: {opts[k][1]!r} "
                               f"-> {target}", flush=True)
-                        herdr("agent", "send", target, answer_keys(i, pick))
+                        herdr("agent", "send", target, answer_keys(k, pick))
                     elif VIEWS[view] == "sessions":
                         # last, under every mode: the pads only stand for the
                         # subagents when nothing louder has borrowed them
@@ -2889,6 +2927,18 @@ def selftest():
     assert SELECT_CC not in (PLAY_CC, STOP_CC, SHIFT_CC, AUTOMATE_CC, BROWSE_CC)
 
     # answering: walk the caret to the pad you pressed, then commit
+    # a question takes the grid: a row per option, the first one at the top
+    assert answer_pad(56, 3) == 0, "the top of the left column is the first"
+    assert answer_pad(48, 3) == 1, "the pad under it is the second"
+    assert answer_pad(40, 3) == 2, "and the one under that the third"
+    assert answer_pad(57, 3) is None, "the rest of that row answers nothing"
+    assert answer_pad(63, 3) is None, "including the end of it"
+    assert answer_pad(32, 3) is None, "nor does the column past the last option"
+    assert answer_pad(0, 8) == 7, "eight options reach the foot of the column"
+    assert [answer_pad(i, 8) for i in range(MACRO_SLOTS)].count(None) == 56, \
+        "eight options light eight pads, not eight rows"
+    assert len(ANSWER_CC) == len(_d.ANSWER_RGB), "an answer hue with no screen twin"
+
     assert answer_keys(0, 0) == ENTER, "already on it, just commit"
     assert answer_keys(2, 0) == DOWN * 2 + ENTER, "down to a later option"
     assert answer_keys(0, 2) == UP * 2 + ENTER, "back up to an earlier one"

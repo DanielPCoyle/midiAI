@@ -206,7 +206,8 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
             cmd = json.loads(raw)
-            keep = {k: int(cmd[k]) for k in ("tab", "seat", "page") if k in cmd}
+            keep = {k: int(cmd[k])
+                    for k in ("tab", "seat", "page", "answer") if k in cmd}
         except (json.JSONDecodeError, TypeError, ValueError):
             return self._send(400, "bad request", "text/plain")
         if not keep:

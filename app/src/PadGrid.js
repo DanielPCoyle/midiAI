@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import PushButton from './PushButton';
-import { C, PAD_HEX, SEAT_HEX, hexFor, S, mono } from './theme';
+import { ANSWER_HEX, C, PAD_HEX, SEAT_HEX, hexFor, S, mono } from './theme';
 
 // note 36 is the Push's bottom-left pad. Row 0 (indices 0-7) is the bottom
 // screen row here, and index 56-63 sit at the top -- build rows top to
 // bottom on screen but count them r=7..0 so index math still reads i=r*8+c.
 const ROWS = [7, 6, 5, 4, 3, 2, 1, 0];
+// push_cc's answer_pad, in the app's own terms: while a question is up the
+// grid is a row per option, counted down from the top.
+export const answerRow = (screenRow, count) =>
+  screenRow < count ? screenRow : null;
 const SIDE = 8;
 const SLOP = 6; // past this, a press was a drag and not a tap
 const DWELL = 400; // hover or tap has to mean it before the card appears
@@ -97,11 +101,14 @@ export default function PadGrid({
   sel,
   moving,
   armed,
+  opts,
   onPress,
   onDrop,
   onExecute,
   onEdit,
+  onAnswer,
 }) {
+  const asking = !!(opts && opts.length);
   const [drag, setDrag] = useState(null);
   const [peek, setPeek] = useState(null);
   const peeked = useRef(null); // the same answer, readable from a stale closure
@@ -206,6 +213,49 @@ export default function PadGrid({
   );
 
   const dragging = drag && drag.moved;
+
+  if (asking) {
+    return (
+      <View style={styles.wrap}>
+        <View style={styles.grid}>
+          {ROWS.map((r, screenRow) => {
+            const k = answerRow(screenRow, opts.length);
+            if (k === null) {
+              return (
+                <View key={r} style={styles.row}>
+                  {Array.from({ length: SIDE }, (_, c) => (
+                    <View key={c} style={[styles.pad, styles.dark]} />
+                  ))}
+                </View>
+              );
+            }
+            const [num, label] = opts[k];
+            const hue = ANSWER_HEX[k % ANSWER_HEX.length];
+            return (
+              <Pressable
+                key={r}
+                onPress={() => onAnswer(k)}
+                style={({ pressed }) => [
+                  styles.row,
+                  styles.answer,
+                  { borderColor: hue },
+                  pressed && styles.answerOn,
+                ]}
+              >
+                <View style={[styles.answerBar, { backgroundColor: hue }]} />
+                <Text style={[styles.answerNum, { backgroundColor: hue }]}>
+                  {num}
+                </Text>
+                <Text style={styles.answerText} numberOfLines={2}>
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.wrap}>
@@ -327,6 +377,46 @@ const styles = StyleSheet.create({
     color: C.text,
     fontSize: 11,
   },
+  // a whole row is one answer, the shape the Push lights and the shape the
+  // glass already draws the option in
+  dark: {
+    backgroundColor: C.panel,
+    opacity: 0.4,
+  },
+  answer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.gap,
+    margin: S.gap / 2,
+    paddingHorizontal: S.pad,
+    borderRadius: S.radius,
+    borderWidth: 1,
+    borderColor: C.edge,
+    backgroundColor: C.raised,
+  },
+  answerOn: {
+    backgroundColor: C.accent,
+    borderColor: C.accentText,
+  },
+  answerBar: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 5,
+  },
+  answerNum: {
+    color: C.bg,
+    fontSize: 13,
+    fontWeight: '700',
+    minWidth: 24,
+    textAlign: 'center',
+    paddingVertical: 2,
+    borderRadius: 4,
+    overflow: 'hidden',
+    ...mono,
+  },
+  answerText: { color: C.text, fontSize: 15, flexShrink: 1 },
   card: {
     position: 'absolute',
     padding: S.pad,

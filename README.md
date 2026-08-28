@@ -7,10 +7,8 @@ without touching the keyboard.
 
 | Control | Notes / CC | Does |
 |---|---|---|
-| **Top pad row** | 92–99 | tap = focus that agent · **hold** = talk to it |
-| **Row 2** | 84–91 | approve — sends `y`, lit only while that agent is blocked |
-| **Row 3** | 76–83 | deny — sends `n`, same guard |
-| **Bottom row** | 36–43 | macros — insert canned text, no submit |
+| **The grid** | 36–99 | 64 macro pads — insert canned text, no submit |
+| **The grid, asked a question** | 36–99 | one pad per option down the left column, each its own colour — the macros go dark |
 | **Play** | CC 85 | enter — submits, to the focused agent · runs an armed chain |
 | **Automate** | CC 89 | hold, tap a pad: arms that pad's row as a chain |
 | **Touchstrip** | pitchbend | slide to set reasoning effort, `low` → `max` |
@@ -35,6 +33,23 @@ the tag showing up *is* the news that a second page exists.
 
 Those two buttons used to step between sessions, which the eight buttons under
 the display and the top pad row already did.
+
+While a session is asking something, the grid stops being macros altogether:
+one pad per option, down the left column, and every other pad dark. A column
+of lit pads on a dark grid reads as a list — the same options as whole rows
+read as a grid that has caught fire. The macros go out rather than sit there
+looking pressable beside an answer, because there is one thing to do.
+
+Each option has its own hue, and the number beside it on the glass is drawn in
+that same hue: `ANSWER_CC` in `push_cc.py`, `ANSWER_RGB` in `display.py`, and
+`ANSWER_HEX` in the app — the last derived from the pad palette rather than
+retyped, so the three cannot drift. Six hues, cycled: an option seven that
+repeats option one beats a palette index guessed blind on hardware.
+
+The app shows the same list off the same `opts`, coloured the same way but as
+full-width rows, since it has the width for the text and no 64 identical
+squares to disambiguate. The pager and the pad editor withdraw for as long as
+the question stands.
 
 Pad colour follows herdr's `agent_status`:
 
@@ -199,8 +214,8 @@ running. A step that starts and finishes between polls is caught by a grace
 period instead.
 
 `blocked` **pauses** the chain rather than advancing it. The agent asked you
-something; the approve/deny rows do their ordinary job and the chain picks up
-where it left off. A pipeline that stops and asks is the point, not a case to
+something; the grid becomes that question's options and the chain picks up
+where it left off once one is pressed. A pipeline that stops and asks is the point, not a case to
 engineer around.
 
 The chain pins to the agent it started on, so you can walk away and watch

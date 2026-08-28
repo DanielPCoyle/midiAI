@@ -126,6 +126,12 @@ VIEW_RGB = {"focus": (235, 235, 240), "sessions": (110, 150, 240),
             "usage": (240, 80, 80)}
 
 
+# push_cc.ANSWER_CC in screen colours -- the chip beside an option and the pad
+# that answers it are the same hue. Change both.
+ANSWER_RGB = [(60, 220, 90), (110, 150, 240), (240, 205, 60),
+              (240, 150, 60), (240, 80, 80), (235, 235, 240)]
+
+
 def view_strip(img, names, current, page=0, pages=1):
     """names: list of view names, in button order, up to 8 (e.g.
               ["focus", "sessions", "usage", "plan", "macros"])
@@ -288,11 +294,12 @@ def render_focus(info):
         d.text((12, 55), s, font=f, fill=(200, 200, 200))
         for i, (num, label) in enumerate(opts[:4]):
             y = 81 + i * 22
-            d.rectangle([12, y, 34, y + 18], fill=(150, 175, 215))
+            d.rectangle([12, y, 34, y + 18],
+                        fill=ANSWER_RGB[i % len(ANSWER_RGB)])
             d.text((18, y + 1), num, font=font(14), fill=(0, 0, 0))
             s, f = fit(d, label, WIDTH - 60, 16)
             d.text((42, y), s, font=f, fill=(225, 225, 225))
-        d.text((WIDTH - 210, 29), "bottom row answers", font=font(13), fill=(120, 120, 120))
+        d.text((WIDTH - 210, 29), "the left column answers", font=font(13), fill=(120, 120, 120))
         return img
 
     pending = info.get("pending")

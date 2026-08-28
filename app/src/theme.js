@@ -35,6 +35,18 @@ export const PALETTE = [
 ];
 export const hexFor = (colour) => PAD_HEX[colour] || PAD_HEX[125];
 
+// push_cc.ANSWER_CC, in the browser's approximations of the same palette --
+// derived from PAD_HEX rather than retyped, so the pad you press on the Push
+// and the row you press here cannot drift into different colours.
+export const ANSWER_HEX = [
+  PAD_HEX[126], // green
+  PAD_HEX[125], // blue
+  PAD_HEX[8], // yellow
+  PAD_HEX[3], // orange
+  PAD_HEX[127], // red
+  PAD_HEX[122], // white
+];
+
 // herdr's agent_status, in the same hues the pads and the Push screen use
 export const SEAT_HEX = {
   idle: '#3cd05a',

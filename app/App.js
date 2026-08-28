@@ -53,6 +53,10 @@ export default function App() {
   // push_cc's own rule, in the only terms the app has: within the range you
   // can always go right, and off the end only from a page with something on it
   const onward = page + 1 < total || macros.some(Boolean);
+  // a question owns the grid, here as on the Push: the pager and the editor
+  // key have nothing to offer while there is one thing to do
+  const opts = surface.opts || [];
+  const asking = opts.length > 0;
 
 
   const say = useCallback((text) => {
@@ -300,7 +304,7 @@ export default function App() {
           style={styles.key}
         />
 
-        {sel !== null && (
+        {sel !== null && !asking && (
           <PushButton
             label={`edit pad ${36 + sel}`}
             colour={C.accentText}
@@ -343,6 +347,7 @@ export default function App() {
         />
       </View>
 
+      {!asking && (
       <View style={styles.pager}>
         <PushButton
           label="‹"
@@ -362,6 +367,7 @@ export default function App() {
           style={styles.pageKey}
         />
       </View>
+      )}
 
       <View style={styles.body}>
         {ready ? (
@@ -371,6 +377,11 @@ export default function App() {
             sel={sel}
             moving={moving !== null && moving >= 0 ? moving : null}
             armed={armed}
+            opts={opts}
+            onAnswer={(k) => {
+              press({ answer: k });
+              say(`answered ${k + 1}/${opts.length}`);
+            }}
             onPress={tapPad}
             onDrop={dropPad}
             onExecute={firePad}
