@@ -1769,11 +1769,17 @@ def colour_for(agent):
 
 class Push:
     def __init__(self, mido, inp, out):
+        """out is None when no Push is plugged in. Every method that touches
+        the wire returns early then, so the loop above can go on publishing
+        the surface the app reads -- the hardware being on the desk is not a
+        precondition for the software half working."""
         self.mido, self.inp, self.out = mido, inp, out
         self.painted = {}
         self.leds = None        # last strip bar sent, so we only resend on change
 
     def sysex(self, *body):
+        if self.out is None:
+            return
         self.out.send(self.mido.Message("sysex", data=SYSEX_HEAD + list(body)))
 
     def midi_mode(self, mode=MODE_USER):
@@ -1795,16 +1801,22 @@ class Push:
 
     def strip(self, leds):
         """16 bytes down the same wire as every pad, so only on change."""
+        if self.out is None:
+            return
         if leds == self.leds:
             return
         self.leds = leds
         self.sysex(STRIP_LED_CC, *strip_pack(leds))
 
     def note(self, kind, slot, note, colour, anim=STATIC):
+        if self.out is None:
+            return
         self._send(kind, slot, self.mido.Message(
             "note_on", channel=anim, note=note, velocity=colour))
 
     def cc(self, kind, slot, ccs, colour, anim=STATIC):
+        if self.out is None:
+            return
         self._send(kind, slot, self.mido.Message(
             "control_change", channel=anim, control=ccs[slot], value=colour))
 
@@ -1858,18 +1870,23 @@ def run():
 
     name = next((n for n in mido.get_output_names() if PORT_NAME in n), None)
     if not name:
-        sys.exit(f"{PORT_NAME!r} not found. Plug the Push in and press its User button.\n"
-                 f"seen: {mido.get_output_names()}")
+        # Not fatal any more. This used to exit, from when the Push was the
+        # only surface there was -- but the app is a surface too, and it reads
+        # what this loop publishes. Exiting froze its session rail on whatever
+        # it last said, which looked like the app being broken.
+        print(f"{PORT_NAME!r} not found -- running headless, no pads and no screen.\n"
+              f"seen: {mido.get_output_names()}", file=sys.stderr, flush=True)
     if subprocess.run(["which", "rec"], capture_output=True).returncode:
         print("warning: no sox on PATH -- voice will no-op: brew install sox", file=sys.stderr)
 
-    inp = mido.open_input(name)
-    out = mido.open_output(name)
+    inp = mido.open_input(name) if name else None
+    out = mido.open_output(name) if name else None
     push = Push(mido, inp, out)
     push.midi_mode(MODE_USER)   # first of all: in Live mode it cannot hear us
     push.strip_host(True)   # before blank: LED writes go nowhere until we own them
     push.blank()
-    out.send(mido.Message("start"))  # spec: animations don't run until a start arrives
+    if out:
+        out.send(mido.Message("start"))  # spec: animations wait for a start
 
     disp_mod, disp = screen()
     debug = "--debug" in sys.argv
@@ -1957,7 +1974,9 @@ def run():
         if m is not None:
             view_mode[name] = m
 
-    print(f"connected to {name}. ctrl-c to quit.", flush=True)
+    print(f"connected to {name}. ctrl-c to quit." if name else
+          "headless: no pads, no screen, still serving the app. ctrl-c to quit.",
+          flush=True)
     try:
         while True:
             now = time.monotonic()
@@ -2378,7 +2397,7 @@ def run():
                                    if MACROS[i] and lit_macros else BLACK))
                     push.note("macro", i, MACRO_NOTES[i], colour, anim)
 
-            for msg in inp.iter_pending():
+            for msg in (inp.iter_pending() if inp else ()):
                 if msg.type == "sysex":
                     # The Push sends this when it switches Live/User mode, which
                     # also blanks its LEDs. painted still believes they are lit,
@@ -2957,6 +2976,19 @@ def selftest():
     assert set(col) == {"name", "status", "model", "effort", "sub", "tid",
                         "cwd", "focused", "context"}, col
     assert col["tid"] == "t", "the app acts on a seat and must know which agent"
+
+    # no Push on the desk is not a reason for the app's surface to stop. Every
+    # method that touches the wire has to survive having no wire, and mido is
+    # never even asked for a message -- so this holds with no hardware and no
+    # mido at all.
+    quiet = Push(None, None, None)
+    quiet.blank()                       # the whole surface, start to finish
+    quiet.midi_mode(MODE_USER)
+    quiet.strip_host(True)
+    quiet.strip([STRIP_ON] * STRIP_LEDS)
+    quiet.cc("play", 0, [PLAY_CC], WHITE)
+    quiet.note("macro", 0, MACRO_NOTES[0], WHITE)
+    assert quiet.painted == {}, "nothing was drawn, so nothing is remembered as drawn"
     assert "typed" not in col, "the prompt is the focus view's job, not a column's"
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"
