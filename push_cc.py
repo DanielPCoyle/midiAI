@@ -1730,6 +1730,9 @@ def panel_col(agent):
             "model": model_for(agent),
             "effort": effort_for(agent),
             "sub": agent.get("terminal_id", "")[-6:],
+            # the app acts on a seat -- rename, close -- and needs to say
+            # which agent it means. The screen shows `sub`; this is the handle.
+            "tid": agent.get("terminal_id"),
             "focused": bool(agent.get("focused")),
             "context": used / limit if limit else 0.0}
 
@@ -2948,8 +2951,9 @@ def selftest():
                      "terminal_id": "t", "focused": False})
     assert 0.0 <= col["context"] <= 1.0, "context fraction stays in range"
     # every renderer reads by key, so a new field cannot break an old unpack
-    assert set(col) == {"name", "status", "model", "effort", "sub",
+    assert set(col) == {"name", "status", "model", "effort", "sub", "tid",
                         "focused", "context"}, col
+    assert col["tid"] == "t", "the app acts on a seat and must know which agent"
     assert "typed" not in col, "the prompt is the focus view's job, not a column's"
     assert short_model("claude-opus-5") == "opus 5"
     assert short_model("claude-haiku-4-5-20251001") == "haiku 4.5"

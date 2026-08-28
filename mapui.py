@@ -174,6 +174,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._agents_close()
         if self.path == "/agents/rename":
             return self._agents_rename()
+        if self.path == "/worktree":
+            return self._worktree()
         if self.path == "/prompt":
             return self._prompt()
         if self.path != "/macros":
@@ -263,6 +265,30 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 return self._send(500, "could not start agent", "text/plain")
         self._send(200, json.dumps({"name": name}), "application/json")
+
+    def _worktree(self):
+        """A new worktree, and an agent in it. The Push has had this on Add
+        Track since the beginning; the app could see the button's effect and
+        never press it."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            cwd, branch = body["cwd"], body["branch"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not os.path.isdir(cwd):
+            return self._send(400, "cwd is not a directory", "text/plain")
+        # slug() is what the Push feeds this, so the app gets the same rules
+        branch = push_cc.slug(branch)
+        if not branch:
+            return self._send(400, "no branch name", "text/plain")
+        out = push_cc.herdr("worktree", "create", "--cwd", cwd,
+                            "--branch", branch, "--focus")
+        err = herdr_error(out)
+        if err:
+            return self._send(500, err.get("message", "worktree failed"),
+                              "text/plain")
+        self._send(200, json.dumps({"branch": branch}), "application/json")
 
     def _agents_close(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))

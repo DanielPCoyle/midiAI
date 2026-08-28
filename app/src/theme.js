@@ -55,11 +55,15 @@ export const ANSWER_HEX = [
   PAD_HEX[122], // white
 ];
 
-// herdr's agent_status, in the same hues the pads and the Push screen use
+// agent_status, in the same hues the pads and the Push screen use.
+// `unknown` is a claude whose process is there but whose session has not
+// started -- present, unclassified. It was falling through to C.faint by
+// accident; grey is the right answer, but it should be chosen.
 export const SEAT_HEX = {
   idle: '#3cd05a',
   working: '#f0c828',
   blocked: '#f03c3c',
+  unknown: '#6b7280',
 };
 
 // The chassis, off the photographs: the buttons sit darker than the panel

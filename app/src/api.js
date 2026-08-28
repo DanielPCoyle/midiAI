@@ -37,3 +37,25 @@ export const post = async (base, path, body) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })).text();
+
+// The agent operations, named rather than spelled out at each call site --
+// a component should ask for what it wants, not remember a path.
+export const listAgents = async (base) =>
+  (await getJSON(base, '/agents')).agents || [];
+
+export const createAgent = (base, cwd, name) =>
+  post(base, '/agents', name ? { cwd, name } : { cwd });
+
+export const renameAgent = (base, terminal_id, name) =>
+  post(base, '/agents/rename', { terminal_id, name });
+
+export const closeAgent = (base, terminal_id) =>
+  post(base, '/agents/close', { terminal_id });
+
+// terminal_id omitted means "wherever the Push is pointed", which is the same
+// target a pad fires into -- one idea of the current session, not two.
+export const promptAgent = (base, text, submit, terminal_id) =>
+  post(base, '/prompt', { text, submit, ...(terminal_id ? { terminal_id } : {}) });
+
+export const makeWorktree = (base, cwd, branch) =>
+  post(base, '/worktree', { cwd, branch });
