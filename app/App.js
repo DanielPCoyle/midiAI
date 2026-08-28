@@ -58,6 +58,17 @@ export default function App() {
     noteAt.current = setTimeout(() => setNote(''), 3000);
   }, []);
 
+  // The surface poll would show a new or closed session within 400ms on its
+  // own. Asking straight away is the difference between a button that visibly
+  // worked and one you press twice because you are not sure it did.
+  const refresh = useCallback(async () => {
+    try {
+      setSurface((await getJSON(base, '/surface')) || {});
+    } catch (e) {
+      // the next tick will pick it up; a failed refresh is not worth saying
+    }
+  }, [base]);
+
   const loadMacros = useCallback(async () => {
     try {
       const d = await getJSON(base, '/macros');
@@ -330,7 +341,13 @@ export default function App() {
         </View>
       ) : (
         <View style={styles.body}>
-          <Rail cols={cols} current={surface.current} onSeat={(i) => press({ seat: i })} />
+          <Rail
+            cols={cols}
+            current={surface.current}
+            onSeat={(i) => press({ seat: i })}
+            base={base}
+            onChanged={refresh}
+          />
           <View style={styles.centre}>
             <Pane
               data={data}
@@ -338,6 +355,8 @@ export default function App() {
               cols={cols}
               current={surface.current}
               onAnswer={(k) => press({ answer: k })}
+              base={base}
+              onSent={refresh}
             />
           </View>
           {!(asking && data.kind === 'focus') &&

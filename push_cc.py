@@ -1733,6 +1733,9 @@ def panel_col(agent):
             # the app acts on a seat -- rename, close -- and needs to say
             # which agent it means. The screen shows `sub`; this is the handle.
             "tid": agent.get("terminal_id"),
+            # a new session and a new worktree both start from a directory,
+            # and the one you are looking at is nearly always the one you mean
+            "cwd": agent.get("cwd", ""),
             "focused": bool(agent.get("focused")),
             "context": used / limit if limit else 0.0}
 
@@ -2952,7 +2955,7 @@ def selftest():
     assert 0.0 <= col["context"] <= 1.0, "context fraction stays in range"
     # every renderer reads by key, so a new field cannot break an old unpack
     assert set(col) == {"name", "status", "model", "effort", "sub", "tid",
-                        "focused", "context"}, col
+                        "cwd", "focused", "context"}, col
     assert col["tid"] == "t", "the app acts on a seat and must know which agent"
     assert "typed" not in col, "the prompt is the focus view's job, not a column's"
     assert short_model("claude-opus-5") == "opus 5"
