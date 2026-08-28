@@ -405,7 +405,9 @@ def reload_macros():
 
 # ---------------------------------------------------------------- herdr
 
-BACKEND = os.environ.get("PUSH_BACKEND", "herdr")
+# tmux hosts the panes now, so herdr can be closed and the surface keeps
+# working. PUSH_BACKEND=herdr goes back, for as long as that is useful.
+BACKEND = os.environ.get("PUSH_BACKEND", "tmux")
 
 
 def herdr(*args):
@@ -422,12 +424,13 @@ def herdr(*args):
     if '"error"' in text:
         try:
             err = json.loads(text)["error"]
-            print(f"herdr {args[0]} {args[1]}: {err.get('code')}: "
+            print(f"{BACKEND} {args[0]} {args[1]}: {err.get('code')}: "
                   f"{err.get('message', '')[:120]}", file=sys.stderr, flush=True)
         except (json.JSONDecodeError, KeyError, IndexError):
-            print(f"herdr {' '.join(args[:2])}: {text[:160]}", file=sys.stderr, flush=True)
+            print(f"{BACKEND} {' '.join(args[:2])}: {text[:160]}",
+                  file=sys.stderr, flush=True)
     elif stderr:
-        print(f"herdr {' '.join(args[:2])}: {stderr[:160]}",
+        print(f"{BACKEND} {' '.join(args[:2])}: {stderr[:160]}",
               file=sys.stderr, flush=True)
     return text
 

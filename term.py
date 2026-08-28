@@ -147,7 +147,11 @@ def _match_agents(rows, by_pid, table=None):
 def _agent_list():
     panes = _run(["tmux", "list-panes", "-a", "-F", PANE_FORMAT])
     if panes.returncode != 0:
-        return _err("no_tmux_server", panes.stderr or "no tmux server running")
+        # No server is not a failure, it is an empty machine -- the state you
+        # are in the moment herdr closes and before the first Add Device.
+        # Reporting it as an error puts two lines a second into push.log
+        # forever, and the surface would read the same either way.
+        return _ok({"agents": [], "type": "agent_list"})
     claude_out = _run(["claude", "agents", "--json"])
     try:
         claude_agents = json.loads(claude_out.stdout or "[]")

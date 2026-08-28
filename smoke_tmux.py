@@ -36,8 +36,15 @@ def tmux(*a):
     return subprocess.run(["tmux", *a], capture_output=True, text=True)
 
 
-print("== agent start ==")
+print("== cold machine: herdr closed, nothing started yet ==")
 tmux("kill-server")
+r = j(term.dispatch(("agent", "list")))
+check("no tmux server reads as no agents, not an error",
+      r.get("result", {}).get("agents") == [], str(r)[:110])
+check("and says nothing (0.5s poll would flood push.log)", '"error"' not in
+      term.dispatch(("agent", "list")))
+
+print("\n== agent start ==")
 work = tempfile.mkdtemp(prefix="smoke-")
 # first start with no server running takes the new-session branch
 r = j(term.dispatch(("agent", "start", "alpha", "--cwd", work,
@@ -101,6 +108,48 @@ branches = subprocess.run(["git", "branch", "--format=%(refname:short)"],
 check("branch keeps its slash", "push/123456" in branches, str(branches))
 check("no stray dir beside the repo",
       not os.path.exists(os.path.dirname(repo) + f"/{os.path.basename(repo)}-push"))
+
+print("\n== herdr is never invoked ==")
+# The point of the exercise: with the tmux backend, closing herdr must not
+# take the surface with it. Prove it by watching every subprocess this
+# process makes while every call push_cc knows how to make goes through.
+import push_cc
+
+seen = []
+real_run = subprocess.run
+
+
+def watched(cmd, *a, **kw):
+    seen.append(cmd[0] if isinstance(cmd, (list, tuple)) and cmd else str(cmd))
+    return real_run(cmd, *a, **kw)
+
+
+subprocess.run = watched
+term.subprocess.run = watched
+push_cc.subprocess.run = watched
+try:
+    check("default backend is tmux", push_cc.BACKEND == "tmux", push_cc.BACKEND)
+    every = [
+        ("agent", "list"),
+        ("agent", "read", "%0", "--lines", "40"),
+        ("agent", "send", "%0", "x"),
+        ("agent", "focus", "%0"),
+        ("agent", "start", "gamma", "--cwd", work, "--split", "right",
+         "--focus", "--", "sleep", "5"),
+        ("pane", "close", "%0"),
+        ("worktree", "create", "--cwd", repo, "--branch", "probe/x"),
+        ("nonsense", "call"),
+    ]
+    for call in every:
+        push_cc.herdr(*call)
+finally:
+    subprocess.run = real_run
+    term.subprocess.run = real_run
+    push_cc.subprocess.run = real_run
+
+check("all seven calls exercised", len(seen) > 0, f"{len(seen)} subprocesses")
+check("herdr binary never invoked", "herdr" not in seen,
+      f"binaries used: {sorted(set(seen))}")
 
 print("\n== cleanup ==")
 tmux("kill-server")
