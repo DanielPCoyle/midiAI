@@ -77,14 +77,17 @@ record.
    `Pads.js` are untracked and `theme.js` / `PushMirror.js` are newer there.
    Any UI work here forks against a stale app until that lands and this branch
    rebases onto it.
-2. **Chart the wayfinder map** on board 216. Most of the spine is already
-   walked — the settled items above belong in Decisions-so-far, not as open
-   tickets. Real fog remaining: whether tmux counts as "contained in the
-   application"; where agent management lives in the iPad UI and how a new
-   agent's cwd is chosen; what replaces herdr's UI for the human; whether
-   herdr's `done`-vs-`idle` split is worth adopting.
-3. **Drive the Push with `PUSH_BACKEND=tmux`.** Nothing here has been tested
-   with the hardware attached — it is all smoke tests.
+2. ~~Chart the wayfinder map.~~ **Done — map card 1805 on board 216**, with
+   the settled items in Decisions-so-far and six tickets, four of them closed.
+   Fog still genuinely open: what replaces herdr's UI for the human, and where
+   agent management lives in the iPad UI (the latter waits on the app files).
+   `done`-vs-`idle` moved to Out of scope — MIDI-002 showed it cannot
+   distinguish the case it was wanted for.
+3. **Drive the Push with `PUSH_BACKEND=tmux`** (MIDI-005, card 1810). The
+   device is on USB; what blocks it is the push_cc already running on the herdr
+   backend, which owns the MIDI port. Everything reachable without the hardware
+   is verified — `mission_check.py` walks the data path, `mission_api.py` the
+   routes.
 4. ~~Settle blocked-detection.~~ **Done — the answer is no.** An
    AskUserQuestion widget reports `waiting`, but so does herdr see it (the
    widget draws the same "esc to cancel" chrome its rules match). A *pure
@@ -94,10 +97,9 @@ record.
 
 ## Two things worth knowing
 
-- **A latent bug, independent of all this.** `herdr()` reads stdout and
-  `start_agent()` greps it for `agent_name_taken`. herdr 0.6.8 puts errors on
-  stdout with exit 0; 0.8.2 puts them on stderr with exit 1. Upgrading herdr
-  makes `start_agent` stop seeing name collisions and hand out duplicates.
+- ~~A latent bug~~ **fixed** (MIDI-003). `backend_said()` now reads whichever
+  stream carried an error object, so an upgrade to herdr 0.8.2 — which moved
+  errors to stderr — no longer makes `start_agent` hand out duplicate names.
 - **Board 216 has ~40 junk labels** (`VANTA`, `LFQA`, `COOK`, `SEO`, the `*79`
   set) dragged in by cloning bugcast for its lanes. Harmless, undeleted,
   awaiting a decision.
