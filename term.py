@@ -271,6 +271,123 @@ def _worktree_create(args):
     return _ok({})
 
 
+def _worktree_list_rows(cwd):
+    """git worktree list --porcelain, parsed into dicts. Shared by list itself
+    and by remove's main-worktree / dirty checks, so both see the same idea
+    of which record is the main one.
+
+    Porcelain is blank-line-separated records of `worktree <path>`,
+    `HEAD <sha>`, then either `branch refs/heads/<name>` or a bare
+    `detached`, and optionally `locked`/`prunable`/`bare`. git always lists
+    the main worktree first.
+    """
+    out = _run(["git", "-C", cwd, "worktree", "list", "--porcelain"])
+    if out.returncode != 0:
+        return None, out.stderr
+    worktrees = []
+    rec = {}
+
+    def flush():
+        if not rec.get("path"):
+            return
+        branch = rec.get("branch")
+        if branch and branch.startswith("refs/heads/"):
+            branch = branch[len("refs/heads/"):]
+        worktrees.append({
+            "path": rec["path"],
+            "branch": branch,
+            "head": rec.get("head"),
+            "main": len(worktrees) == 0,
+            "detached": "detached" in rec,
+            "locked": "locked" in rec,
+            "prunable": "prunable" in rec,
+            # git keeps listing a worktree whose directory was deleted -- this
+            # is exactly the orphan state the remove verb exists to clean up.
+            "exists": os.path.isdir(rec["path"]),
+        })
+
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            flush()
+            rec = {}
+            continue
+        key, _, val = line.partition(" ")
+        if key == "worktree":
+            rec["path"] = val
+        elif key == "HEAD":
+            rec["head"] = val
+        elif key == "branch":
+            rec["branch"] = val
+        elif key in ("detached", "locked", "prunable", "bare"):
+            rec[key] = True
+    flush()
+    return worktrees, None
+
+
+def _worktree_list(args):
+    cwd = _flag(args[2:], "--cwd")
+    if not cwd:
+        return _err("bad_args", "worktree list needs --cwd")
+    worktrees, err = _worktree_list_rows(cwd)
+    if err is not None:
+        return _err("git_worktree_list", err)
+    return _ok({"worktrees": worktrees, "type": "worktree_list"})
+
+
+def _worktree_remove(args):
+    rest = list(args[2:])
+    raw_cwd = _flag(rest, "--cwd")
+    raw_dest = _flag(rest, "--path")
+    force = "--force" in rest
+    if not raw_cwd or not raw_dest:
+        return _err("bad_args", "worktree remove needs --cwd and --path")
+    # realpath, not normpath -- macOS's /tmp is a symlink to /private/tmp and
+    # a bare string compare against git's (resolved) path would miss the main
+    # worktree entirely.
+    cwd = os.path.realpath(raw_cwd)
+    dest = os.path.realpath(raw_dest)
+
+    worktrees, _list_err = _worktree_list_rows(cwd)
+    main = next((w for w in (worktrees or []) if w["main"]), None)
+    if main and os.path.realpath(main["path"]) == dest:
+        return _err("worktree_is_main", "the main worktree cannot be removed")
+
+    if not force and os.path.isdir(dest):
+        status = _run(["git", "-C", dest, "status", "--porcelain"])
+        if status.stdout.strip():
+            # losing uncommitted work to a tidy-up button is the failure that
+            # must not happen -- say what is dirty
+            return _err("worktree_dirty",
+                        f"uncommitted changes in {dest}: {status.stdout.strip()}")
+
+    out = _run(["git", "-C", cwd, "worktree", "remove", dest] +
+              (["--force"] if force else []))
+    if out.returncode != 0:
+        if not os.path.isdir(dest):
+            # gone already -- pruning an orphan IS the removal
+            prune = _run(["git", "-C", cwd, "worktree", "prune"])
+            if prune.returncode != 0:
+                return _err("git_worktree_prune", prune.stderr)
+            return _ok({})
+        return _err("git_worktree_remove", out.stderr)
+    return _ok({})
+
+
+def _worktree_open(args):
+    dest = _flag(args[2:], "--path")
+    if not dest:
+        return _err("bad_args", "worktree open needs --path")
+    if not os.path.isdir(dest):
+        return _err("worktree_missing", f"{dest} is not a directory")
+    # creating and opening are different acts -- this is the one you want the
+    # morning after, on a worktree that already exists
+    out = _run(["tmux", "new-window", "-c", dest, "--",
+               "claude", "--permission-mode", "auto"])
+    if out.returncode != 0:
+        return _err("tmux_new_window", out.stderr)
+    return _ok({})
+
+
 def dispatch(args):
     """same JSON shape herdr's stdout carried, so herdr() only needs a
     backend switch. never raises -- an unhandled crash here would take
@@ -295,6 +412,12 @@ def dispatch(args):
             return _pane_close(args[2])
         if head == ("worktree", "create"):
             return _worktree_create(args)
+        if head == ("worktree", "list"):
+            return _worktree_list(args)
+        if head == ("worktree", "remove"):
+            return _worktree_remove(args)
+        if head == ("worktree", "open"):
+            return _worktree_open(args)
         return _err("unknown_command", " ".join(str(a) for a in head))
     except Exception as e:
         return _err("term_internal", str(e))

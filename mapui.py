@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import push_cc
@@ -90,6 +91,25 @@ def read_target():
         return {}
 
 
+def target_cwd():
+    """cwd of whichever agent the Push is pointed at, else the process cwd.
+    .target.json only carries terminal_id/name/status -- the cwd has to come
+    from a join against push_cc.agents(), same pid-not-cwd rule as term.py."""
+    tid = read_target().get("terminal_id")
+    agent = next((a for a in push_cc.agents() if a.get("terminal_id") == tid), None)
+    return (agent or {}).get("cwd") or os.getcwd()
+
+
+def _is_inside(path, base):
+    """True if `path` is `base` or a descendant of it. A bare startswith would
+    let /a/bc match /a/b -- commonpath does not."""
+    path, base = os.path.realpath(path), os.path.realpath(base)
+    try:
+        return os.path.commonpath([path, base]) == base
+    except ValueError:
+        return False
+
+
 def herdr_error(text):
     """herdr()'s stdout, parsed for an error object -- None on success or on
     anything that fails to parse, same leniency herdr() itself uses."""
@@ -157,6 +177,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/agents":
             self._send(200, json.dumps({"agents": push_cc.agents()}),
                       "application/json")
+        elif self.path == "/worktrees" or self.path.startswith("/worktrees?"):
+            self._worktrees_list()
         else:
             self._send(200, API_NOTE, "text/plain")
 
@@ -176,6 +198,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._agents_rename()
         if self.path == "/worktree":
             return self._worktree()
+        if self.path == "/worktrees/remove":
+            return self._worktrees_remove()
+        if self.path == "/worktrees/open":
+            return self._worktrees_open()
         if self.path == "/prompt":
             return self._prompt()
         if self.path != "/macros":
@@ -289,6 +315,69 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, err.get("message", "worktree failed"),
                               "text/plain")
         self._send(200, json.dumps({"branch": branch}), "application/json")
+
+    def _worktrees_list(self):
+        """The tidy-up card's data: every worktree of a repo, orphans
+        included -- the app needs `exists: False` rows to offer removing."""
+        query = urllib.parse.urlsplit(self.path).query
+        cwd = (urllib.parse.parse_qs(query).get("cwd") or [None])[0] or target_cwd()
+        out = push_cc.herdr("worktree", "list", "--cwd", cwd)
+        err = herdr_error(out)
+        if err:
+            return self._send(500, err.get("message", "worktree list failed"),
+                              "text/plain")
+        try:
+            result = json.loads(out).get("result", {})
+        except json.JSONDecodeError:
+            result = {"worktrees": [], "type": "worktree_list"}
+        self._send(200, json.dumps(result), "application/json")
+
+    def _worktrees_remove(self):
+        """Removing a worktree out from under a running agent is the other
+        failure that must not happen -- checked here, not in term.py, because
+        only mapui knows about live agents."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            cwd, path = body["cwd"], body["path"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not cwd or not path:
+            return self._send(400, "bad request", "text/plain")
+        blocker = next((a for a in push_cc.agents()
+                        if a.get("cwd") and _is_inside(a["cwd"], path)), None)
+        if blocker:
+            who = blocker.get("name") or blocker.get("terminal_id")
+            return self._send(409, f"agent {who} is running in {path}",
+                              "text/plain")
+        argv = ["worktree", "remove", "--cwd", cwd, "--path", path]
+        if body.get("force"):
+            argv.append("--force")
+        out = push_cc.herdr(*argv)
+        err = herdr_error(out)
+        if err:
+            code = {"worktree_is_main": 409, "worktree_dirty": 409,
+                    "worktree_missing": 404}.get(err.get("code"), 500)
+            return self._send(code, err.get("message", "worktree remove failed"),
+                              "text/plain")
+        self._send(200, "ok", "text/plain")
+
+    def _worktrees_open(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            cwd, path = body["cwd"], body["path"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not cwd or not path:
+            return self._send(400, "bad request", "text/plain")
+        out = push_cc.herdr("worktree", "open", "--cwd", cwd, "--path", path)
+        err = herdr_error(out)
+        if err:
+            code = 404 if err.get("code") == "worktree_missing" else 500
+            return self._send(code, err.get("message", "worktree open failed"),
+                              "text/plain")
+        self._send(200, "ok", "text/plain")
 
     def _agents_close(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
