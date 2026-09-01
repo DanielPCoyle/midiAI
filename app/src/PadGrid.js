@@ -100,7 +100,6 @@ export default function PadGrid({
   macros,
   sel,
   moving,
-  armed,
   opts,
   onPress,
   onDrop,
@@ -151,7 +150,7 @@ export default function PadGrid({
   const openLater = (i) => {
     clearTimeout(dwell.current);
     clearTimeout(leave.current);
-    if (armed || !macros[i]) {
+    if (!macros[i]) {
       // an empty pad has nothing to say, but resting on one is still an answer
       leave.current = setTimeout(() => show(null), GRACE);
       return;
@@ -209,7 +208,7 @@ export default function PadGrid({
           setDrag(null);
         },
       }),
-    [armed, macros, onDrop, onPress]
+    [macros, onDrop, onPress]
   );
 
   const dragging = drag && drag.moved;
@@ -365,11 +364,16 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: 4,
   },
+  // the most-repeated thing on this screen, and address-only: real on the
+  // hardware only in the sense of a note number nobody reads off pads that
+  // are physical buttons. Dropped to the same near-invisible tier as the
+  // rest of the app's own machine numbers rather than sitting at C.faint,
+  // which read as a live label on sixty-four squares at once.
   note: {
     position: 'absolute',
     top: 3,
     right: 5,
-    color: C.faint,
+    color: C.edge,
     fontSize: 10,
     ...mono,
   },

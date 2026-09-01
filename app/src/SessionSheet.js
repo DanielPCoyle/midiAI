@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import PushButton from './PushButton';
 import { C, S } from './theme';
-import { createAgent, renameAgent, closeAgent, makeWorktree, listDirs } from './api';
+import { createAgent, renameAgent, closeAgent, makeWorktree, listDirs, chooseDir } from './api';
 
 // The same rule mapui.py enforces server-side -- checked here too so a typo
 // is caught before the round trip rather than after a 400 comes back.
@@ -27,6 +27,7 @@ const NAME_HELP = 'lowercase letters, digits, _ or - only, must start with a let
 function FolderPick({ base, value, onChange }) {
   const [listing, setListing] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [err, setErr] = useState('');
 
   const load = async (path) => {
@@ -53,6 +54,22 @@ function FolderPick({ base, value, onChange }) {
     load(path);
   };
 
+  // The real Finder dialog, opened on the machine the agents run on. It has
+  // the sidebar, the search and cmd-shift-G that this list never will -- but
+  // the window appears over there, which is why the list stays for the iPad.
+  const browse = async () => {
+    setBrowsing(true);
+    setErr('');
+    try {
+      const path = await chooseDir(base, value);
+      if (path) go(path);   // null is a cancel, and a cancel changes nothing
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBrowsing(false);
+    }
+  };
+
   // a repo is nearly always what you mean, so they sort first
   const entries = [...(listing?.entries || [])].sort(
     (a, b) => (b.git ? 1 : 0) - (a.git ? 1 : 0) || a.name.localeCompare(b.name)
@@ -77,6 +94,14 @@ function FolderPick({ base, value, onChange }) {
           {entries.length} folder{entries.length === 1 ? '' : 's'}
         </Text>
         {loading && <ActivityIndicator size="small" color={C.faint} />}
+        <View style={styles.spacer} />
+        <Pressable onPress={browse} disabled={browsing} style={styles.browse}>
+          {browsing ? (
+            <ActivityIndicator size="small" color={C.faint} />
+          ) : (
+            <Text style={styles.browseText}>browse on the Mac…</Text>
+          )}
+        </Pressable>
       </View>
       {!!err && <Text style={styles.error}>{err}</Text>}
       <ScrollView style={styles.pickList} keyboardShouldPersistTaps="handled">
@@ -101,9 +126,9 @@ function FolderPick({ base, value, onChange }) {
 }
 
 const TITLE = {
-  new: 'new session',
+  new: 'new agent',
   rename: 'rename',
-  close: 'close session',
+  close: 'close agent',
   worktree: 'new worktree',
 };
 
@@ -130,6 +155,7 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
   const [cwdField, setCwdField] = useState('');
   const [nameField, setNameField] = useState('');
   const [branchField, setBranchField] = useState('');
+  const [wt, setWt] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -140,13 +166,15 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
     setCwdField(cwd || '');
     setNameField(mode === 'rename' ? name || '' : '');
     setBranchField('');
+    setWt(false);
     setBusy(false);
     setErr('');
   }, [visible, mode, cwd, name]);
 
   const cwdOk = mode !== 'new' && mode !== 'worktree' ? true : cwdField.trim().length > 0;
   const nameOk = nameValid(mode, nameField);
-  const branchOk = mode !== 'worktree' ? true : NAME_RE.test(branchField);
+  const branchOk =
+    mode === 'worktree' || (mode === 'new' && wt) ? NAME_RE.test(branchField) : true;
   const canConfirm = cwdOk && nameOk && branchOk && !busy;
 
   async function confirm() {
@@ -154,7 +182,9 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
     setErr('');
     setBusy(true);
     try {
-      if (mode === 'new') await createAgent(base, cwdField.trim(), nameField.trim() || undefined);
+      if (mode === 'new' && wt)
+        await makeWorktree(base, cwdField.trim(), branchField.trim(), nameField.trim() || undefined);
+      else if (mode === 'new') await createAgent(base, cwdField.trim(), nameField.trim() || undefined);
       else if (mode === 'rename') await renameAgent(base, tid, nameField.trim());
       else if (mode === 'close') await closeAgent(base, tid);
       else if (mode === 'worktree') await makeWorktree(base, cwdField.trim(), branchField.trim());
@@ -186,6 +216,30 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
                 autoCorrect={false}
               />
               {!nameOk && <Text style={styles.rule}>{NAME_HELP}</Text>}
+
+              <Pressable style={styles.checkRow} onPress={() => setWt((v) => !v)}>
+                <View style={[styles.checkbox, wt && styles.checkboxOn]}>
+                  {wt && <Text style={styles.checkMark}>✓</Text>}
+                </View>
+                <Text style={styles.checkLabel}>new worktree</Text>
+              </Pressable>
+              {wt && (
+                <>
+                  <Text style={styles.label}>new branch name</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={branchField}
+                    onChangeText={setBranchField}
+                    placeholder="feature-name"
+                    placeholderTextColor={C.faint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  {!branchOk && branchField.length > 0 && (
+                    <Text style={styles.rule}>{NAME_HELP}</Text>
+                  )}
+                </>
+              )}
             </>
           )}
 
@@ -286,7 +340,10 @@ const styles = StyleSheet.create({
     minHeight: S.hit,
   },
   pick: { gap: 6 },
-  pickHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  pickHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  spacer: { flex: 1 },
+  browse: { justifyContent: 'center', minHeight: 28, paddingHorizontal: 4 },
+  browseText: { color: C.accentText, fontSize: 12 },
   pickList: {
     maxHeight: 190,
     borderWidth: 1,
@@ -305,6 +362,19 @@ const styles = StyleSheet.create({
   pickRepo: { color: C.text, fontWeight: '600' },
   pickUp: { color: C.faint, fontSize: 13 },
   pickTag: { color: C.faint, fontSize: 10 },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: S.hit },
+  checkbox: {
+    width: 18,
+    height: 18,
+    borderWidth: 1,
+    borderColor: C.edge,
+    borderRadius: S.radius,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: { borderColor: C.accentText },
+  checkMark: { color: C.accentText, fontSize: 12, fontWeight: '700' },
+  checkLabel: { color: C.dim, fontSize: 12 },
   rule: { color: C.warn, fontSize: 11 },
   error: { color: C.bad, fontSize: 12 },
   confirmText: { color: C.text, fontSize: 14, lineHeight: 20 },

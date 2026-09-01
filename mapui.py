@@ -7,20 +7,92 @@ this file only serves the data it needs.
     python3 mapui.py --lan  binds 0.0.0.0 so an iPad on the LAN can reach it
 """
 import argparse
+import base64
+import binascii
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import push_cc
 
 PORT = 8765
 PUSH_CC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push_cc.py")
 PUSH_LOG = "/tmp/push.log"
+
+# Hold-to-talk for the app, which is the same trade the Push's own hold makes
+# in reverse. Claude Code's voice owns record/transcribe/submit end to end and
+# hands back no text, so a tablet holding its button would get words it could
+# not edit -- the whole complaint. Recording here instead costs a transcribe
+# after release and gives up the text, which is the point.
+#
+# The mic is this machine's, not the tablet's. Expo Go has no Web Speech API,
+# so a browser-side recogniser would leave the iPad with nothing, and the mic
+# worth talking into is the one already next to the Push.
+WHISPER_MODEL = os.environ.get("MIDIAI_WHISPER_MODEL") or os.path.expanduser(
+    "~/.cache/openwhispr/whisper-models/ggml-base.bin")
+RECORD_MAX_S = 120                 # a stuck button must not fill the disk
+_rec_lock = threading.Lock()
+_rec = None                        # (Popen, wav path) while one is running
+
+
+# Where pasted images land. Not the repo -- these are scratch, and a stray
+# screenshot in `git status` is noise every agent then has to read past.
+PASTE_DIR = os.path.expanduser("~/.midiai/pastes")
+PASTE_MAX = 20 * 1024 * 1024
+
+# The type is taken from the bytes, never from the name the client sent: the
+# name is the one part of an upload an attacker picks, and this server binds
+# to the LAN. Nothing here writes a path the caller chose.
+MAGIC = [(b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"),
+         (b"GIF87a", ".gif"), (b"GIF89a", ".gif")]
+
+
+def image_ext(raw):
+    """The extension these bytes have earned, or "" if they are not an image."""
+    for sig, ext in MAGIC:
+        if raw.startswith(sig):
+            return ext
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
+def voice_missing():
+    """Why dictation cannot run, in the words of the thing that is absent.
+
+    Three different missing pieces fail identically at the button -- no
+    recorder, no transcriber, no model -- and only this can tell them apart."""
+    if not shutil.which("rec"):
+        return "no sox on PATH: brew install sox"
+    if not shutil.which("whisper-cli"):
+        return "no whisper-cli on PATH: brew install whisper-cpp"
+    if not os.path.exists(WHISPER_MODEL):
+        return f"no whisper model at {WHISPER_MODEL} (set MIDIAI_WHISPER_MODEL)"
+    return ""
+
+
+# Whisper narrates the silence it is given -- "(crickets chirping)", "[BLANK
+# AUDIO]" -- and a button tapped by accident is silence. Those belong to the
+# transcriber, not to anything anyone said, so they never reach the box.
+NOISE = re.compile(r"[\(\[][^)\]]*[\)\]]")
+
+
+def transcribe(wav):
+    """The words in a wav file, or "" if it holds none."""
+    out = subprocess.run(
+        ["whisper-cli", "-m", WHISPER_MODEL, "-f", wav,
+         "-nt", "-np", "-l", "en"],
+        capture_output=True, text=True, timeout=120)
+    return " ".join(NOISE.sub(" ", out.stdout).split())
 
 
 def push_state():
@@ -169,6 +241,8 @@ class Handler(BaseHTTPRequestHandler):
                               "application/json")
         if self.path.startswith("/dirs"):
             return self._dirs()
+        if self.path.startswith("/choose-dir"):
+            return self._choose_dir()
         if self.path == "/macros":
             labels, pages = push_cc.load_macros()
             self._send(200, json.dumps({"labels": labels, "pages": pages,
@@ -206,6 +280,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._worktrees_open()
         if self.path == "/prompt":
             return self._prompt()
+        if self.path == "/paste":
+            return self._paste()
+        if self.path == "/record/start":
+            return self._record_start()
+        if self.path == "/record/stop":
+            return self._record_stop()
         if self.path != "/macros":
             return self._send(404, "no", "text/plain")
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -335,6 +415,41 @@ class Handler(BaseHTTPRequestHandler):
             "entries": entries,
         }), "application/json")
 
+    def _choose_dir(self):
+        """The real Finder folder chooser, opened on the machine the agents
+        run on. The in-app list in /dirs is the one that works from the
+        tablet; this is the one that has a sidebar, search and cmd-shift-G.
+
+        The window opens HERE, not on the iPad -- which is the whole reason
+        the list stays. GET because nothing changes: the answer is a path the
+        user pointed at, and the dialog is how they point.
+
+        System Events owns the dialog so it comes to the front; osascript run
+        from a nohup'd server otherwise puts it behind whatever you are
+        looking at."""
+        if sys.platform != "darwin":
+            return self._send(501, "only on macOS", "text/plain")
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        start = (q.get("start") or [""])[0] or target_cwd()
+        start = os.path.abspath(os.path.expanduser(start))
+        if not os.path.isdir(start):
+            start = os.path.expanduser("~")
+        script = ('tell application "System Events" to POSIX path of '
+                  '(choose folder with prompt "midiAI: folder for this session" '
+                  f'default location POSIX file {json.dumps(start)})')
+        try:
+            out = subprocess.run(["osascript", "-e", script],
+                                 capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            return self._send(504, "nobody picked a folder", "text/plain")
+        # cancel is a nonzero exit, not an error -- the app just closes the
+        # spinner and leaves the field alone
+        if out.returncode != 0:
+            return self._send(200, json.dumps({"path": None}),
+                              "application/json")
+        path = out.stdout.strip().rstrip("/") or "/"
+        self._send(200, json.dumps({"path": path}), "application/json")
+
     def _worktree(self):
         """A new worktree, and an agent in it. The Push has had this on Add
         Track since the beginning; the app could see the button's effect and
@@ -343,16 +458,23 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(raw)
             cwd, branch = body["cwd"], body["branch"]
+            name = body.get("name")
         except (json.JSONDecodeError, KeyError, TypeError):
             return self._send(400, "bad request", "text/plain")
         if not os.path.isdir(cwd):
             return self._send(400, "cwd is not a directory", "text/plain")
+        if not os.path.exists(os.path.join(cwd, ".git")):
+            return self._send(400, "not a git repo", "text/plain")
         # slug() is what the Push feeds this, so the app gets the same rules
         branch = push_cc.slug(branch)
         if not branch:
             return self._send(400, "no branch name", "text/plain")
-        out = push_cc.herdr("worktree", "create", "--cwd", cwd,
-                            "--branch", branch, "--focus")
+        argv = ["worktree", "create", "--cwd", cwd, "--branch", branch, "--focus"]
+        if name:
+            # only appended when present -- the herdr (non-tmux) backend is
+            # external and must not see an unknown flag
+            argv += ["--name", name]
+        out = push_cc.herdr(*argv)
         err = herdr_error(out)
         if err:
             return self._send(500, err.get("message", "worktree failed"),
@@ -464,12 +586,120 @@ class Handler(BaseHTTPRequestHandler):
         target = body.get("terminal_id") or read_target().get("terminal_id")
         if not target:
             return self._send(409, "no session selected on the Push", "text/plain")
+        if body.get("replace"):
+            # The composer shows the agent's own input line back, editable, so
+            # what it sends is that line rewritten -- not something to add to
+            # it. Typing the edit on top of the original would submit both.
+            # Scraped rather than taken from the caller: the pane is what the
+            # deletes have to land on, and it is the only thing that knows.
+            # Forwards then backwards, the same pair Undo uses, because the
+            # cursor sits wherever dictation left it and neither alone empties
+            # a wrapped prompt.
+            pend = push_cc.pane_summary({"terminal_id": target}).get("pending") or ""
+            push_cc.herdr("agent", "send", target, push_cc.clear_keys(pend))
         push_cc.herdr("agent", "send", target,
                       text + ("\r" if body.get("submit") else ""))
         self._send(200, "ok", "text/plain")
 
+    def _paste(self):
+        """An image from the tablet onto this machine's disk, so a prompt can
+        point at it.
+
+        A pty carries text, so an image cannot be typed into one. What can be
+        typed is a path -- the agent reads the file itself, and the path stays
+        visible in the composer like every other thing we send."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            data = base64.b64decode(json.loads(raw)["data"], validate=True)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError,
+                binascii.Error):
+            return self._send(400, "bad request", "text/plain")
+        if len(data) > PASTE_MAX:
+            return self._send(413, "image too large", "text/plain")
+        ext = image_ext(data)
+        if not ext:
+            return self._send(415, "not an image", "text/plain")
+        try:
+            os.makedirs(PASTE_DIR, exist_ok=True)
+            # ponytail: named by the clock, never cleaned up. They are a few KB
+            # each and an agent may still be pointing at one from an hour ago;
+            # add a sweep if the directory ever actually gets big.
+            path = os.path.join(PASTE_DIR,
+                                time.strftime("%Y%m%d-%H%M%S") + ext)
+            n = 1
+            while os.path.exists(path):        # two pastes inside one second
+                path = os.path.join(
+                    PASTE_DIR, f"{time.strftime('%Y%m%d-%H%M%S')}-{n}{ext}")
+                n += 1
+            with open(path, "wb") as f:
+                f.write(data)
+        except OSError as e:
+            return self._send(500, f"could not save: {e}", "text/plain")
+        return self._send(200, json.dumps({"path": path}), "application/json")
+
+    def _record_start(self):
+        """Hold begins. One recorder at a time, this machine's mic."""
+        why = voice_missing()
+        if why:
+            return self._send(503, why, "text/plain")
+        global _rec
+        with _rec_lock:
+            _stop_rec()                        # a release that never arrived
+            wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+            # -q or sox draws a meter at whatever launched this; the duration
+            # cap is the only thing that ends a hold nobody let go of.
+            proc = subprocess.Popen(
+                ["rec", "-q", "-c", "1", "-r", "16000", wav,
+                 "trim", "0", str(RECORD_MAX_S)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _rec = (proc, wav)
+        return self._send(200, "ok", "text/plain")
+
+    def _record_stop(self):
+        """Hold ends: stop the mic, read the words back out of the file.
+
+        The text is returned, not sent. An agent gets it only once someone
+        has looked at it and pressed a button -- which is the difference
+        between this and the Push's own hold."""
+        with _rec_lock:
+            wav = _stop_rec()
+        if not wav:
+            return self._send(409, "not recording", "text/plain")
+        try:
+            # sox writes the header on exit; nothing worth transcribing is
+            # shorter than this, and an empty file makes whisper fail loudly
+            # rather than return the empty string it means.
+            if os.path.getsize(wav) < 8000:    # ~0.25s at 16k mono 16-bit
+                return self._send(200, json.dumps({"text": ""}),
+                                  "application/json")
+            return self._send(200, json.dumps({"text": transcribe(wav)}),
+                              "application/json")
+        except (OSError, subprocess.SubprocessError) as e:
+            return self._send(500, f"transcribe failed: {e}", "text/plain")
+        finally:
+            try:
+                os.unlink(wav)
+            except OSError:
+                pass
+
     def log_message(self, *_):
         pass                                   # ponytail: no request spam
+
+
+def _stop_rec():
+    """End any running recorder and hand back its file. Call under the lock."""
+    global _rec
+    if not _rec:
+        return None
+    proc, wav = _rec
+    _rec = None
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    return wav
 
 
 def local_ip():
@@ -496,4 +726,6 @@ if __name__ == "__main__":
               "type into the agent sessions this drives.")
     else:
         print(f"http://localhost:{PORT}")
-    HTTPServer((host, PORT), Handler).serve_forever()
+    # threaded: /choose-dir blocks for as long as the Finder dialog is open,
+    # and the app polls /agents and /target the whole time it is up
+    ThreadingHTTPServer((host, PORT), Handler).serve_forever()

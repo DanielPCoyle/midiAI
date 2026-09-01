@@ -10,6 +10,10 @@ import {
 } from 'react-native';
 import { C, PALETTE, hexFor, S } from './theme';
 
+// Only these two. Tool and message changes leave the cache alone, so linting
+// anything else here would be noise on a pad that costs nothing to press.
+const CACHE_DROPPER = /\/(effort|model)\b/;
+
 export default function Inspector({ index, pad, labels, onSave, onClear, onAddLabel, onDelLabel }) {
   const [label, setLabel] = useState('');
   const [text, setText] = useState('');
@@ -80,6 +84,18 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
         placeholderTextColor={C.faint}
       />
 
+      {/* Firing a prompt is free -- appending a message never invalidates a
+          cache. These two are not: changing effort drops the messages cache,
+          and a model switch drops all of it, because caches are model-scoped.
+          Worth knowing before you put one on a pad you tap without thinking. */}
+      {CACHE_DROPPER.test(text) && (
+        <Text style={styles.warn}>
+          {/\/model\b/.test(text) ? 'Switches model' : 'Changes effort'} — drops
+          this agent's cached prefix, which is re-read at full price on the
+          next turn.
+        </Text>
+      )}
+
       <Text style={styles.label}>Colour label</Text>
       <View style={styles.chipRow}>
         <TouchableOpacity
@@ -103,7 +119,7 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
       <View style={styles.row}>
         <Switch value={submit} onValueChange={setSubmit} />
         <Text style={styles.rowLabel}>
-          Auto submit <Text style={styles.hint}>(fires at the session on tap -- careful, this is live)</Text>
+          Auto submit <Text style={styles.hint}>(fires at the agent on tap -- careful, this is live)</Text>
         </Text>
       </View>
 
@@ -190,6 +206,12 @@ const styles = StyleSheet.create({
   hint: {
     color: C.faint,
     fontSize: 11,
+  },
+  warn: {
+    color: '#e0a03c',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 12,
   },
   input: {
     backgroundColor: C.raised,

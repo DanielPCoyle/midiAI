@@ -86,3 +86,12 @@ export const S = {
 export const mono = {
   fontFamily: 'Menlo',
 };
+
+// The three widths the shell is laid out for: three columns above wide,
+// the rail behind a toggle from mid down, one stacked scrollable column
+// below mid. One pair of numbers so App.js and Pane.js judge a resize the
+// same way rather than each guessing its own fuzzy threshold.
+export const BREAK = {
+  wide: 1200,
+  mid: 820,
+};

@@ -5,7 +5,7 @@ import SessionSheet from './SessionSheet';
 import Worktrees from './Worktrees';
 import { C, S, SEAT_HEX } from './theme';
 
-// The sessions, as a rail you can read rather than eight anonymous buttons.
+// The agents, as a rail you can read rather than eight anonymous buttons.
 // The Push needs them anonymous -- it has exactly eight physical buttons and no
 // room for a word above each. Nothing here is short of room.
 //
@@ -52,7 +52,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
 
   return (
     <View style={styles.rail}>
-      <Text style={styles.head}>SESSIONS</Text>
+      <Text style={styles.head}>AGENTS</Text>
       <ScrollView contentContainerStyle={styles.list}>
         {Array.from({ length: 8 }, (_, i) => {
           const col = cols[i] || null;
@@ -83,13 +83,21 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                   </Pressable>
                 </View>
                 <View style={styles.row}>
-                  {[col.model, col.effort, col.sub]
+                  {[col.model, col.effort]
                     .filter(Boolean)
                     .map((bit, k) => (
                       <Text key={k} style={styles.meta} numberOfLines={1}>
                         {k ? `· ${bit}` : bit}
                       </Text>
                     ))}
+                  {/* the tmux pane id -- real only when hand-editing macros.json,
+                      so it drops back further than model/effort rather than
+                      reading as a fourth equally-important fact about the card */}
+                  {!!col.sub && (
+                    <Text style={styles.metaId} numberOfLines={1}>
+                      {col.model || col.effort ? `· ${col.sub}` : col.sub}
+                    </Text>
+                  )}
                 </View>
               </View>
             </PushButton>
@@ -100,7 +108,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
             colour="transparent"
             onPress={() => setSheet({ mode: 'new', seatIndex: null })}
             style={styles.free}>
-            <Text style={styles.freeText}>＋ new session</Text>
+            <Text style={styles.freeText}>＋ new agent</Text>
           </PushButton>
         )}
       </ScrollView>
@@ -187,6 +195,7 @@ const styles = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4 },
   status: { fontSize: 11 },
   meta: { color: C.faint, fontSize: 11, flexShrink: 1 },
+  metaId: { color: C.edge, fontSize: 11, flexShrink: 1 },
   menuBtn: { marginLeft: 'auto', paddingHorizontal: 4 },
   menuDots: { color: C.faint, fontSize: 16, fontWeight: '700' },
   free: {

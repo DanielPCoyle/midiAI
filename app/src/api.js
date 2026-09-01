@@ -54,11 +54,32 @@ export const closeAgent = (base, terminal_id) =>
 
 // terminal_id omitted means "wherever the Push is pointed", which is the same
 // target a pad fires into -- one idea of the current session, not two.
-export const promptAgent = (base, text, submit, terminal_id) =>
-  post(base, '/prompt', { text, submit, ...(terminal_id ? { terminal_id } : {}) });
+// replace: the composer is showing the agent's input line back and this is
+// that line edited, so the server empties it before typing. Without it the
+// edit lands on top of the original.
+export const promptAgent = (base, text, submit, terminal_id, replace) =>
+  post(base, '/prompt', {
+    text, submit, replace: !!replace,
+    ...(terminal_id ? { terminal_id } : {}),
+  });
 
-export const makeWorktree = (base, cwd, branch) =>
-  post(base, '/worktree', { cwd, branch });
+// Hold-to-talk. The mic is the machine running the agents, not the tablet:
+// Expo Go has no speech recognition to call, and the useful mic is the one by
+// the Push. stop returns the words rather than sending them -- editing them
+// first is the whole point.
+export const startRecording = (base) => post(base, '/record/start', {});
+
+export const stopRecording = async (base) =>
+  JSON.parse(await post(base, '/record/stop', {})).text || '';
+
+// A pty carries text, so an image cannot be typed into one -- but a path can,
+// and the agent reads the file itself. Returns where it landed on the machine
+// running the agents.
+export const pasteImage = async (base, data) =>
+  JSON.parse(await post(base, '/paste', { data })).path;
+
+export const makeWorktree = (base, cwd, branch, name) =>
+  post(base, '/worktree', { cwd, branch, ...(name ? { name } : {}) });
 
 // Worktrees. `cwd` says which repo to ask about; the server defaults it to
 // whichever session the Push is pointed at when omitted.
@@ -78,3 +99,8 @@ export const removeWorktree = (base, cwd, path, force) =>
 // browse the tablet, which is not where the repos are.
 export const listDirs = (base, path) =>
   getJSON(base, `/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`);
+
+// Opens the real Finder chooser on that same machine and resolves once it is
+// dismissed -- a long request by design. null means the user cancelled.
+export const chooseDir = async (base, start) =>
+  (await getJSON(base, `/choose-dir${start ? `?start=${encodeURIComponent(start)}` : ''}`)).path;

@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
+  Pressable,
   SafeAreaView,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 
 import { baseFor, defaultHost, getJSON, PORT, post } from './src/api';
@@ -15,7 +19,7 @@ import Pane from './src/Pane';
 import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
 import Rail from './src/Rail';
-import { C, KEY, S, SEAT_HEX } from './src/theme';
+import { BREAK, C, KEY, S, SEAT_HEX } from './src/theme';
 
 const SURFACE_MS = 400; // the mirror and the views both; anything slower lags
 const TARGET_MS = 2500; // which session is selected, and whether push_cc is up
@@ -31,15 +35,48 @@ export default function App() {
   const [ownPage, setOwnPage] = useState(0);
   const [sel, setSel] = useState(null);
   const [moving, setMoving] = useState(null);
-  const [armed, setArmed] = useState(false);
   const [editing, setEditing] = useState(false);
   const [grid, setGrid] = useState(false);
   const [mirror, setMirror] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [ready, setReady] = useState(false);
+  // Which view and mode the pane draws from used to be a read of wherever
+  // the Push happened to be pointed -- one "current" view, hardware
+  // included, so two clients fought over it and every tab click waited on a
+  // round trip. Now it is the app's own state; `followPush` decides whether
+  // that state is this browser's to drive or a mirror of the Push's.
+  const [followPush, setFollowPush] = useState(true);
+  const [localView, setLocalView] = useState(0);
+  const [localModes, setLocalModes] = useState({});
+  // subagents has no mode of its own on the wire -- it is the same
+  // `sessions` view's second mode, drawn as a tab of its own. Kept apart
+  // from `localModes` (below) rather than folded into it because that map
+  // is re-seeded from the Push every poll while following, and there is no
+  // press that tells the hardware to sit on mode 1 -- seeding it back would
+  // undo the tab you just picked within half a second.
+  const [sessionsMode, setSessionsMode] = useState(0);
+  // The session rail is a fixed 268px the header and pads panel cannot both
+  // afford below 1200 -- rather than shrink it into uselessness it moves
+  // behind this toggle, since the pane header already names the current
+  // session and the rail's only remaining job is picking a different one.
+  const [railOpen, setRailOpen] = useState(false);
   const base = baseFor(host);
   const noteAt = useRef(null);
+  const { width } = useWindowDimensions();
+  const wide = width >= BREAK.wide;
+  // <=, not <: at exactly 820 the app is in exactly the same bind as 819 --
+  // the single-column body and the last of the header's optional controls
+  // (Push mirror) both need to have already given way by here, not one
+  // pixel later.
+  const narrow = width <= BREAK.mid;
+  // The prompt library is 19 always-on items competing with the one thing
+  // you're actually reading -- collapsed is the resting state everywhere,
+  // freeing that width for the transcript. Only at `wide` is there room to
+  // read one and glance at the other at the same time, so only there does
+  // it default open. Re-evaluated whenever the breakpoint is crossed, not
+  // held forever -- short of that, whichever way it was last toggled stands.
+  const [padsOpen, setPadsOpen] = useState(wide);
 
   const total = Math.max(surface.pages ?? pages.length, 1);
   const page = Math.min(surface.page ?? ownPage, total - 1);
@@ -48,9 +85,59 @@ export default function App() {
   const opts = surface.opts || [];
   const asking = opts.length > 0;
   const views = surface.views || [];
-  const view = views[surface.view] || '';
-  const data = surface.data || {};
   const cols = surface.cols || [];
+
+  const viewIdx = localView;
+  const viewName = views[viewIdx] || '';
+  // focus's second mode is the macro/prompt grid on the Push strip -- there
+  // is no such thing to switch to here, the right-hand pads panel is always
+  // on screen, so this view is pinned to mode 0 regardless of what the
+  // hardware or a stale follow-mirror happens to be sitting on. sessions'
+  // second mode is the opposite case -- a real place worth being (the
+  // subagents tab), just one this app can only ever pick locally.
+  const mode =
+    viewName === 'focus' ? 0
+      : viewName === 'sessions' ? sessionsMode
+      : localModes[viewIdx] ?? 0;
+  // views_data is a parallel change landing on the server; until it does,
+  // there is only surface.data -- whatever the hardware itself is showing,
+  // which is the fallback rather than the source now.
+  const viewData = surface.views_data && surface.views_data[viewName];
+  const data = (viewData && viewData[mode]) || surface.data || {};
+
+  // The view name is a wire contract (VIEWS in push_cc.py, a views_data key)
+  // -- only the word drawn on the tab changes here, never the key anything
+  // is looked up by.
+  const TAB_LABEL = { sessions: 'agents' };
+  const sessionsIdx = views.indexOf('sessions');
+  // tests, prs and the subagents split of sessions are the tabs worth a
+  // glance without a click for a single-repo user -- usually zero, and
+  // "zero" is itself the useful fact. focus and usage have no one number
+  // that sums them up, so they stay bare.
+  const testsCount = (surface.views_data?.tests?.[0]?.items || []).length;
+  const prsCount = (surface.views_data?.prs?.[0]?.rows || []).length;
+  const subsCount = (surface.views_data?.sessions?.[1]?.rows || []).length;
+  const TAB_COUNT = { tests: testsCount, prs: prsCount };
+  const filled = macros.filter(Boolean).length;
+
+  // While following, local state is a mirror rather than a second copy of
+  // the truth: every poll re-seeds it from the Push. Flip follow off and
+  // these two effects simply stop firing -- local state freezes right where
+  // it was and the app is on its own from there.
+  useEffect(() => {
+    if (followPush && surface.view != null) setLocalView(surface.view);
+  }, [followPush, surface.view]);
+  useEffect(() => {
+    if (!followPush) return;
+    const at = surface.at || [];
+    if (at.length) setLocalModes(Object.fromEntries(at.map((m, i) => [i, m])));
+  }, [followPush, surface.at]);
+  // A resize past the breakpoint puts the panel back to its default for the
+  // new width; short of that this leaves whatever the toggle or the composer
+  // last set alone, rather than fighting every render.
+  useEffect(() => {
+    setPadsOpen(wide);
+  }, [wide]);
 
   const say = useCallback((text) => {
     setNote(text);
@@ -158,7 +245,7 @@ export default function App() {
     (i) =>
       post(base, '/fire', { index: i, page })
         .then((r) => say(r))
-        .catch(() => say('nothing there, or no session selected')),
+        .catch(() => say('nothing there, or no agent selected')),
     [base, page, say]
   );
 
@@ -195,6 +282,10 @@ export default function App() {
     [labels, macros, putMacros, say]
   );
 
+  // A tap always selects, never fires -- the pad popover's own `run` is the
+  // one way to fire from here now. Arming was a global modifier that changed
+  // what every tap meant with no way to tell which mode you were in without
+  // checking the header; deleting it means a tap can only ever mean one thing.
   const tapPad = useCallback(
     (i) => {
       if (moving !== null) {
@@ -208,9 +299,8 @@ export default function App() {
         return;
       }
       setSel((was) => (was === i ? null : i));
-      if (armed) firePad(i);
     },
-    [armed, firePad, labels, macros, moving, putMacros]
+    [labels, macros, moving, putMacros]
   );
 
   const savePad = useCallback(
@@ -249,84 +339,180 @@ export default function App() {
     [labels, macros, putMacros]
   );
 
-  const live = api && !!target.ok;
+  // Two different facts were being read as one status. Whether push_cc
+  // answers and is running is the thing a red dot and a lit reconnect
+  // button are for -- reconnect restarts the process. Whether a Push is on
+  // the end of the USB cable is a separate fact the launcher explicitly
+  // supports being false: headless is normal, not a fault, and no amount of
+  // pressing reconnect plugs in a cable that isn't there.
+  const reachable = api && !!target.running;
+  const headless = reachable && !target.ok;
   const why = api ? target.why || 'waiting for push_cc' : `no answer from ${host}:${PORT}`;
-  const dot = live ? SEAT_HEX.idle : api ? SEAT_HEX.blocked : C.faint;
+  const dot = reachable ? SEAT_HEX.idle : api ? SEAT_HEX.blocked : C.faint;
+  // The header's own tightness, not the body's: below `wide` the rail toggle
+  // joins the row and the whole thing no longer fits at any width the body
+  // still calls two-pane. Tying the wrap to `narrow` (the body's boundary,
+  // 300px further down) left this whole middle stretch overflowing off the
+  // edge with nothing to catch it -- wrapping here costs nothing extra once
+  // it triggers, so it triggers as soon as the row can no longer promise it.
+  const headerTight = !wide;
 
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar barStyle="light-content" />
 
-      <View style={styles.header}>
+      <View style={[styles.header, headerTight && styles.headerWrap]}>
         <Text style={styles.brand}>midiAI</Text>
         <View style={styles.status}>
           <View style={[styles.dot, { backgroundColor: dot }]} />
-          <Text style={[styles.why, !live && styles.whyBad]} numberOfLines={1}>
-            {why}
-          </Text>
+          {/* no numberOfLines: this used to crop mid-sentence with no way to
+              read the rest. The pill wraps to a second line instead now --
+              room for the whole thing beats a truncation nobody can undo. */}
+          <Text style={[styles.why, !reachable && styles.whyBad]}>{why}</Text>
         </View>
+        {/* Headless is the launcher's own supported mode, not a fault -- the
+            red dot and banner above are for push_cc being unreachable, and
+            this is the separate, quiet fact that no Push is on the cable. */}
+        {headless && (
+          <View style={styles.headless}>
+            <Text style={styles.headlessText}>headless</Text>
+          </View>
+        )}
 
         {!mirror && (
           <View style={styles.tabs}>
+            {/* Every mode a tab could be sitting in used to hang off it as an
+                "N/M" counter -- a number nobody could act on without pressing
+                the tab to find out what the other one was. Gone now except
+                for the three counts below, which are the ones you can act on
+                without a click: usage's modes are their own pressable row
+                inside the pane, and focus's mode is pinned off above. */}
             {views.map((name, i) => {
               const rgb = (surface.colours || [])[i];
               const hue = rgb ? `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})` : C.accentText;
-              const on = i === surface.view;
-              const modes = (surface.modes || [])[i] || 1;
-              const at = (surface.at || [])[i] || 0;
+              // sessions carries two tabs now (agents, subagents) sharing
+              // one view index -- this one reads "on" only for its own mode,
+              // so picking the other doesn't light both.
+              const on = i === viewIdx && (name !== 'sessions' || sessionsMode === 0);
               return (
-                <Text
+                <Tab
                   key={name}
-                  onPress={() => press({ tab: i })}
-                  style={[
-                    styles.tab,
-                    { color: hue, borderBottomColor: on ? hue : 'transparent' },
-                    on && styles.tabOn,
-                  ]}>
-                  {/* always, not only when active: the tab would change
-                      width as you moved between them and the row would
-                      shuffle under your finger */}
-                  {modes > 1 ? `${name} ${at + 1}/${modes}` : name}
-                </Text>
+                  label={TAB_LABEL[name] || name}
+                  count={TAB_COUNT[name]}
+                  hue={hue}
+                  on={on}
+                  onPress={() => {
+                    // instant, always -- following or not, the tab you just
+                    // hit is the one you see. Following additionally tells
+                    // the Push to move there, same as it always did.
+                    setLocalView(i);
+                    if (name === 'sessions') setSessionsMode(0);
+                    if (followPush) press({ tab: i });
+                  }}
+                />
               );
             })}
+            {/* A synthetic tab: no hardware equivalent, and driving push_cc's
+                own mode-cycle from here would be fragile for a button that
+                only ever needs to land on one specific mode. Following
+                presses the sessions tab either way -- same as the real
+                "agents" tab above -- and the app draws whichever of the two
+                was actually picked, which can drift from the hardware's own
+                mode while following. That's fine; see sessionsMode above. */}
+            {sessionsIdx >= 0 && (
+              <Tab
+                key="subagents"
+                label="subagents"
+                count={subsCount}
+                hue={(() => {
+                  const rgb = (surface.colours || [])[sessionsIdx];
+                  return rgb ? `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})` : C.accentText;
+                })()}
+                on={viewIdx === sessionsIdx && sessionsMode === 1}
+                onPress={() => {
+                  setLocalView(sessionsIdx);
+                  setSessionsMode(1);
+                  if (followPush) press({ tab: sessionsIdx });
+                }}
+              />
+            )}
           </View>
         )}
 
         <View style={styles.spacer} />
 
+        {/* The one control for a panel that is collapsed at rest everywhere
+            below 1200 (open there by default -- see padsOpen above): lit
+            when open, and present whether it's open or closed, so collapsed
+            reads as a control waiting to be pressed rather than the panel
+            having simply gone missing. */}
         <PushButton
-          label={armed ? 'tap fires the pad' : 'tap selects only'}
-          colour={SEAT_HEX.blocked}
-          lit={armed}
-          onPress={() => setArmed((a) => !a)}
-          style={styles.key}
-        />
-        <PushButton
-          label="Push mirror"
+          label={`prompts · ${filled}`}
           colour={C.accentText}
-          lit={mirror}
-          onPress={() => setMirror((m) => !m)}
+          lit={padsOpen}
+          onPress={() => setPadsOpen((o) => !o)}
           style={styles.key}
         />
+        {/* Below 1200 the rail moves behind this and the pane header already
+            names the current agent, so there is always an answer to "who
+            am I looking at" without it. */}
+        {!wide && (
+          <PushButton
+            label="agents"
+            colour={C.accentText}
+            lit={railOpen}
+            onPress={() => setRailOpen((o) => !o)}
+            style={styles.key}
+          />
+        )}
+        <PushButton
+          // On (the default) is the behaviour this app always had: your tab
+          // is the Push's tab. Off, the two are independent -- the mirror
+          // still drives the hardware regardless, because mirroring it is
+          // the one thing the mirror is for.
+          label={followPush ? 'following the Push' : 'independent view'}
+          colour={C.accentText}
+          lit={followPush}
+          onPress={() => setFollowPush((f) => !f)}
+          style={styles.key}
+        />
+        {/* reconnect is the one control that must never be the thing that
+            clips -- it's precisely what you reach for when push_cc has died,
+            so it and the rail toggle above it come before anything optional. */}
         <PushButton
           label="reconnect"
           colour={C.accentText}
-          lit={api && !live}
+          lit={api && !reachable}
           disabled={busy || !api}
           onPress={reconnect}
           style={styles.key}>
           {busy ? <ActivityIndicator size="small" color={C.accentText} /> : null}
         </PushButton>
-        <TextInput
-          value={host}
-          onChangeText={setHost}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.host}
-          placeholder="host or ip"
-          placeholderTextColor={C.faint}
-        />
+        {/* Push mirror gives way second, once the row is genuinely narrow --
+            it is optional in a way reconnect is not, but it survives the
+            middle widths the host field already vacated by then. */}
+        {!narrow && (
+          <PushButton
+            label="Push mirror"
+            colour={C.accentText}
+            lit={mirror}
+            onPress={() => setMirror((m) => !m)}
+            style={styles.key}
+          />
+        )}
+        {/* a debug affordance, not a phone's business -- the first thing to
+            give way, well above the width anyone is typing a hostname at */}
+        {wide && (
+          <TextInput
+            value={host}
+            onChangeText={setHost}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.host}
+            placeholder="host or ip"
+            placeholderTextColor={C.faint}
+          />
+        )}
       </View>
 
       {mirror ? (
@@ -339,15 +525,77 @@ export default function App() {
             onSeat={(i) => press({ seat: i })}
           />
         </View>
-      ) : (
-        <View style={styles.body}>
-          <Rail
+      ) : narrow ? (
+        // The rail and the pads panel are both fixed-width furniture (268
+        // and 344-528) that cannot shrink to fit a column this narrow -- so
+        // rather than let them overlap the pane, as they did, the whole
+        // thing becomes one scrollable column and the pads panel keeps its
+        // own width behind a sideways scroll scoped to just that block,
+        // which is not the page scrolling sideways.
+        <ScrollView contentContainerStyle={styles.bodyNarrow}>
+          <Pane
+            data={data}
+            opts={opts}
             cols={cols}
             current={surface.current}
-            onSeat={(i) => press({ seat: i })}
+            onAnswer={(k) => press({ answer: k })}
             base={base}
-            onChanged={refresh}
+            onSent={refresh}
+            mode={mode}
+            onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
+            reachable={reachable}
+            onComposerFocus={() => setPadsOpen(true)}
           />
+          {!(asking && data.kind === 'focus') && padsOpen &&
+            (ready ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <Pads
+                  kind={data.kind}
+                  data={data}
+                  opts={opts}
+                  onAnswer={(k) => press({ answer: k })}
+                  macros={macros}
+                  labels={labels}
+                  sel={sel}
+                  moving={moving !== null && moving >= 0 ? moving : null}
+                  grid={grid}
+                  onGrid={setGrid}
+                  editing={editing && sel !== null}
+                  page={page}
+                  total={total}
+                  onward={onward}
+                  onPage={(d) => press({ page: d })}
+                  onPress={tapPad}
+                  onDrop={dropPad}
+                  onExecute={firePad}
+                  onEdit={editPad}
+                  onSave={savePad}
+                  onClear={clearPad}
+                  onAddLabel={addLabel}
+                  onDelLabel={delLabel}
+                  onClose={() => setEditing(false)}
+                />
+              </ScrollView>
+            ) : (
+              <View style={styles.waitingNarrow}>
+                <ActivityIndicator color={C.accentText} />
+                <Text style={styles.waitingText}>
+                  no answer from {host}:{PORT}
+                </Text>
+              </View>
+            ))}
+        </ScrollView>
+      ) : (
+        <View style={styles.body}>
+          {wide && (
+            <Rail
+              cols={cols}
+              current={surface.current}
+              onSeat={(i) => press({ seat: i })}
+              base={base}
+              onChanged={refresh}
+            />
+          )}
           <View style={styles.centre}>
             <Pane
               data={data}
@@ -357,9 +605,13 @@ export default function App() {
               onAnswer={(k) => press({ answer: k })}
               base={base}
               onSent={refresh}
+              mode={mode}
+              onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
+              reachable={reachable}
+              onComposerFocus={() => setPadsOpen(true)}
             />
           </View>
-          {!(asking && data.kind === 'focus') &&
+          {!(asking && data.kind === 'focus') && padsOpen &&
             (ready ? (
               <Pads
                 kind={data.kind}
@@ -370,7 +622,6 @@ export default function App() {
                 labels={labels}
                 sel={sel}
                 moving={moving !== null && moving >= 0 ? moving : null}
-                armed={armed}
                 grid={grid}
                 onGrid={setGrid}
                 editing={editing && sel !== null}
@@ -399,6 +650,31 @@ export default function App() {
         </View>
       )}
 
+      {/* The rail as a drawer rather than a column below 1200 -- a Modal so
+          it overlays instead of competing with the pane and pads for a row
+          that cannot fit all three. */}
+      {!wide && (
+        <Modal
+          visible={railOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setRailOpen(false)}>
+          <Pressable style={styles.railBackdrop} onPress={() => setRailOpen(false)} />
+          <View style={styles.railDrawer}>
+            <Rail
+              cols={cols}
+              current={surface.current}
+              onSeat={(i) => {
+                press({ seat: i });
+                setRailOpen(false);
+              }}
+              base={base}
+              onChanged={refresh}
+            />
+          </View>
+        </Modal>
+      )}
+
       {!!note && (
         <View style={styles.toastWrap}>
           <Text style={styles.toast}>{note}</Text>
@@ -408,34 +684,71 @@ export default function App() {
   );
 }
 
+// One tab, drawn the same whether it comes straight off `views` or is the
+// synthetic subagents split of `sessions` -- the caller decides the label,
+// the count and what "on" means, this just draws it.
+function Tab({ label, count, hue, on, onPress }) {
+  return (
+    <Text
+      onPress={onPress}
+      style={[
+        styles.tab,
+        { color: hue, borderBottomColor: on ? hue : 'transparent' },
+        on && styles.tabOn,
+      ]}>
+      {label}
+      {count != null && <Text style={styles.tabCount}> · {count}</Text>}
+    </Text>
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   header: {
-    height: 56,
+    minHeight: 56,
     flexDirection: 'row',
     alignItems: 'center',
     gap: S.gap,
     paddingHorizontal: S.pad,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: C.line,
   },
+  // Below `wide` there are eleven-odd controls and nowhere to put them in one
+  // line -- wrapping is the whole fix, and it costs nothing at a width where
+  // everything already fit on one row.
+  headerWrap: { flexWrap: 'wrap', rowGap: 8 },
   brand: { color: C.text, fontSize: 16, fontWeight: '600' },
   status: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    height: 32,
+    minHeight: 32,
     paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 6,
     borderWidth: 1,
     borderColor: KEY.edge,
     backgroundColor: KEY.face,
-    maxWidth: 300,
+    maxWidth: 440,
   },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  // no numberOfLines -- a clipped "why" used to be unreadable and
+  // unrecoverable; wrapping inside the pill's own maxWidth is room enough.
   why: { color: C.dim, fontSize: 12, flexShrink: 1 },
   whyBad: { color: C.bad },
-  tabs: { flexDirection: 'row', alignItems: 'stretch', alignSelf: 'stretch', gap: 18, marginLeft: 4 },
+  // Quiet on purpose: headless is a supported way to run, not the red
+  // banner above it. Same pill shape, no colour that reads as trouble.
+  headless: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: KEY.edge,
+    backgroundColor: KEY.face,
+  },
+  headlessText: { color: C.faint, fontSize: 11, letterSpacing: 0.3 },
+  tabs: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', alignSelf: 'stretch', gap: 18, marginLeft: 4 },
   tab: {
     fontSize: 13,
     borderBottomWidth: 2,
@@ -444,6 +757,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   tabOn: { fontWeight: '600' },
+  // Always faint, on or off -- a zero here is a settled fact, not a warning,
+  // and a count in the tab's own hue would read as an alarm every empty tab.
+  tabCount: { color: C.faint, fontSize: 11 },
   spacer: { flex: 1 },
   key: { height: S.control, minHeight: S.control, minWidth: 96 },
   host: {
@@ -460,6 +776,11 @@ const styles = StyleSheet.create({
   body: { flex: 1, flexDirection: 'row' },
   centre: { flex: 1, minWidth: 0 },
   mirror: { flex: 1, padding: S.pad },
+  // One column below 820: the pane sizes to its own content instead of
+  // fighting a flex:1 chain it no longer sits inside, and the page's own
+  // scroll -- not a nested one -- carries you from the transcript down
+  // through the composer to the pads.
+  bodyNarrow: { flexGrow: 1 },
   waiting: {
     width: 344,
     borderLeftWidth: 1,
@@ -468,7 +789,45 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 12,
   },
+  waitingNarrow: {
+    borderTopWidth: 1,
+    borderTopColor: C.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingVertical: 32,
+  },
   waitingText: { color: C.dim, fontSize: 13, textAlign: 'center' },
+  // The rail as a drawer: a dimmed backdrop the width of the screen, and the
+  // rail itself pinned to the left edge at its own fixed width -- it never
+  // had to learn to be anything else, only to sit somewhere that isn't a
+  // column fighting the pane and pads for room.
+  // pointerEvents: 'auto' on both -- RN's own transparent Modal wraps its
+  // content in a chain of pointer-events:none containers on web (so a modal
+  // with nothing painted over a given pixel doesn't eat clicks meant for the
+  // page under it), and pointer-events inherits. Without asserting it back
+  // on, neither the backdrop nor anything inside the drawer is clickable,
+  // silently -- the close and every seat in the rail just eat the tap.
+  railBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    pointerEvents: 'auto',
+  },
+  railDrawer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: 268,
+    backgroundColor: C.bg,
+    borderRightWidth: 1,
+    borderRightColor: C.line,
+    pointerEvents: 'auto',
+  },
   toastWrap: { position: 'absolute', left: 0, right: 0, bottom: 20, alignItems: 'center', pointerEvents: 'none' },
   toast: {
     color: C.text,

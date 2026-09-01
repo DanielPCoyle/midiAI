@@ -838,40 +838,49 @@ def transcript(agent):
 
 # ---------------------------------------------------------------- subagents
 
-_done_cache = {}      # transcript -> (size, ids that have come back)
+_done_cache = {}      # transcript -> (offset, ids that have come back)
 SUB_STALE_S = 600     # a task with no result and a cold log has died, not run
 
 
 def finished_calls(path):
     """Tool calls this session already has a result for.
 
-    ponytail: the whole file, re-read whenever it grows -- 40ms on an 11MB
-    transcript, and only asked for while the sessions view is up. Read from an
-    offset if that ever bites."""
+    Accumulated off a byte offset, like usage_for/sent_texts -- transcripts
+    only ever append and the result set only ever grows, so once an id is
+    found it stays found. Re-reading the whole file on every growth cost
+    67.9ms cold on a 17.7MB transcript (0.041ms once cached by size, but an
+    actively-working agent invalidates that every tick by growing the file);
+    since every view now carries every session's rows each tick, not just the
+    one on screen, that cost is no longer optional to pay. Offset-based, the
+    steady-state cost is proportional to what was appended since last poll."""
     try:
         size = os.stat(path).st_size
     except OSError:
         return set()
-    hit = _done_cache.get(path)
-    if hit and hit[0] == size:
-        return hit[1]
-    ids = set()
-    try:
-        with open(path, errors="replace") as f:
-            for line in f:
-                if '"tool_result"' not in line:
+    off, ids = _done_cache.get(path, (0, set()))
+    if size < off:                       # truncated or replaced; start over
+        off, ids = 0, set()
+    if size > off:
+        try:
+            with open(path, "rb") as f:
+                f.seek(off)
+                chunk = f.read()
+        except OSError:
+            return ids
+        cut = chunk.rfind(b"\n") + 1     # never parse a half-written line
+        if cut:
+            for raw in chunk[:cut].split(b"\n"):
+                if b'"tool_result"' not in raw:
                     continue        # cheap reject: most lines are not results
                 try:
-                    row = json.loads(line)
+                    row = json.loads(raw.decode(errors="replace"))
                 except json.JSONDecodeError:
                     continue
                 for block in row.get("message", {}).get("content") or []:
                     if (isinstance(block, dict)
                             and block.get("type") == "tool_result"):
                         ids.add(block.get("tool_use_id"))
-    except OSError:
-        return set()
-    _done_cache[path] = (size, ids)
+            _done_cache[path] = (off + cut, ids)
     return ids
 
 
@@ -967,6 +976,9 @@ def sub_info(sub, slot=0, scroll=0):
             "effort": sub["type"],
             "status": "working" if sub["running"] else "idle",
             "act": "", "say": said[-1] if said else "", "pending": "",
+            # a subagent has no input line of its own, so nothing can be
+            # waiting on one -- but the key has to exist, the view is shared
+            "queued": [],
             "tldr": tldr(lines) or [], "suggested": False,
             "opts": [], "sel": None, "lines": lines, "scroll": scroll,
             "context": context_used(sub["log"]) / context_limit(sub["model"])}
@@ -1538,6 +1550,17 @@ def context_for(agent):
     return context_used(transcript(agent)), limit
 
 
+def cache_rate(u):
+    """Share of this session's input tokens that came out of the cache.
+
+    A read is about a tenth the price of the same token uncached, so this is
+    the one number that says whether the session is being cheap or expensive
+    -- and the surface can make it worse by accident. None, not 0%, before
+    anything has been sent: no requests yet is not a bad hit rate."""
+    seen = u.get("cread", 0) + u.get("inp", 0) + u.get("cwrite", 0)
+    return round(100 * u.get("cread", 0) / seen) if seen else None
+
+
 def usage_col(agent):
     if agent is None:
         return None
@@ -1545,7 +1568,8 @@ def usage_col(agent):
     return (agent_name(agent),
             u.get("out", 0),
             u.get("cread", 0) + u.get("inp", 0) + u.get("cwrite", 0),
-            bool(agent.get("focused")))
+            bool(agent.get("focused")),
+            cache_rate(u))
 
 
 # Two different things render as a numbered list, and they answer differently.
@@ -1617,6 +1641,117 @@ def prompt_text(lines):
     return " ".join(x for x in parts if x).strip()
 
 
+def clear_keys(pending):
+    """The keystrokes that empty a pane's input line, whatever it holds.
+
+    ctrl+l never reaches Claude and ctrl+u only kills the row the cursor is
+    on, so a wrapped prompt survives both. Deleting is dumb, depends on no
+    keybinding, and works -- but only behind the cursor, so go forwards
+    first. Together they empty the buffer from wherever the cursor happens
+    to be sitting, which "clear" has to mean. The slack covers a pending
+    that moved since it was read; overshooting an empty buffer is a no-op."""
+    n = len(pending or "") + 16
+    return DELETE_FWD * n + BACKSPACE * n
+
+
+def prompt_blocks(lines):
+    """Every `❯` block in a pane, joined the way prompt_text joins one.
+
+    The pane draws your messages and your input line with the same marker, so
+    this is both: the last block is what you are typing, the ones above it are
+    messages already shown."""
+    out = []
+    for i, line in enumerate(lines):
+        if not line.lstrip().startswith("\u276f"):
+            continue
+        parts = [line.lstrip()[1:].strip()]
+        for cont in lines[i + 1:]:
+            stripped = cont.strip()
+            if not cont.startswith((" ", "\t")) or not stripped:
+                break
+            if set(stripped) <= set("\u2500\u2501") or stripped[0] in "\u23f5\u2714\u23f8":
+                break
+            parts.append(stripped)
+        joined = " ".join(x for x in parts if x).strip()
+        if joined:
+            out.append(joined)
+    return out
+
+
+def _norm(t):
+    """Pane text wraps and the transcript does not, so compare on words."""
+    return " ".join(t.split())
+
+
+_sent_cache = {}     # path -> (offset, texts). Appends only, like usage_for.
+SENT_KEEP = 200      # a pane shows a handful; this is already far more
+
+
+def sent_texts(agent):
+    """What this session has actually handed to the model, from its own log.
+
+    The discriminator for a queued message. A pane draws a message the same
+    whether it has been delivered or is still waiting -- there is no marker to
+    read -- but an undelivered one is not in the transcript yet, because the
+    transcript is written when the request goes.
+
+    Accumulated off a byte offset rather than read from the tail. A tail does
+    not work here: one assistant line can be hundreds of KB, so a fixed window
+    holds a line or two and every older message then looks unsent."""
+    path = transcript(agent) if agent else None
+    try:
+        size = os.stat(path).st_size if path else 0
+    except (OSError, TypeError):
+        return []
+    off, texts = _sent_cache.get(path, (0, []))
+    if size < off:                       # truncated or replaced; start over
+        off, texts = 0, []
+    if size > off:
+        try:
+            with open(path, "rb") as f:
+                f.seek(off)
+                chunk = f.read()
+        except OSError:
+            return texts
+        cut = chunk.rfind(b"\n") + 1     # never parse a half-written line
+        if cut:
+            for raw in chunk[:cut].split(b"\n"):
+                if b'"type":"user"' not in raw and b'"type": "user"' not in raw:
+                    continue             # cheap reject before the JSON parse
+                try:
+                    d = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if d.get("type") != "user":
+                    continue
+                c = d.get("message", {}).get("content")
+                if isinstance(c, str):
+                    texts.append(_norm(c))
+                elif isinstance(c, list):
+                    texts.extend(_norm(b.get("text", "")) for b in c
+                                 if isinstance(b, dict) and b.get("type") == "text")
+            texts = [t for t in texts if t][-SENT_KEEP:]
+            _sent_cache[path] = (off + cut, texts)
+    return texts
+
+
+def queued_blocks(agent, lines):
+    """Messages the pane is showing that the session has not sent yet.
+
+    Conservative on purpose: the pane truncates and the transcript does not,
+    so a block counts as delivered if any logged message starts with it.
+    Calling a delivered message queued is the worse error -- it would put a
+    message you already got an answer to back on the surface as pending."""
+    blocks = prompt_blocks(lines)[:-1]          # the last one is the input line
+    if not blocks:
+        return []
+    sent = sent_texts(agent)
+    if not sent:
+        return []      # no log to compare against is not evidence of a queue
+    return [b for b in blocks
+            if not any(m.startswith(_norm(b)[:120]) for m in sent)]
+
+
 def turn(value):
     """Push encoders are relative: 1..63 clockwise, 127..65 anticlockwise."""
     return value if value < 64 else value - 128
@@ -1678,6 +1813,7 @@ def pane_summary(agent, depth=SCRAPE_LINES):
     scan = read_pane(lines)
     pending = prompt_text(lines)
     return {**scan, "lines": body, "tldr": tldr(body),
+            "queued": queued_blocks(agent, lines),
             "pending": "" if scan["opts"] else pending}
 
 
@@ -1708,6 +1844,7 @@ def focus_info(slot, agent, summary, scroll=0, suggested=False):
             "effort": effort_for(agent),
             "status": agent.get("agent_status"),
             **{k: summary.get(k, "") for k in ("act", "say", "pending")},
+            "queued": summary.get("queued") or [],
             "tldr": summary.get("tldr") or [],
             # a macro put this there and you have not touched it yet, so it is
             # a proposal to read, not a sentence you are in the middle of
@@ -1763,6 +1900,108 @@ def colour_for(agent):
     if agent is None:
         return EMPTY
     return STATUS.get(agent.get("agent_status"), UNKNOWN)
+
+
+def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
+                  subs, slots, by_id, live, troot, test_run, titems, tpkgs,
+                  test_path, now, subfocus, scrolls, current, inserted,
+                  arming, moving, MACROS):
+    """(data, state, drawn) for one view+mode, addressed by name rather than
+    by whichever one the hardware happens to be sitting on. The strip only
+    ever draws the hardware's own view+mode, but the app can be looking at
+    any of them, so this is the one place the shape of each view's dict gets
+    decided -- called once per view+mode rather than duplicated for whoever
+    is asking."""
+    if view_name == "focus":
+        hit = next((i for i, x in enumerate(subs)
+                    if subfocus and x["id"] == subfocus[1]), None)
+        if hit is not None:
+            sinfo = sub_info(subs[hit], hit, scrolls.get(current, 0))
+            data = {"kind": "focus", "info": sinfo, "sub": True}
+        else:
+            pend = (summary.get("pending") or "").strip()
+            info = (focus_info(seat, cur, summary, scroll,
+                               bool(pend) and pend == inserted.strip())
+                    if cur else None)
+            data = {"kind": "focus", "info": info}
+        if mode == 1:
+            # the strip takes this mode over for the macro grid; the app
+            # already shows that grid permanently in its own rail, so it
+            # keeps getting the ordinary pane above -- same data as mode 0.
+            cols = tuple(MACROS)
+            state = (view_name, "macros", cols, arming, moving)
+            drawn = (lambda c=cols, a=arming, m=moving:
+                     disp_mod.render_macros(c, a, m))
+        elif hit is not None:
+            state = (view_name, "sub", repr(sinfo))
+            drawn = (lambda i=sinfo: disp_mod.render_focus(i))
+        else:
+            state = (view_name, repr(info))
+            drawn = (lambda: disp_mod.render_focus(info)) if info else (
+                lambda: disp_mod.render((None,) * SLOTS))
+    elif view_name == "usage":
+        # one question -- what is being spent -- answered at three altitudes:
+        # the account's plan, the models it spent on, then the agents that
+        # did the spending
+        if mode == 1:
+            tot = model_totals(live)
+            data = {"kind": "usage", "at": mode, "models": sorted(tot.items())}
+            state = (view_name, "tokens", repr(sorted(tot.items())), mode)
+            drawn = (lambda t=tot, m=mode:
+                     disp_mod.render_models(t, m, USAGE_MODES))
+        elif mode == 2:
+            cols = tuple(usage_col(by_id.get(slots.get(s)))
+                         for s in range(SLOTS))
+            data = {"kind": "usage", "at": mode, "agents": cols}
+            state = (view_name, "agents", cols, mode)
+            drawn = (lambda c=cols, m=mode:
+                     disp_mod.render_usage(c, m, USAGE_MODES))
+        else:                       # first: what you glance at
+            bars, uerr = plan_usage(now)
+            data = {"kind": "usage", "at": mode, "bars": bars, "err": uerr}
+            state = (view_name, "plan", repr(bars), uerr, mode)
+            drawn = (lambda b=bars, e=uerr, m=mode:
+                     disp_mod.render_plan(b, e, m, USAGE_MODES))
+    elif view_name == "sessions" and mode == 1:
+        rows = tuple({"label": x["label"], "type": x["type"],
+                      "running": x["running"],
+                      "focused": bool(subfocus)
+                      and subfocus[1] == x["id"]} for x in subs)
+        data = {"kind": "subs", "rows": rows, "repo": agent_name(cur)}
+        state = (view_name, "subs", rows)
+        drawn = (lambda r=rows, n=agent_name(cur):
+                 disp_mod.render_subs({"repo": n, "subs": r}))
+    elif view_name == "prs":
+        rows, perr = open_prs(troot, now)
+        pinfo = {"repo": agent_name(cur), "rows": rows, "err": perr}
+        data = {"kind": "prs", **pinfo}
+        state = (view_name, repr(pinfo))
+        drawn = (lambda i=pinfo: disp_mod.render_prs(i))
+    elif view_name == "tests":
+        ok, bad = test_run.tally() if test_run else (0, 0)
+        tinfo = {"repo": os.path.basename(troot) or "?",
+                 "path": list(test_path), "items": titems,
+                 "running": (test_run.now if test_run
+                             and not test_run.done else ""),
+                 "passed": ok, "failed": bad,
+                 "slow": any(p["slow"] for p in
+                             scope_packages(tpkgs, test_path, True))}
+        data = {"kind": "tests", **tinfo}
+        state = (view_name, repr(tinfo))
+        drawn = (lambda i=tinfo: disp_mod.render_tests(i))
+    else:                            # sessions, mode 0
+        # the pads in this view are the subagents whichever mode the glass
+        # is in, so the app gets them either way
+        data = {"kind": "sessions", "repo": agent_name(cur),
+                "rows": [{"label": x["label"], "type": x["type"],
+                          "running": x["running"],
+                          "focused": bool(subfocus)
+                          and subfocus[1] == x["id"]}
+                         for x in subs]}
+        cols = tuple(panel_col(by_id.get(slots.get(s))) for s in range(SLOTS))
+        state = (view_name, cols)
+        drawn = (lambda c=cols: disp_mod.render(c))
+    return data, state, drawn
 
 
 # ---------------------------------------------------------------- push
@@ -2072,15 +2311,16 @@ def run():
                     asking = sweep_panes(slots, by_id, current)
                 # the pads in the sessions view are this session's subagents,
                 # and the focus view may be sitting on one of them
-                subs = (subagents(cur, MACRO_SLOTS)
-                        if VIEWS[view] == "sessions" or subfocus else [])
+                # every view is scraped every tick now, not just the one the
+                # hardware sits on, so the app can look anywhere and see
+                # something real rather than the glass's leftovers
+                subs = subagents(cur, MACRO_SLOTS)
                 if subfocus and subfocus[0] != (cur or {}).get("terminal_id"):
                     subfocus = None          # you drove somewhere else
                 troot = (cur or {}).get("cwd") or ""
-                if VIEWS[view] == "tests":
-                    ttree, tpkgs = tests_for(troot)
-                    titems = test_items(ttree, test_path,
-                                        test_run.states if test_run else {})
+                ttree, tpkgs = tests_for(troot)
+                titems = test_items(ttree, test_path,
+                                    test_run.states if test_run else {})
                 if opts:
                     asking.add(current)
                 else:
@@ -2130,14 +2370,44 @@ def run():
                     # photograph of the glass, so it is handed the same dicts
                     # the renderers get. Assembled alongside them, never
                     # instead: one truth, two consumers.
-                    data = {}
                     seat_cols = [panel_col(by_id.get(slots.get(s)))
                                  for s in range(SLOTS)]
+                    # every view, every mode it has, addressed by name -- a
+                    # second screen is not a second Push, so it cannot be
+                    # limited to whichever one the glass happens to be
+                    # showing. view_payload is the one place that shape gets
+                    # decided; called here instead of the nine times over.
+                    views_data = {v: [view_payload(
+                                        v, m, disp_mod, seat=seat, cur=cur,
+                                        summary=summary, scroll=scroll,
+                                        subs=subs, slots=slots, by_id=by_id,
+                                        live=live, troot=troot,
+                                        test_run=test_run, titems=titems,
+                                        tpkgs=tpkgs, test_path=test_path,
+                                        now=now, subfocus=subfocus,
+                                        scrolls=scrolls, current=current,
+                                        inserted=inserted, arming=arming,
+                                        moving=moving, MACROS=MACROS)
+                                      for m in range(VIEW_MODES.get(v, 1))]
+                                  for v in VIEWS}
+                    # data always comes from the hardware's own view+mode --
+                    # a real pane, never {} -- even under an overlay below.
+                    # Only state/drawn change there: an overlay takes the
+                    # strip's screen, not the app's idea of what pane this is.
+                    data, state, drawn = views_data[VIEWS[view]][mode]
                     if strip_level:
-                        # outranks the chain: your finger is on the strip now
-                        state = ("effort", strip_level)
-                        drawn = (lambda l=strip_level:
-                                 disp_mod.render_effort(l, EFFORTS))
+                        # outranks the chain: your finger is on the strip now.
+                        # An effort change always invalidates the messages
+                        # cache, so a flip re-reads the whole prefix at full
+                        # price. The strip is the easiest control on the
+                        # surface to move and the only one that costs anything
+                        # to touch -- so say what it costs while there is still
+                        # time to lift off somewhere else.
+                        drops = (context_used(transcript(by_id[target]))
+                                 if target in by_id else 0)
+                        state = ("effort", strip_level, drops)
+                        drawn = (lambda l=strip_level, dd=drops:
+                                 disp_mod.render_effort(l, EFFORTS, dd))
                     elif previewing is not None:
                         m, idx = MACROS[previewing], MACRO_NOTES[previewing]
                         state = ("pad", previewing, repr(m))
@@ -2159,98 +2429,6 @@ def run():
                         cinfo = chain.info(MACROS)
                         state = ("chain", repr(cinfo))
                         drawn = (lambda c=cinfo: disp_mod.render_chain(c))
-                    elif VIEWS[view] == "focus" and mode == 1:
-                        cols = tuple(MACROS)
-                        state = (view, "macros", cols, arming, moving)
-                        drawn = (lambda c=cols, a=arming, m=moving:
-                                 disp_mod.render_macros(c, a, m))
-                    elif VIEWS[view] == "focus" and any(
-                            subfocus and x["id"] == subfocus[1] for x in subs):
-                        # the focus view, pointed at a subagent instead of the
-                        # session that spawned it. One that has vanished falls
-                        # through to the ordinary focus view below.
-                        idx = next(i for i, x in enumerate(subs)
-                                   if x["id"] == subfocus[1])
-                        sinfo = sub_info(subs[idx], idx, scrolls.get(current, 0))
-                        data = {"kind": "focus", "info": sinfo, "sub": True}
-                        state = (view, "sub", repr(sinfo))
-                        drawn = (lambda i=sinfo: disp_mod.render_focus(i))
-                    elif VIEWS[view] == "focus":
-                        pend = (summary.get("pending") or "").strip()
-                        info = (focus_info(seat, cur, summary, scroll,
-                                           bool(pend) and pend == inserted.strip())
-                                if cur else None)
-                        data = {"kind": "focus", "info": info}
-                        state = (view, repr(info))
-                        drawn = (lambda: disp_mod.render_focus(info)) if info else (
-                            lambda: disp_mod.render((None,) * SLOTS))
-                    elif VIEWS[view] == "usage":
-                        # one question -- what is being spent -- answered at
-                        # three altitudes: the account's plan, the models it
-                        # spent on, then the agents that did the spending
-                        if mode == 1:
-                            tot = model_totals(live)
-                            data = {"kind": "usage", "at": mode,
-                                    "models": sorted(tot.items())}
-                            state = (view, "tokens", repr(sorted(tot.items())), mode)
-                            drawn = (lambda t=tot, m=mode:
-                                     disp_mod.render_models(t, m, USAGE_MODES))
-                        elif mode == 2:
-                            cols = tuple(usage_col(by_id.get(slots.get(s)))
-                                         for s in range(SLOTS))
-                            data = {"kind": "usage", "at": mode, "agents": cols}
-                            state = (view, "agents", cols, mode)
-                            drawn = (lambda c=cols, m=mode:
-                                     disp_mod.render_usage(c, m, USAGE_MODES))
-                        else:                       # first: what you glance at
-                            bars, uerr = plan_usage(now)
-                            data = {"kind": "usage", "at": mode, "bars": bars,
-                                    "err": uerr}
-                            state = (view, "plan", repr(bars), uerr, mode)
-                            drawn = (lambda b=bars, e=uerr, m=mode:
-                                     disp_mod.render_plan(b, e, m, USAGE_MODES))
-                    elif VIEWS[view] == "sessions" and mode == 1:
-                        rows = tuple({"label": x["label"], "type": x["type"],
-                                      "running": x["running"],
-                                      "focused": bool(subfocus)
-                                      and subfocus[1] == x["id"]} for x in subs)
-                        data = {"kind": "subs", "rows": rows,
-                                "repo": agent_name(cur)}
-                        state = (view, "subs", rows)
-                        drawn = (lambda r=rows, n=agent_name(cur):
-                                 disp_mod.render_subs({"repo": n, "subs": r}))
-                    elif VIEWS[view] == "prs":
-                        rows, perr = open_prs(troot, now)
-                        pinfo = {"repo": agent_name(cur), "rows": rows,
-                                 "err": perr}
-                        data = {"kind": "prs", **pinfo}
-                        state = (view, repr(pinfo))
-                        drawn = (lambda i=pinfo: disp_mod.render_prs(i))
-                    elif VIEWS[view] == "tests":
-                        ok, bad = test_run.tally() if test_run else (0, 0)
-                        tinfo = {"repo": os.path.basename(troot) or "?",
-                                 "path": list(test_path), "items": titems,
-                                 "running": (test_run.now if test_run
-                                             and not test_run.done else ""),
-                                 "passed": ok, "failed": bad,
-                                 "slow": any(p["slow"] for p in
-                                             scope_packages(tpkgs, test_path, True))}
-                        data = {"kind": "tests", **tinfo}
-                        state = (view, repr(tinfo))
-                        drawn = (lambda i=tinfo: disp_mod.render_tests(i))
-                    else:
-                        # the pads in this view are the subagents whichever mode
-                        # the glass is in, so the app gets them either way
-                        data = {"kind": "sessions", "repo": agent_name(cur),
-                                "rows": [{"label": x["label"], "type": x["type"],
-                                          "running": x["running"],
-                                          "focused": bool(subfocus)
-                                          and subfocus[1] == x["id"]}
-                                         for x in subs]}
-                        cols = tuple(panel_col(by_id.get(slots.get(s)))
-                                     for s in range(SLOTS))
-                        state = (view, cols)
-                        drawn = (lambda c=cols: disp_mod.render(c))
                     # both legends, drawn once here rather than in nine
                     # renderers. Not on the two that take the whole glass -- a
                     # preview or a confirm is not a view, and neither left room
@@ -2290,6 +2468,11 @@ def run():
                         # what the app needs to draw this view itself, and
                         # every seat in enough detail for its rail
                         "data": data, "cols": seat_cols,
+                        # the same shape, for every view -- so a second
+                        # screen can look anywhere, not just where the
+                        # glass is pointed
+                        "views_data": {v: [d for d, _, _ in views_data[v]]
+                                       for v in VIEWS},
                         # the two label bands, so the mirror can crop them:
                         # the page's own buttons already say it
                         "bands": [disp_mod.STRIP_H, disp_mod.SEAT_H],
@@ -2509,15 +2692,10 @@ def run():
                         herdr("agent", "send", target, ESCAPE)
                 elif (msg.type == "control_change" and msg.control == UNDO_CC
                       and msg.value and target):
-                    # ctrl+l never reaches Claude and ctrl+u only kills the row
-                    # the cursor is on, so a wrapped prompt survives both.
-                    # Deleting is dumb, depends on no keybinding, and works --
-                    # but only behind the cursor, so go forwards first. Together
-                    # they empty the buffer from wherever the cursor happens to
-                    # be sitting, which "clear" has to mean.
-                    n = len(summary.get("pending") or "") + 16
-                    print(f"undo -> clearing {n} either side -> {target}", flush=True)
-                    herdr("agent", "send", target, DELETE_FWD * n + BACKSPACE * n)
+                    pend = summary.get("pending") or ""
+                    print(f"undo -> clearing {len(pend)} either side -> {target}",
+                          flush=True)
+                    herdr("agent", "send", target, clear_keys(pend))
                 elif (msg.type == "control_change" and msg.control in KEY_CCS
                       and msg.value and target):
                     name, key = KEY_CCS[msg.control]
@@ -3167,6 +3345,20 @@ def selftest():
     assert seen == sorted(seen, key=EFFORTS.index), "the strip only goes one way"
 
     assert usage_col(None) is None
+
+    # the cache readout is the whole point of the usage column; 0% and "not
+    # asked yet" are different answers and must not render the same
+    assert cache_rate({"cread": 90, "inp": 10}) == 90
+    assert cache_rate({"cread": 0, "inp": 5}) == 0
+    assert cache_rate({}) is None, "no requests is not a 0% hit rate"
+
+    # the pane draws a message and the input line with the same marker, and
+    # the last one is always the line you are typing on
+    pb = prompt_blocks(["\u276f already sent", "  wrapped on", "x", "\u276f typing"])
+    assert pb == ["already sent wrapped on", "typing"], pb
+    # no transcript to check against must not turn every message into a queue
+    assert queued_blocks(None, ["\u276f a", "\u276f b"]) == [], \
+        "an unreadable log must not call every message queued"
     # "input_tokens" must not also match the tail of cache_read_input_tokens
     line = (b'{"usage":{"input_tokens":2,"cache_creation_input_tokens":699,'
             b'"cache_read_input_tokens":199412,"output_tokens":1017}}\n')
@@ -3241,6 +3433,13 @@ def selftest():
     assert slug("Fix The Parser") == "fix-the-parser"
     assert slug("feat/thing") == "feat/thing"
     assert slug("  spaces   everywhere  ") == "spaces-everywhere"
+
+    # clearing has to reach both sides of the cursor, or an edited prompt is
+    # sent with half the original still around it
+    keys = clear_keys("hello")
+    assert keys.count(DELETE_FWD) == 21 and keys.count(BACKSPACE) == 21, keys
+    assert keys.index(BACKSPACE) > keys.rindex(DELETE_FWD), "forwards first"
+    assert clear_keys("") == clear_keys(None), "no pending is not a crash"
     assert slug("!!!") .startswith("push/")     # nothing usable -> timestamped
     assert slug("") .startswith("push/")
     assert len(slug("x" * 200)) == 60

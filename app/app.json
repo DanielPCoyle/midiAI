@@ -27,6 +27,14 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "midiAI attaches a screenshot from your library to a prompt."
+        }
+      ]
+    ]
   }
 }

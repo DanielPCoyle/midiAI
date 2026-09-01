@@ -15,12 +15,22 @@ export default function PushButton({
   lit = false,
   disabled = false,
   onPress,
+  onPressIn,     // held rather than tapped -- hold-to-talk needs both edges
+  onPressOut,
   style,
   children,
 }) {
   return (
     <Pressable
+      // RN Web renders a bare Pressable as a plain div: no role, no tab stop,
+      // no Enter. The hardware's buttons are the point, but this app is the
+      // one surface with a keyboard in front of it.
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled, selected: lit }}
       onPress={onPress}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
       disabled={disabled}
       style={({ pressed }) => [
         styles.key,

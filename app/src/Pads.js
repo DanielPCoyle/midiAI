@@ -18,7 +18,6 @@ export default function Pads({
   labels,
   sel,
   moving,
-  armed,
   grid,
   onGrid,
   editing,
@@ -72,7 +71,11 @@ export default function Pads({
           <View
             style={[styles.bar, { backgroundColor: hexFor((macros[sel] || {}).colour) }]}
           />
-          <Text style={styles.title}>Pad {36 + sel}</Text>
+          {/* the note number only matters with macros.json open by hand --
+              dropped well back so "Pad" reads first and the address second */}
+          <Text style={styles.title}>
+            Pad <Text style={styles.titleNote}>{36 + sel}</Text>
+          </Text>
           <View style={styles.spacer} />
           <PushButton label="close" onPress={onClose} style={styles.key} />
         </View>
@@ -201,7 +204,6 @@ export default function Pads({
             macros={macros}
             sel={sel}
             moving={moving}
-            armed={armed}
             opts={[]}
             onPress={onPress}
             onDrop={onDrop}
@@ -341,6 +343,7 @@ const styles = StyleSheet.create({
   label: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
   sub: { color: C.edge, fontSize: 11 },
   title: { color: C.text, fontSize: 15, fontWeight: '600' },
+  titleNote: { color: C.edge, fontWeight: '400' },
   spacer: { flex: 1 },
   key: { height: 32, minHeight: 32, minWidth: 70 },
   seg: { flexDirection: 'row', borderWidth: 1, borderColor: C.line, borderRadius: 6, overflow: 'hidden' },

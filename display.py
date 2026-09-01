@@ -587,7 +587,7 @@ def _effort_hue(i, n):
 EFFORT_ABBR = {"low": "LOW", "medium": "MED", "high": "HIGH", "xhigh": "XH", "max": "MAX"}
 
 
-def render_effort(level, levels):
+def render_effort(level, levels, drops=0):
     """Live overlay while a finger is still on the touchstrip -- nothing has
     been sent yet, lifting off is what commits. So the only job here is
     making the pick unmistakable from across a desk: a horizontal ladder in
@@ -602,6 +602,12 @@ def render_effort(level, levels):
     # label and ladder both shifted +10 (same delta, gap preserved) to clear
     # the view_strip band composed on top of this image
     d.text((8, 12), "EFFORT", font=font(11), fill=(80, 80, 80))
+    if drops:
+        # the price of the pick, next to the pick. Changing effort invalidates
+        # the messages cache, so this much context gets re-read at full rate.
+        w = d.textlength(f"drops {human(drops)} cached", font=font(11))
+        d.text((WIDTH - w - 8, 12), f"drops {human(drops)} cached",
+               font=font(11), fill=(190, 150, 60))
     top, bottom = 28, BOTTOM - 30
     for i, lvl in enumerate(levels):
         x = i * cw
@@ -628,7 +634,7 @@ def render_effort(level, levels):
 
 
 def render_usage(cols, mode=0, modes=1):
-    """cols: 8 entries of (name, out_tokens, ctx_tokens, focused), None if empty."""
+    """cols: 8 entries of (name, out, ctx, focused, cache%), None if empty."""
     img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
     d = ImageDraw.Draw(img)
     _mode_indicator(d, mode, modes)
@@ -641,7 +647,7 @@ def render_usage(cols, mode=0, modes=1):
             if i:
                 d.line([(x, STRIP_H), (x, BOTTOM - 8)], fill=(45, 45, 45))
             continue
-        name, out, ctx, focused = col
+        name, out, ctx, focused, hit = col
         rgb = (150, 175, 215)
         x = _column(d, i, rgb, focused)
         s, f = fit(d, name, COL_W - 34, 15)
@@ -652,6 +658,16 @@ def render_usage(cols, mode=0, modes=1):
         d.text((x + 10, 104), "context", font=font(13), fill=(100, 100, 100))
         s, f = fit(d, human(ctx), COL_W - 20, 22)
         d.text((x + 10, 120), s, font=f, fill=rgb)
+        # Beside the context label, not under it: BOTTOM is 148 and the stack
+        # above already reaches 142. A read costs about a tenth of the same
+        # token uncached, so a column sitting low here is the expensive one.
+        # Dashes until it has been asked anything -- no requests yet is not a
+        # bad hit rate.
+        cache = "--" if hit is None else f"{hit}%"
+        cw2 = d.textlength(cache, font=font(15))
+        d.text((x + COL_W - cw2 - 10, 102), cache, font=font(15),
+               fill=(120, 120, 120) if hit is None
+               else (110, 200, 130) if hit >= 80 else (215, 165, 70))
     return img
 
 

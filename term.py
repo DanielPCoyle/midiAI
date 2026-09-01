@@ -190,6 +190,18 @@ def _agent_focus(target):
     return _ok({})
 
 
+def _name_taken(name):
+    """@agent_name is a pane-scoped user option, not the window name: a split
+    lands in the CURRENT window, so rename-window would name every agent in
+    that window at once and each new one would clobber the last. pane_title is
+    no good either -- claude sets its own ("✳ Claude Code") over OSC 2. a
+    @user option is per pane and the app inside cannot touch it.
+
+    Shared by agent start and worktree create -- both mint a fresh pane name."""
+    taken = _run(["tmux", "list-panes", "-a", "-F", "#{@agent_name}"])
+    return name in taken.stdout.splitlines()
+
+
 def _agent_start(args):
     rest = list(args[2:])
     name = rest[0] if rest else None
@@ -199,13 +211,7 @@ def _agent_start(args):
     split = _flag(rest, "--split") or "right"
     argv = rest[rest.index("--") + 1:] if "--" in rest else []
 
-    # the name is a pane-scoped user option, not the window name: a split
-    # lands in the CURRENT window, so rename-window would name every agent in
-    # that window at once and each new one would clobber the last. pane_title
-    # is no good either -- claude sets its own ("✳ Claude Code") over OSC 2.
-    # a @user option is per pane and the app inside cannot touch it.
-    taken = _run(["tmux", "list-panes", "-a", "-F", "#{@agent_name}"])
-    if name in taken.stdout.splitlines():
+    if _name_taken(name):
         return _err("agent_name_taken", f"agent name {name!r} already in use")
 
     flag = "-h" if split == "right" else "-v"
@@ -250,8 +256,16 @@ def _worktree_create(args):
     rest = list(args[2:])
     cwd = _flag(rest, "--cwd")
     branch = _flag(rest, "--branch")
+    name = _flag(rest, "--name")
     if not cwd or not branch:
         return _err("bad_args", "worktree create needs --cwd and --branch")
+    if name is not None:
+        if not NAME_RE.match(name):
+            return _err("invalid_agent_name", f"{name!r} does not match {NAME_RE.pattern}")
+        # checked before git worktree add, so a name collision doesn't leave
+        # a stray worktree behind
+        if _name_taken(name):
+            return _err("agent_name_taken", f"agent name {name!r} already in use")
     cwd = os.path.normpath(cwd)
     # ponytail: one root for every worktree, herdr's layout -- <root>/<repo>/
     # <branch-slug>. WORKTREE_ROOT is the knob.
@@ -267,7 +281,11 @@ def _worktree_create(args):
         out = _run(["git", "-C", cwd, "worktree", "add", dest, branch])  # branch exists already
         if out.returncode != 0:
             return _err("git_worktree_add", out.stderr)
-    _run(["tmux", "new-window", "-c", dest, "--", "claude", "--permission-mode", "auto"])
+    out = _run(["tmux", "new-window", "-c", dest, "-P", "-F", "#{pane_id}",
+                "--", "claude", "--permission-mode", "auto"])
+    if name:
+        _run(["tmux", "set-option", "-p", "-t", out.stdout.strip(),
+              "@agent_name", name])
     return _ok({})
 
 

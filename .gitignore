@@ -5,3 +5,5 @@ __pycache__/
 .surface.json
 .command.json
 .claude/
+desktop/node_modules/
+app/dist/
