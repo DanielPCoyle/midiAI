@@ -23,6 +23,16 @@ import { BREAK, C, KEY, S, SEAT_HEX } from './src/theme';
 
 const SURFACE_MS = 400; // the mirror and the views both; anything slower lags
 const TARGET_MS = 2500; // which session is selected, and whether push_cc is up
+// Nobody is watching a hidden tab, and an idle agent is not producing
+// anything to watch either -- push_cc.py's `stamp` is `_frame_stamp`,
+// written only when a frame is actually redrawn, so it sitting still for a
+// while is an exact idle signal, not a heuristic. Both cases back off; the
+// idle cap stays close to SURFACE_MS on purpose -- a press on the Push
+// should still show up in about a second, not three (MIDI-016).
+const SURFACE_HIDDEN_MS = 5000;
+const SURFACE_IDLE_MS = 1200;
+const SURFACE_IDLE_AFTER_MS = 10000;
+const TARGET_HIDDEN_MS = 5000;
 const EMPTY = Array(64).fill(null);
 
 export default function App() {
@@ -63,6 +73,13 @@ export default function App() {
   const [railOpen, setRailOpen] = useState(false);
   const base = baseFor(host);
   const noteAt = useRef(null);
+  // Idle detection for the surface poll (MIDI-016): the last stamp seen and
+  // when it last actually changed, plus the last time a person did anything
+  // in this tab. Refs, not state -- these feed a setTimeout's own delay
+  // calculation between renders and have no business causing one.
+  const surfaceStampRef = useRef(null);
+  const surfaceStampAtRef = useRef(Date.now());
+  const lastActivityAtRef = useRef(Date.now());
   const { width } = useWindowDimensions();
   const wide = width >= BREAK.wide;
   // <=, not <: at exactly 820 the app is in exactly the same bind as 819 --
@@ -120,18 +137,35 @@ export default function App() {
   const TAB_COUNT = { tests: testsCount, prs: prsCount };
   const filled = macros.filter(Boolean).length;
 
+  // Two different facts were being read as one status. Whether push_cc
+  // answers and is running is the thing a red dot and a lit reconnect
+  // button are for -- reconnect restarts the process. Whether a Push is on
+  // the end of the USB cable is a separate fact the launcher explicitly
+  // supports being false: headless is normal, not a fault, and no amount of
+  // pressing reconnect plugs in a cable that isn't there.
+  const reachable = api && !!target.running;
+  const headless = reachable && !target.ok;
+  // Headless, the only thing that ever moves push_cc's own view is this
+  // app's `press({tab})` -- there's no hardware to press its buttons, so
+  // "following the Push" would just mean following the app's own presses
+  // in a loop. `followPush` still holds whatever the user last set it to
+  // (plugging a Push back in mid-session should restore it, not reset it),
+  // but it drives nothing while headless: this is the one flag the follow
+  // effects and every tab press actually check.
+  const effectiveFollow = followPush && !headless;
+
   // While following, local state is a mirror rather than a second copy of
-  // the truth: every poll re-seeds it from the Push. Flip follow off and
-  // these two effects simply stop firing -- local state freezes right where
-  // it was and the app is on its own from there.
+  // the truth: every poll re-seeds it from the Push. Flip follow off (or go
+  // headless) and these two effects simply stop firing -- local state
+  // freezes right where it was and the app is on its own from there.
   useEffect(() => {
-    if (followPush && surface.view != null) setLocalView(surface.view);
-  }, [followPush, surface.view]);
+    if (effectiveFollow && surface.view != null) setLocalView(surface.view);
+  }, [effectiveFollow, surface.view]);
   useEffect(() => {
-    if (!followPush) return;
+    if (!effectiveFollow) return;
     const at = surface.at || [];
     if (at.length) setLocalModes(Object.fromEntries(at.map((m, i) => [i, m])));
-  }, [followPush, surface.at]);
+  }, [effectiveFollow, surface.at]);
   // A resize past the breakpoint puts the panel back to its default for the
   // new width; short of that this leaves whatever the toggle or the composer
   // last set alone, rather than fighting every render.
@@ -172,27 +206,98 @@ export default function App() {
     loadMacros();
   }, [loadMacros]);
 
+  // A flat 400ms whether or not anyone was looking used to mean 666 polls in
+  // under 5 minutes of testing, same rate hidden, idle, or watched. This is
+  // a setTimeout loop rather than setInterval so the delay can change from
+  // one tick to the next -- hidden drops to a heartbeat, and visible-but-
+  // idle backs off (capped, see SURFACE_IDLE_MS above); anything that isn't
+  // that -- a stamp change, becoming visible, a person doing something --
+  // collapses straight back to SURFACE_MS on the very next tick (MIDI-016).
   useEffect(() => {
     let live = true;
+    let timer = null;
+
+    const clearTimer = () => {
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const nextDelay = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return SURFACE_HIDDEN_MS;
+      }
+      const quietFor = Date.now() - Math.max(surfaceStampAtRef.current, lastActivityAtRef.current);
+      return quietFor >= SURFACE_IDLE_AFTER_MS ? SURFACE_IDLE_MS : SURFACE_MS;
+    };
+
     const tick = async () => {
+      clearTimer();
       try {
         const s = await getJSON(base, '/surface');
-        if (live) setSurface(s || {});
+        if (!live) return;
+        if (s && s.stamp !== surfaceStampRef.current) {
+          surfaceStampRef.current = s.stamp;
+          surfaceStampAtRef.current = Date.now();
+        }
+        setSurface(s || {});
       } catch (e) {
         if (live) setSurface({});
       }
+      if (live) timer = setTimeout(tick, nextDelay());
     };
+
+    // Hidden's heartbeat is worth abandoning the moment the tab is visible
+    // again rather than waiting out whatever's left of its 5s -- a press on
+    // the Push shouldn't have to wait for a timer that was set for nobody
+    // watching.
+    const onVisibility = () => {
+      if (document.visibilityState !== 'hidden') tick();
+    };
+    // Same reasoning, triggered by the person instead of the tab: typing,
+    // clicking, tapping a pad all mean somebody is here now, so a backed-off
+    // wait isn't worth finishing either.
+    const onActivity = () => {
+      const wasBackedOff = Date.now() - surfaceStampAtRef.current >= SURFACE_IDLE_AFTER_MS;
+      lastActivityAtRef.current = Date.now();
+      if (wasBackedOff) tick();
+    };
+
     tick();
-    const id = setInterval(tick, SURFACE_MS);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility);
+      document.addEventListener('pointerdown', onActivity);
+      document.addEventListener('keydown', onActivity);
+    }
     return () => {
       live = false;
-      clearInterval(id);
+      clearTimer();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility);
+        document.removeEventListener('pointerdown', onActivity);
+        document.removeEventListener('keydown', onActivity);
+      }
     };
   }, [base]);
 
+  // /target only needs the hidden-tab half of the same treatment -- its
+  // visible cadence (2.5s: which session is selected, whether push_cc is up
+  // at all) is fine as is, see MIDI-016.
   useEffect(() => {
     let live = true;
+    let timer = null;
+
+    const nextDelay = () =>
+      typeof document !== 'undefined' && document.visibilityState === 'hidden'
+        ? TARGET_HIDDEN_MS
+        : TARGET_MS;
+
     const tick = async () => {
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
       try {
         const t = await getJSON(base, '/target');
         if (!live) return;
@@ -203,12 +308,23 @@ export default function App() {
         setTarget({});
         setApi(false);
       }
+      if (live) timer = setTimeout(tick, nextDelay());
     };
+
+    const onVisibility = () => {
+      if (document.visibilityState !== 'hidden') tick();
+    };
+
     tick();
-    const id = setInterval(tick, TARGET_MS);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility);
+    }
     return () => {
       live = false;
-      clearInterval(id);
+      if (timer != null) clearTimeout(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
     };
   }, [base]);
 
@@ -339,14 +455,6 @@ export default function App() {
     [labels, macros, putMacros]
   );
 
-  // Two different facts were being read as one status. Whether push_cc
-  // answers and is running is the thing a red dot and a lit reconnect
-  // button are for -- reconnect restarts the process. Whether a Push is on
-  // the end of the USB cable is a separate fact the launcher explicitly
-  // supports being false: headless is normal, not a fault, and no amount of
-  // pressing reconnect plugs in a cable that isn't there.
-  const reachable = api && !!target.running;
-  const headless = reachable && !target.ok;
   const why = api ? target.why || 'waiting for push_cc' : `no answer from ${host}:${PORT}`;
   const dot = reachable ? SEAT_HEX.idle : api ? SEAT_HEX.blocked : C.faint;
   // The header's own tightness, not the body's: below `wide` the rail toggle
@@ -407,7 +515,7 @@ export default function App() {
                     // the Push to move there, same as it always did.
                     setLocalView(i);
                     if (name === 'sessions') setSessionsMode(0);
-                    if (followPush) press({ tab: i });
+                    if (effectiveFollow) press({ tab: i });
                   }}
                 />
               );
@@ -432,7 +540,7 @@ export default function App() {
                 onPress={() => {
                   setLocalView(sessionsIdx);
                   setSessionsMode(1);
-                  if (followPush) press({ tab: sessionsIdx });
+                  if (effectiveFollow) press({ tab: sessionsIdx });
                 }}
               />
             )}
@@ -453,17 +561,25 @@ export default function App() {
             style={styles.key}
           />
         )}
-        <PushButton
-          // On (the default) is the behaviour this app always had: your tab
-          // is the Push's tab. Off, the two are independent -- the mirror
-          // still drives the hardware regardless, because mirroring it is
-          // the one thing the mirror is for.
-          label={followPush ? 'following the Push' : 'independent view'}
-          colour={C.accentText}
-          lit={followPush}
-          onPress={() => setFollowPush((f) => !f)}
-          style={styles.key}
-        />
+        {/* Headless, there's no hardware for this to mean anything about --
+            push_cc's view only ever moves because this app pressed it, so
+            "follow" would be the app following its own presses. The stored
+            value is untouched underneath (see effectiveFollow above), so a
+            Push plugged in mid-session brings this back exactly as it was
+            left, rather than resetting to "following". */}
+        {!headless && (
+          <PushButton
+            // On (the default) is the behaviour this app always had: your tab
+            // is the Push's tab. Off, the two are independent -- the mirror
+            // still drives the hardware regardless, because mirroring it is
+            // the one thing the mirror is for.
+            label={followPush ? 'following the Push' : 'independent view'}
+            colour={C.accentText}
+            lit={followPush}
+            onPress={() => setFollowPush((f) => !f)}
+            style={styles.key}
+          />
+        )}
         {/* reconnect is the one control that must never be the thing that
             clips -- it's precisely what you reach for when push_cc has died,
             so it and the rail toggle above it come before anything optional. */}
@@ -681,18 +797,46 @@ export default function App() {
 // One tab, drawn the same whether it comes straight off `views` or is the
 // synthetic subagents split of `sessions` -- the caller decides the label,
 // the count and what "on" means, this just draws it.
+//
+// The touch target is a Pressable wrapping the Text, not the Text itself.
+// `styles.tabs` puts 18px of `gap` between tabs for looks, and a bare Text's
+// hit box stops at its own edge -- so half of every gap was dead, and a
+// click there landed on the row's own View with nowhere to send a /press
+// (MIDI-012). `tabHit` pads the Pressable out by half that gap and pulls it
+// back in with an equal negative margin, so the tappable box grows to meet
+// the neighbour while the drawn box never moves.
+//
+// The accessible name lives on the Pressable, not the two Text nodes inside
+// it -- nested Text used to leave assistive tech (and the QA recorder)
+// landing on whichever node the pointer was actually over, sometimes just
+// the count on its own ("· 0", nothing to say what it counted) (MIDI-015).
+// The inner Text is aria-hidden so that name isn't read out a second time.
 function Tab({ label, count, hue, on, onPress }) {
+  const has = count != null && count > 0;
   return (
-    <Text
+    <Pressable
+      accessibilityRole="tab"
+      accessibilityLabel={count != null ? `${label} · ${count}` : label}
+      accessibilityState={{ selected: on }}
       onPress={onPress}
-      style={[
-        styles.tab,
-        { color: hue, borderBottomColor: on ? hue : 'transparent' },
-        on && styles.tabOn,
-      ]}>
-      {label}
-      {count != null && <Text style={styles.tabCount}> · {count}</Text>}
-    </Text>
+      style={styles.tabHit}>
+      <Text
+        aria-hidden
+        importantForAccessibility="no-hide-descendants"
+        style={[
+          styles.tab,
+          { color: hue, borderBottomColor: on ? hue : 'transparent' },
+          on && styles.tabOn,
+        ]}>
+        {label}
+        {count != null && (
+          <Text style={[styles.tabCount, has && { color: hue, fontWeight: '700' }]}>
+            {' '}
+            · {count}
+          </Text>
+        )}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -743,6 +887,9 @@ const styles = StyleSheet.create({
   },
   headlessText: { color: C.faint, fontSize: 11, letterSpacing: 0.3 },
   tabs: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', alignSelf: 'stretch', gap: 18, marginLeft: 4 },
+  // Half of `tabs`' own 18px gap, padded on and pulled back off -- see the
+  // comment on Tab above. Purely a hit-area move: nothing here is visible.
+  tabHit: { paddingHorizontal: 9, marginHorizontal: -9 },
   tab: {
     fontSize: 13,
     borderBottomWidth: 2,
@@ -751,9 +898,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   tabOn: { fontWeight: '600' },
-  // Always faint, on or off -- a zero here is a settled fact, not a warning,
-  // and a count in the tab's own hue would read as an alarm every empty tab.
-  tabCount: { color: C.faint, fontSize: 11 },
+  // A zero here is a settled fact, not a warning, so it stays this quiet by
+  // default. But quiet was all it ever was -- the tester hit an empty tab
+  // twice in the same 21 seconds with the count on screen the whole time,
+  // because a faint "0" and a faint "3" read the same at a glance (MIDI-014).
+  // Whenever there's something behind the tab, Tab above lifts this to the
+  // tab's own hue and bold -- a glance now tells "nothing" from "something"
+  // without reading the digit, and zero still never shouts.
+  tabCount: { color: C.faint, fontSize: 12 },
   spacer: { flex: 1 },
   key: { height: S.control, minHeight: S.control, minWidth: 96 },
   host: {

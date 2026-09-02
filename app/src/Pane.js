@@ -552,7 +552,12 @@ function Sessions({ cols, current }) {
     <View style={[styles.body, narrow && styles.bodyNarrow]}>
       <View style={styles.title}>
         <Text style={styles.h1}>Every agent</Text>
-        <Text style={styles.path}>repo · status · model · terminal id</Text>
+        {/* Used to be set exactly like a sortable column header -- mono,
+            dot-separated field names -- and drew two clicks 711ms apart from
+            a tester it couldn't answer. Sorting is a feature nobody asked
+            for and there's usually one agent on screen anyway; read as a
+            caption instead, in the same voice as `note` below (MIDI-013). */}
+        <Text style={styles.caption}>repo, status, model, terminal id</Text>
       </View>
       <View style={[styles.cols, narrow && styles.colsNarrow]}>
         {live.map(({ c, i }) => {
@@ -821,6 +826,10 @@ const styles = StyleSheet.create({
   },
   model: { color: C.accentText, fontSize: 13, ...mono },
   path: { color: C.faint, fontSize: 13, ...mono },
+  // A plain descriptive caption, deliberately not `path`'s mono/dot shape --
+  // that shape reads as a sortable column header (see Sessions below), and
+  // this isn't one.
+  caption: { color: C.faint, fontSize: 12, fontStyle: 'italic' },
   act: { color: C.warn, fontSize: 12, flexShrink: 1 },
   err: { color: C.bad, fontSize: 12 },
   head: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
