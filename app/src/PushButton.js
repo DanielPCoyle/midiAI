@@ -11,6 +11,7 @@ import { C, KEY, S } from './theme';
 // buttons in its place.
 export default function PushButton({
   label,
+  accessibilityLabel,
   colour = C.faint,
   lit = false,
   disabled = false,
@@ -25,8 +26,14 @@ export default function PushButton({
       // RN Web renders a bare Pressable as a plain div: no role, no tab stop,
       // no Enter. The hardware's buttons are the point, but this app is the
       // one surface with a keyboard in front of it.
+      //
+      // label doubles as the accessible name only while it's also what gets
+      // drawn -- an icon-only button (children instead of label) has nothing
+      // left to fall back to, so a caller passing children has to pass this
+      // separately. Falling back to label keeps every text-label caller
+      // unchanged.
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel || label}
       accessibilityState={{ disabled, selected: lit }}
       onPress={onPress}
       onPressIn={onPressIn}

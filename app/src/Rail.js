@@ -108,6 +108,10 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
             <PushButton
               key={i}
               colour={hue}
+              // left to itself this announces as "midiAIidle⋯%0" -- the name,
+              // the status, the menu glyph and the tmux id run together. Same
+              // shape as the tab that answered to "· 0".
+              accessibilityLabel={`${col.name} · ${col.status}`}
               lit={on}
               onPress={() => onSeat(i)}
               style={[styles.card, on && { borderColor: hue }]}>
@@ -124,6 +128,8 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                     ref={(el) => {
                       menuBtnRefs.current[i] = el;
                     }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`more actions for ${col.name}`}
                     onPress={() => openMenu(i)}
                     hitSlop={8}
                     style={styles.menuBtn}>
@@ -154,6 +160,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
         {free > 0 && (
           <PushButton
             colour="transparent"
+            accessibilityLabel="new agent"
             onPress={() => setSheet({ mode: 'new', seatIndex: null })}
             style={styles.free}>
             <Text style={styles.freeText}>＋ new agent</Text>

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Image,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,6 +11,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { MaterialIcons } from '@expo/vector-icons';
 import { pasteImage, promptAgent, startRecording, stopRecording } from './api';
 import PushButton from './PushButton';
 import { ANSWER_HEX, BREAK, C, S, SEAT_HEX, mono } from './theme';
@@ -181,6 +184,19 @@ function Focus({ info, sub, base, onSent, onComposerFocus, padsOpen, padsCount, 
             {info.act}
           </Text>
         )}
+        {/* Opposite the agent name rather than down with Send/Talk/Image: this
+            toggles a panel of canned text, not a dispatch of it, and living in
+            the title row says so -- it governs the view, it doesn't compete
+            with what fires into the pty. */}
+        {!!onTogglePads && (
+          <PushButton
+            label={`prompts · ${padsCount ?? 0}`}
+            colour={C.accentText}
+            lit={padsOpen}
+            onPress={onTogglePads}
+            style={styles.titleBtn}
+          />
+        )}
       </View>
 
       {/* Composer stays reachable at every width, so the transcript is what
@@ -321,6 +337,11 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
   const [rec, setRec] = useState('');   // '' | 'on' | 'busy'
   const [shot, setShot] = useState(false);
   const [armed, setArmed] = useState(false);
+  // What attachFile/attach have actually saved so far: the path is what the
+  // agent reads (it's what lives in text, below), the url is the whole data
+  // URL or local uri -- kept only so the thumbnail has something to draw,
+  // never sent anywhere.
+  const [attachments, setAttachments] = useState([]);
   const seen = useRef((info.pending || '').trim());
   useEffect(() => {
     const pend = (info.pending || '').trim();
@@ -347,6 +368,7 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
     try {
       await promptAgent(base, text, submit, info.tid, true);
       setText(''); // only on success -- a failed send keeps what you typed
+      setAttachments([]); // their paths just left in that text
       onSent && onSent();
     } catch (e) {
       setErr(String((e && e.message) || e));
@@ -374,13 +396,17 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
   // both the paste listener and the button land in the same place.
   // Takes base64, not a file: the web build has a File to read and iOS has no
   // such object, so the split lives in the two callers and the upload is one.
-  async function attach(b64) {
+  // url is the whole data URL (web) or local uri (iOS) -- attachFile/pick
+  // already have it in hand before they strip it down to base64, and it is
+  // the one thing a path string cannot show you: what you actually attached.
+  async function attach(b64, url) {
     if (!b64) return;
     setShot(true);
     setErr('');
     try {
       const path = await pasteImage(base, b64);
       setText((t) => (t ? `${t.trim()} ${path}` : path));
+      setAttachments((a) => [...a, { path, url }]);
     } catch (e) {
       setErr(String((e && e.message) || e));
     } finally {
@@ -388,12 +414,32 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
     }
   }
 
+  // Removing a thumbnail has to take its path out of the box too, or the
+  // strip and the text disagree about what's attached. The path is a single
+  // whitespace-delimited token by construction (attach always joins it on
+  // with a space), so pulling that one token out is exact -- it can't eat
+  // part of a neighbouring path or anything typed in between.
+  function removeAttachment(i) {
+    const gone = attachments[i];
+    setAttachments((a) => a.filter((_, k) => k !== i));
+    if (!gone) return;
+    setText((t) =>
+      t
+        .split(/\s+/)
+        .filter((tok) => tok !== gone.path)
+        .join(' ')
+    );
+  }
+
   function attachFile(file) {
     if (!file) return;
     const r = new FileReader();
     r.onerror = () => setErr('could not read that file');
-    // strip the data: prefix -- the server wants base64, not a URL
-    r.onload = () => attach(String(r.result).split(',')[1] || '');
+    r.onload = () => {
+      const url = String(r.result);
+      // strip the data: prefix -- the server wants base64, not a URL
+      attach(url.split(',')[1] || '', url);
+    };
     r.readAsDataURL(file);
   }
 
@@ -440,7 +486,7 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
         base64: true,   // bytes: a file:// on the tablet means nothing to the Mac
         quality: 1,
       });
-      if (!res.canceled) attach(res.assets[0]?.base64);
+      if (!res.canceled) attach(res.assets[0]?.base64, res.assets[0]?.uri);
     } catch (e) {
       setErr(String((e && e.message) || e));
     }
@@ -476,6 +522,26 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
 
   return (
     <View style={styles.composer}>
+      {/* All a paste used to leave behind was a filename dropped into the
+          text -- no confirmation you attached what you meant, or that it
+          worked at all. This is that confirmation, one thumbnail per path
+          the text carries. */}
+      {attachments.length > 0 && (
+        <View style={styles.thumbStrip}>
+          {attachments.map((a, i) => (
+            <View key={`${a.path}-${i}`} style={styles.thumbWrap}>
+              <Image source={{ uri: a.url }} style={styles.thumb} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`remove ${a.path}`}
+                onPress={() => removeAttachment(i)}
+                style={styles.thumbX}>
+                <MaterialIcons name="close" size={12} color={C.text} />
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      )}
       {!!info.suggested && (
         <Text style={styles.head}>PROPOSED — A PROMPT PUT THIS THERE</Text>
       )}
@@ -490,48 +556,57 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
         editable={!sending}
       />
       {!!err && <Text style={styles.err}>{err}</Text>}
-      {/* One row, so labels are short by necessity: a third of the width
-          truncates anything longer, and PushButton draws a single line. */}
+      {/* One row of three dispatch actions, icon-only in every state: a word
+          next to a glyph was redundant once the glyph itself changed with the
+          state, and dropping it is what let the toggle's real label (prompts
+          · count, now up in the title) keep breathing room instead of being
+          squeezed to a third of a third of the width. The accessible name
+          still carries the word -- PushButton falls back to accessibilityLabel
+          because these buttons pass children (the icon) instead of label,
+          which is the one thing label doubles as when there's nothing else. */}
       <View style={styles.composerRow}>
-        {/* The prompts panel opens from here rather than the header: it is
-            a way of putting text in this box, so it belongs beside the box
-            and not up in the chrome with the connection status. */}
-        {!!onTogglePads && (
-          <PushButton
-            label={`prompts · ${padsCount ?? 0}`}
-            colour={C.accentText}
-            lit={padsOpen}
-            onPress={onTogglePads}
-            style={styles.composerBtn}
-          />
-        )}
         <PushButton
-          label={shot ? 'Saving…' : Platform.OS === 'web' ? 'Image ⌘V' : 'Image'}
+          accessibilityLabel={shot ? 'Saving' : 'Attach image'}
+          lit={shot}
+          colour={shot ? '#e0a03c' : C.faint}
           disabled={shot || sending}
           onPress={pick}
-          style={styles.composerBtn}
-        />
+          style={styles.composerBtn}>
+          <MaterialIcons
+            name={shot ? 'hourglass-empty' : 'image'}
+            size={20}
+            color={shot ? C.text : C.dim}
+          />
+        </PushButton>
         <PushButton
-          label={
-            rec === 'on' ? 'Listening…'
-              : rec === 'busy' ? 'Transcribing…'
-              : 'Hold to talk'
+          accessibilityLabel={
+            rec === 'on' ? 'Listening' : rec === 'busy' ? 'Transcribing' : 'Hold to talk'
           }
           colour="#e03c3c"
           lit={rec === 'on'}
           disabled={sending || rec === 'busy'}
           onPressIn={() => talk(true)}
           onPressOut={() => talk(false)}
-          style={styles.composerBtn}
-        />
+          style={styles.composerBtn}>
+          <MaterialIcons
+            name={rec === 'busy' ? 'graphic-eq' : 'mic'}
+            size={20}
+            color={rec !== '' ? C.text : C.dim}
+          />
+        </PushButton>
         <PushButton
-          label={armed ? 'Cancel queue' : busy ? 'Queue ↵' : 'Send ↵'}
+          accessibilityLabel={armed ? 'Cancel queue' : busy ? 'Queue' : 'Send'}
           colour={armed ? '#e0a03c' : C.accent}
           lit={armed || !disabled}
           disabled={sending || (!armed && empty)}
           onPress={() => (armed ? setArmed(false) : busy ? setArmed(true) : send(true))}
-          style={styles.composerBtn}
-        />
+          style={styles.composerBtn}>
+          <MaterialIcons
+            name={armed ? 'close' : busy ? 'schedule' : 'send'}
+            size={20}
+            color={armed || !disabled ? C.text : C.dim}
+          />
+        </PushButton>
       </View>
       {armed && (
         <Text style={styles.queued}>
@@ -814,6 +889,10 @@ const styles = StyleSheet.create({
   title: { flexDirection: 'row', alignItems: 'baseline', gap: 12 },
   spacer: { flex: 1 },
   h1: { color: C.text, fontSize: 24, fontWeight: '600' },
+  // The row it sits in aligns on text baseline, which a S.hit-tall button has
+  // none of -- centred against that row instead, sized to its own label
+  // rather than sharing the row's flex the way the composer's row does.
+  titleBtn: { alignSelf: 'center', paddingHorizontal: 14 },
   subTag: {
     color: C.accentText,
     fontSize: 10,
@@ -876,6 +955,34 @@ const styles = StyleSheet.create({
   // to this box's width is exactly the bug being fixed.
   line: { color: C.dim, fontSize: 12, lineHeight: 18, whiteSpace: 'pre', ...mono },
   composer: { gap: 8 },
+  // Sideways rather than wrapped: two or three of these is the whole point
+  // (a paste appends, it doesn't replace), and a wrapping strip would push
+  // the box that matters -- the text -- down the page for every one added.
+  thumbStrip: { flexDirection: 'row', gap: 8 },
+  thumbWrap: { width: 56, height: 56 },
+  thumb: {
+    width: 56,
+    height: 56,
+    borderRadius: S.radius,
+    borderWidth: 1,
+    borderColor: C.line,
+    backgroundColor: C.raised,
+  },
+  // Overlapping the corner rather than beside it -- a thumbnail this small
+  // has no room to spare for a control next to it, only on it.
+  thumbX: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: C.panel,
+    borderWidth: 1,
+    borderColor: C.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   composerInput: {
     minHeight: 60,
     maxHeight: 140,
