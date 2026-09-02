@@ -1912,7 +1912,7 @@ def agent_name(agent):
     return agent.get("name") or os.path.basename(agent.get("cwd", "")) or "?"
 
 
-def apply_unseen(unseen, prev_status, by_id, slots, current):
+def apply_unseen(unseen, prev_status, by_id, slots, current, settled=None):
     """Edge-detect idle across one poll, in place: flag a terminal_id unseen
     the tick its agent_status *becomes* idle while its seat is not the one
     focused, and forget entries for agents no longer live.
@@ -1920,19 +1920,34 @@ def apply_unseen(unseen, prev_status, by_id, slots, current):
     Level, not edge, would re-flag a still-idle agent every poll -- which
     means the flag a human just cleared by focusing the seat comes right
     back the moment they look elsewhere again, since that seat is still
-    reporting idle. Only the transition means "just finished"."""
+    reporting idle. Only the transition means "just finished".
+
+    `settled` swallows the first of those transitions per agent. A claude
+    starting up is `working` before it is `idle`, so a brand new agent made
+    while you are looking at another seat arrived reading `done` -- of
+    something it had never been asked to do. Done has to mean finished, so
+    the boot counts as the arrival and everything after it is work."""
+    if settled is None:
+        settled = set()
     for tid, a in by_id.items():
         status = a.get("agent_status")
         was = prev_status.get(tid)
-        if was is not None and status == "idle" and was != "idle":
-            seat_of = next((s for s, t in slots.items() if t == tid), None)
-            if seat_of != current:   # watched it happen -- stays plain idle
-                unseen[tid] = True
+        if status == "idle":
+            if tid not in settled:
+                # first time we have seen this one at rest. Whether it booted
+                # in front of us (working -> idle) or was already sitting there
+                # when it arrived, this is the baseline, not a finish.
+                settled.add(tid)
+            elif was is not None and was != "idle":
+                seat_of = next((s for s, t in slots.items() if t == tid), None)
+                if seat_of != current:   # watched it happen -- stays plain idle
+                    unseen[tid] = True
         prev_status[tid] = status
     for gone in set(unseen) - set(by_id):        # closed agents
         del unseen[gone]
     for gone in set(prev_status) - set(by_id):
         del prev_status[gone]
+    settled -= set(settled) - set(by_id)
 
 
 def colour_for(agent, unseen=False):
@@ -2195,7 +2210,7 @@ def run():
     # first sighting -- there is no prior status to have transitioned from,
     # and marking every already-idle agent done at startup would be a false
     # "this just finished" for sessions that finished ages ago.
-    unseen, prev_status = {}, {}
+    unseen, prev_status, settled = {}, {}, set()
     # (kind, deadline, index, name): asked something, waiting on an answer.
     # One variable for both questions -- the yes/no row, the timeout and the
     # screen are identical, only what yes does differs. index means a session
@@ -2296,7 +2311,7 @@ def run():
                     live = agents()
                 assign(live, slots)
                 by_id = {a["terminal_id"]: a for a in live}
-                apply_unseen(unseen, prev_status, by_id, slots, current)
+                apply_unseen(unseen, prev_status, by_id, slots, current, settled)
                 for s in range(SLOTS):
                     a = by_id.get(slots.get(s))
                     colour, anim = colour_for(a, unseen.get(slots.get(s), False))
@@ -3068,23 +3083,32 @@ def selftest():
 
     # apply_unseen: the edge-detector behind DONE
     unseen, prev_status, slots = {}, {}, {0: "x", 1: "y"}
-    apply_unseen(unseen, prev_status,
-                 {"x": a("x", "working"), "y": a("y", "working")}, slots, 0)
+    settled = set()
+    up = lambda by_id, cur=0: apply_unseen(unseen, prev_status, by_id, slots,
+                                           cur, settled)
+    both_working = {"x": a("x", "working"), "y": a("y", "working")}
+    up(both_working)
     assert unseen == {}, "first sighting never flags -- no prior to transition from"
-    apply_unseen(unseen, prev_status,
-                 {"x": a("x", "working"), "y": a("y", "idle")}, slots, 0)
+    assert settled == set(), "seen only working: nothing is at rest yet"
+    # a claude boots working -> idle. That first arrival is the agent showing
+    # up, not finishing anything, and it used to read `done` off the seat.
+    up({"x": a("x", "working"), "y": a("y", "idle")})
+    assert unseen == {}, "an agent's first idle is it booting, not finishing"
+    assert "y" in settled, "and it is remembered, so the next one counts"
+    up(both_working)                          # y picks up work
+    up({"x": a("x", "working"), "y": a("y", "idle")})
     assert unseen == {"y": True}, "y went idle off the seat you're driving"
     by_id = {"x": a("x", "idle"), "y": a("y", "idle")}
-    apply_unseen(unseen, prev_status, by_id, slots, 0)
+    up(by_id)
     assert unseen == {"y": True}, "x went idle on your own seat -- stays plain idle"
-    apply_unseen(unseen, prev_status, by_id, slots, 0)   # still idle, again
+    up(by_id)                                # still idle, again
     assert unseen == {"y": True}, "level, not edge: still-idle must not re-add or drop it"
     unseen.pop("y", None)                    # tap_seat's own clear, simulated
-    apply_unseen(unseen, prev_status, by_id, slots, 1)
+    up(by_id, 1)
     assert unseen == {}, "cleared, and still idle -- no re-flag without a fresh transition"
-    apply_unseen(unseen, prev_status, {"x": a("x", "working")}, {0: "x"}, 0)
-    assert "y" not in prev_status and "y" not in unseen, \
-        "a closed agent drops out of both, not left to leak forever"
+    apply_unseen(unseen, prev_status, {"x": a("x", "working")}, {0: "x"}, 0, settled)
+    assert "y" not in prev_status and "y" not in unseen and "y" not in settled, \
+        "a closed agent drops out of all three, not left to leak forever"
 
     # tests: the tree the grid navigates, and reading a runner's output
     assert test_tree(["a/b.test.ts", "a/c.test.ts", "d.test.ts"]) == \
