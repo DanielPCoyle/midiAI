@@ -74,6 +74,9 @@ export default function Pane({
   onMode,
   reachable = true,
   onComposerFocus,
+  padsOpen,
+  padsCount,
+  onTogglePads,
 }) {
   const kind = (data || {}).kind;
   // A question takes the glass only where the glass was already about this
@@ -91,6 +94,9 @@ export default function Pane({
         base={base}
         onSent={onSent}
         onComposerFocus={onComposerFocus}
+        padsOpen={padsOpen}
+        padsCount={padsCount}
+        onTogglePads={onTogglePads}
       />
     );
   if (kind === 'sessions') return <Sessions cols={cols} current={current} />;
@@ -145,7 +151,7 @@ function Question({ opts, onAnswer }) {
   );
 }
 
-function Focus({ info, sub, base, onSent, onComposerFocus }) {
+function Focus({ info, sub, base, onSent, onComposerFocus, padsOpen, padsCount, onTogglePads }) {
   const narrow = useNarrow();
   const railHidden = useRailHidden();
   if (!info) return <Empty what="no agent selected" />;
@@ -189,15 +195,24 @@ function Focus({ info, sub, base, onSent, onComposerFocus }) {
             <Text style={styles.dim}>{info.scroll} back</Text>
           )}
         </View>
+        {/* tmux capture-pane has already wrapped every line to the real
+            pane's width, not this box's -- laying that text into a narrower
+            column wraps it again, raggedly, which is not what the terminal
+            being mirrored looks like. Each line stays on the row tmux gave
+            it (no wrap, no shrink) and the extra width scrolls sideways
+            instead, inside this ScrollView alone -- it never reaches the
+            page, which still only scrolls the one way at any size. */}
         <ScrollView
           contentContainerStyle={styles.lines}
           style={narrow ? styles.linesNarrow : undefined}
           scrollEnabled={!narrow}>
-          {lines.slice(-60).map((line, i) => (
-            <Text key={i} style={styles.line}>
-              {line}
-            </Text>
-          ))}
+          <ScrollView horizontal style={styles.linesH} contentContainerStyle={styles.linesHContent}>
+            {lines.slice(-60).map((line, i) => (
+              <Text key={i} style={styles.line}>
+                {line}
+              </Text>
+            ))}
+          </ScrollView>
         </ScrollView>
       </View>
 
@@ -238,6 +253,9 @@ function Focus({ info, sub, base, onSent, onComposerFocus }) {
         base={base}
         onSent={onSent}
         onComposerFocus={onComposerFocus}
+        padsOpen={padsOpen}
+        padsCount={padsCount}
+        onTogglePads={onTogglePads}
       />
     </View>
   );
@@ -285,7 +303,7 @@ function Rich({ line }) {
 // box started mirroring the pane's own input line: staging now writes text
 // the composer immediately reads back, so the button that did it looked like
 // it had done nothing.
-function Composer({ info, base, onSent, onComposerFocus }) {
+function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, onTogglePads }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState('');
@@ -475,6 +493,18 @@ function Composer({ info, base, onSent, onComposerFocus }) {
       {/* One row, so labels are short by necessity: a third of the width
           truncates anything longer, and PushButton draws a single line. */}
       <View style={styles.composerRow}>
+        {/* The prompts panel opens from here rather than the header: it is
+            a way of putting text in this box, so it belongs beside the box
+            and not up in the chrome with the connection status. */}
+        {!!onTogglePads && (
+          <PushButton
+            label={`prompts · ${padsCount ?? 0}`}
+            colour={C.accentText}
+            lit={padsOpen}
+            onPress={onTogglePads}
+            style={styles.composerBtn}
+          />
+        )}
         <PushButton
           label={shot ? 'Saving…' : Platform.OS === 'web' ? 'Image ⌘V' : 'Image'}
           disabled={shot || sending}
@@ -825,8 +855,17 @@ const styles = StyleSheet.create({
   // flexShrink:1 in place, which is enough for it to still collapse inside
   // an auto-height ancestor. Both have to be overridden.
   linesNarrow: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto' },
-  lines: { gap: 2 },
-  line: { color: C.dim, fontSize: 12, lineHeight: 18, ...mono },
+  lines: {},
+  // horizontal ScrollView defaults its content to a row and stretches
+  // children to its own height -- overridden back to the column of lines
+  // this actually is, with alignItems left off 'stretch' so a line's width
+  // is its own text, not the box's, which is what lets a long one make the
+  // content wider than the box in the first place.
+  linesH: { width: '100%' },
+  linesHContent: { flexDirection: 'column', alignItems: 'flex-start', gap: 2 },
+  // no wrap: tmux already chose where this line ends, and re-wrapping it
+  // to this box's width is exactly the bug being fixed.
+  line: { color: C.dim, fontSize: 12, lineHeight: 18, whiteSpace: 'pre', ...mono },
   composer: { gap: 8 },
   composerInput: {
     minHeight: 60,

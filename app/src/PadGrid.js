@@ -46,7 +46,7 @@ function Pad({ i, macro, isSel, isMoving, isHeld, isOver, onHoverIn, onHoverOut 
 }
 
 // What a pad says and what it would send, before you find out the hard way.
-function PadCard({ index, macro, box, onExecute, onEdit, onHoverIn }) {
+function PadCard({ index, macro, box, onExecute, onEdit, onHoverIn, cardRef }) {
   const cell = { w: box.width / SIDE, h: box.height / SIDE };
   const col = index % SIDE;
   const screenRow = SIDE - 1 - Math.floor(index / SIDE);
@@ -67,6 +67,7 @@ function PadCard({ index, macro, box, onExecute, onEdit, onHoverIn }) {
 
   return (
     <Pressable
+      ref={cardRef}
       onHoverIn={onHoverIn}
       style={[styles.card, { left, width: CARD_W }, place]}
     >
@@ -140,6 +141,33 @@ export default function PadGrid({
   };
   useEffect(() => shut, []); // never fire a timer into an unmounted grid
 
+  const cardRef = useRef(null);
+  // The card has no Modal and no backdrop under it -- it closes when the
+  // pointer leaves the pad, but a keypress or a click somewhere else on the
+  // page (the transcript, the header) never touched the grid, so neither
+  // reached it. Web only, same shape as Pane.js's own paste listener: check
+  // the open card is what's under the click before closing over it, so a
+  // press on the card's own run/edit keys doesn't self-cancel.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || peeked.current === null) return;
+      shut();
+    };
+    const onClick = (e) => {
+      if (peeked.current === null) return;
+      const g = grid.current, c = cardRef.current;
+      if ((g && g.contains && g.contains(e.target)) || (c && c.contains && c.contains(e.target))) return;
+      shut();
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('click', onClick);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('click', onClick);
+    };
+  }, []);
+
   // hover and tap both mean "tell me about this pad", and both have to mean it
   // for a moment first -- a cursor crossing the grid is not a question.
   //
@@ -174,6 +202,18 @@ export default function PadGrid({
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e) => {
           shut(); // a hand on the grid is not asking to read about a pad
+          // frame.current is a cache from the grid's own onLayout, which
+          // doesn't refire on scroll -- a page scrolled since the last
+          // layout leaves it pointing at where the grid *was*, and cellAt
+          // then answers with whichever pad now happens to sit there
+          // instead of the one under the finger. getBoundingClientRect is
+          // synchronous (measureInWindow isn't -- it's a setTimeout away),
+          // so read it fresh right here rather than trust the cache; web
+          // only, same as everywhere else this file already assumes a DOM.
+          if (grid.current && grid.current.getBoundingClientRect) {
+            const r = grid.current.getBoundingClientRect();
+            frame.current = { x: r.left, y: r.top, width: r.width, height: r.height };
+          }
           const from = cellAt(e.nativeEvent.pageX, e.nativeEvent.pageY);
           live.current = { from, over: from, moved: false };
           setDrag(live.current);
@@ -294,6 +334,7 @@ export default function PadGrid({
           index={peek}
           macro={macros[peek]}
           box={frame.current}
+          cardRef={cardRef}
           onExecute={(i) => {
             shut();
             onExecute(i);

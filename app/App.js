@@ -441,18 +441,6 @@ export default function App() {
 
         <View style={styles.spacer} />
 
-        {/* The one control for a panel that is collapsed at rest everywhere
-            below 1200 (open there by default -- see padsOpen above): lit
-            when open, and present whether it's open or closed, so collapsed
-            reads as a control waiting to be pressed rather than the panel
-            having simply gone missing. */}
-        <PushButton
-          label={`prompts · ${filled}`}
-          colour={C.accentText}
-          lit={padsOpen}
-          onPress={() => setPadsOpen((o) => !o)}
-          style={styles.key}
-        />
         {/* Below 1200 the rail moves behind this and the pane header already
             names the current agent, so there is always an answer to "who
             am I looking at" without it. */}
@@ -545,8 +533,11 @@ export default function App() {
             onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
             reachable={reachable}
             onComposerFocus={() => setPadsOpen(true)}
+            padsOpen={padsOpen}
+            padsCount={filled}
+            onTogglePads={() => setPadsOpen((o) => !o)}
           />
-          {!(asking && data.kind === 'focus') && padsOpen &&
+          {!(asking && data.kind === 'focus') && (padsOpen || asking) &&
             (ready ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <Pads
@@ -609,9 +600,12 @@ export default function App() {
               onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
               reachable={reachable}
               onComposerFocus={() => setPadsOpen(true)}
+            padsOpen={padsOpen}
+            padsCount={filled}
+            onTogglePads={() => setPadsOpen((o) => !o)}
             />
           </View>
-          {!(asking && data.kind === 'focus') && padsOpen &&
+          {!(asking && data.kind === 'focus') && (padsOpen || asking) &&
             (ready ? (
               <Pads
                 kind={data.kind}

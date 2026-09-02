@@ -1,5 +1,13 @@
-import { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRef, useState } from 'react';
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
 import Worktrees from './Worktrees';
@@ -47,8 +55,45 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
     fn();
   };
 
+  // Where the menu draws: RN's Modal renders its content `position: fixed`
+  // over the whole viewport (react-native-web/exports/Modal/ModalContent),
+  // so it used to just centre itself there -- nothing tied it to the "⋯"
+  // that opened it, and a menu that floats over the transcript acts on
+  // whichever agent you *think* you tapped, not the one you did. Measuring
+  // the trigger in window coordinates and placing the menu against it fixes
+  // that; `position: fixed`'s coordinates are viewport-relative same as
+  // `measureInWindow`'s, so this holds after the page has scrolled too.
+  const menuBtnRefs = useRef({});
+  const [menuAnchor, setMenuAnchor] = useState(null); // {x,y,width,height} of the "⋯", in window coords
+  const [menuH, setMenuH] = useState(0); // real height of the drawn menu, filled in by its own onLayout
+  const { width: winW, height: winH } = useWindowDimensions();
+  const MENU_W = 240;
+  const MENU_GAP = 8;
+  const MENU_FALLBACK_H = 214; // header + four rows -- close enough to pick a side before onLayout reports back
+  const openMenu = (i) => {
+    const el = menuBtnRefs.current[i];
+    const finish = (pos) => {
+      setMenuAnchor(pos);
+      setMenuH(0); // the last menu's height would misplace this one for a frame otherwise
+      setMenu(i);
+    };
+    if (el && el.measureInWindow) el.measureInWindow((x, y, width, height) => finish({ x, y, width, height }));
+    else finish(null);
+  };
+  const menuPlace = () => {
+    if (!menuAnchor) return null;
+    const h = menuH || MENU_FALLBACK_H;
+    let left = menuAnchor.x + menuAnchor.width - MENU_W; // right-align under the dots, not centred on the screen
+    left = Math.max(MENU_GAP, Math.min(left, winW - MENU_W - MENU_GAP));
+    let top = menuAnchor.y + menuAnchor.height + MENU_GAP;
+    if (top + h > winH - MENU_GAP) top = menuAnchor.y - h - MENU_GAP; // no room below -- hang it above instead
+    top = Math.max(MENU_GAP, top);
+    return { left, top };
+  };
+
   const seatFor = (i) => (i != null ? cols[i] : null);
   const activeSeat = sheet && sheet.mode !== 'new' ? seatFor(sheet.seatIndex) : seatFor(current);
+  const menuPos = menuPlace();
 
   return (
     <View style={styles.rail}>
@@ -76,7 +121,10 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                   <View style={[styles.dot, { backgroundColor: hue }]} />
                   <Text style={[styles.status, { color: hue }]}>{col.status}</Text>
                   <Pressable
-                    onPress={() => setMenu(i)}
+                    ref={(el) => {
+                      menuBtnRefs.current[i] = el;
+                    }}
+                    onPress={() => openMenu(i)}
                     hitSlop={8}
                     style={styles.menuBtn}>
                     <Text style={styles.menuDots}>⋯</Text>
@@ -119,7 +167,9 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
         animationType="fade"
         onRequestClose={() => setMenu(null)}>
         <Pressable style={styles.backdrop} onPress={() => setMenu(null)}>
-          <View style={styles.menu}>
+          <View
+            style={[styles.menu, menuPos && { position: 'absolute', ...menuPos }]}
+            onLayout={(e) => setMenuH(e.nativeEvent.layout.height)}>
             <Text style={styles.menuHead} numberOfLines={1}>
               {menuCol?.name || ''}
             </Text>
