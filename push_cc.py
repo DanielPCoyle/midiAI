@@ -241,6 +241,17 @@ STATUS = {
 }
 UNKNOWN = (WHITE, STATIC)
 EMPTY = (BLACK, STATIC)
+# Idle, but nobody was looking at this seat when it got there -- finished
+# while you were elsewhere. Not a fifth status: status stays "idle" on the
+# wire, because three other places (Pane.js's busy check, its armed-message
+# effect, and chain_step_done) already branch on `status == "idle"` alone,
+# and widening the enum would mean rewriting all three to know about a value
+# that means the same thing status already did. Violet, because it has to
+# read as attention without alarm and be a colour nothing else on this
+# surface already means: not idle's green, working's yellow, blocked's red,
+# unknown's white, or any hue ANSWER_RGB spends on an option chip. Static --
+# a pulse already says "still working", and this agent is not.
+DONE = (VIOLET, STATIC)
 
 ENTER = "\r"
 
@@ -1854,7 +1865,7 @@ def focus_info(slot, agent, summary, scroll=0, suggested=False):
             "context": used / max(1, limit)}
 
 
-def panel_col(agent):
+def panel_col(agent, unseen=False):
     """One screen column. Two agents can share a repo name, so show a tail of
     the terminal id -- that is the thing that actually tells them apart.
 
@@ -1874,6 +1885,11 @@ def panel_col(agent):
             # and the one you are looking at is nearly always the one you mean
             "cwd": agent.get("cwd", ""),
             "focused": bool(agent.get("focused")),
+            # finished while this seat was not the one focused. Only ever
+            # true alongside status "idle" -- the caller (run()'s unseen
+            # dict) only ever sets it there -- but carried as its own field
+            # rather than folded into status, same reasoning as DONE above.
+            "unseen": bool(unseen),
             "context": used / limit if limit else 0.0}
 
 
@@ -1896,10 +1912,40 @@ def agent_name(agent):
     return agent.get("name") or os.path.basename(agent.get("cwd", "")) or "?"
 
 
-def colour_for(agent):
+def apply_unseen(unseen, prev_status, by_id, slots, current):
+    """Edge-detect idle across one poll, in place: flag a terminal_id unseen
+    the tick its agent_status *becomes* idle while its seat is not the one
+    focused, and forget entries for agents no longer live.
+
+    Level, not edge, would re-flag a still-idle agent every poll -- which
+    means the flag a human just cleared by focusing the seat comes right
+    back the moment they look elsewhere again, since that seat is still
+    reporting idle. Only the transition means "just finished"."""
+    for tid, a in by_id.items():
+        status = a.get("agent_status")
+        was = prev_status.get(tid)
+        if was is not None and status == "idle" and was != "idle":
+            seat_of = next((s for s, t in slots.items() if t == tid), None)
+            if seat_of != current:   # watched it happen -- stays plain idle
+                unseen[tid] = True
+        prev_status[tid] = status
+    for gone in set(unseen) - set(by_id):        # closed agents
+        del unseen[gone]
+    for gone in set(prev_status) - set(by_id):
+        del prev_status[gone]
+
+
+def colour_for(agent, unseen=False):
+    """Pad colour + animation for one seat. `unseen` comes in as its own
+    argument rather than something read off agent_status, so a caller that
+    never passes it gets the plain status colour unchanged -- see DONE's
+    comment for why unseen never becomes a status value itself."""
     if agent is None:
         return EMPTY
-    return STATUS.get(agent.get("agent_status"), UNKNOWN)
+    status = agent.get("agent_status")
+    if status == "idle" and unseen:
+        return DONE
+    return STATUS.get(status, UNKNOWN)
 
 
 def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
@@ -2139,6 +2185,17 @@ def run():
     macro_down, talk_src, previewing = None, None, None
     arm_held = {cc: False for cc in ARM_CCS}   # not `held`: a local below took it
     published = object()   # sentinel: nothing published yet
+    # unseen: terminal_id -> True once that agent went idle while its seat
+    # was not `current`, cleared the moment its seat becomes current by any
+    # route (tap_seat, follow_focus, or the mirror's /press -> tap_seat).
+    # prev_status: terminal_id -> the agent_status last seen for it, so the
+    # idle transition can be edge-detected rather than re-flagged every poll
+    # a still-idle agent sits there. A tid with no entry yet (a fresh agent,
+    # or push_cc's own first poll) is deliberately not flagged done on that
+    # first sighting -- there is no prior status to have transitioned from,
+    # and marking every already-idle agent done at startup would be a false
+    # "this just finished" for sessions that finished ages ago.
+    unseen, prev_status = {}, {}
     # (kind, deadline, index, name): asked something, waiting on an answer.
     # One variable for both questions -- the yes/no row, the timeout and the
     # screen are identical, only what yes does differs. index means a session
@@ -2204,6 +2261,7 @@ def run():
         # something it spawned
         current, shown, subfocus = slot, None, None
         scrolls[slot] = 0
+        unseen.pop(slots[slot], None)   # you just looked at it
 
     def show(name, m=None):
         """Go to a view, and to one of its modes when the reason to go there
@@ -2238,9 +2296,10 @@ def run():
                     live = agents()
                 assign(live, slots)
                 by_id = {a["terminal_id"]: a for a in live}
+                apply_unseen(unseen, prev_status, by_id, slots, current)
                 for s in range(SLOTS):
                     a = by_id.get(slots.get(s))
-                    colour, anim = colour_for(a)
+                    colour, anim = colour_for(a, unseen.get(slots.get(s), False))
                     if s in asking:
                         colour, anim = RED, BLINK    # herdr cannot see this one
                     if confirm:                   # the row is a yes/no pair now
@@ -2256,8 +2315,10 @@ def run():
                             VIEW_CC.get(VIEWS[s], TAB_DIM)
                             if s < len(VIEWS) else BLACK,
                             PULSE if s == view else STATIC)
-                # the legend for the eight buttons under the glass
-                seats = tuple((agent_name(a), a.get("agent_status"))
+                # the legend for the eight buttons under the glass -- unseen
+                # rides along as a third element, same reasoning as DONE above
+                seats = tuple((agent_name(a), a.get("agent_status"),
+                                unseen.get(slots.get(s), False))
                               if (a := by_id.get(slots.get(s))) else None
                               for s in range(SLOTS))
                 focused = next((a["terminal_id"] for a in live if a.get("focused")), None)
@@ -2270,6 +2331,7 @@ def run():
                     if seat_now != current:
                         current, shown = seat_now, None
                         scrolls[seat_now] = 0
+                        unseen.pop(slots.get(seat_now), None)  # you're on it now
                         print(f"herdr focus -> slot {seat_now}", flush=True)
                 # Scraped every poll, not just in the focus view: the bottom row
                 # answers a pending question from wherever you happen to be.
@@ -2370,7 +2432,8 @@ def run():
                     # photograph of the glass, so it is handed the same dicts
                     # the renderers get. Assembled alongside them, never
                     # instead: one truth, two consumers.
-                    seat_cols = [panel_col(by_id.get(slots.get(s)))
+                    seat_cols = [panel_col(by_id.get(slots.get(s)),
+                                           unseen.get(slots.get(s), False))
                                  for s in range(SLOTS)]
                     # every view, every mode it has, addressed by name -- a
                     # second screen is not a second Push, so it cannot be
@@ -2994,6 +3057,34 @@ def selftest():
     assert colour_for(a("x", "idle")) == (GREEN, STATIC)
     assert colour_for(a("x", "banana")) == UNKNOWN
     assert colour_for({}) == UNKNOWN
+    # unseen: finished while you were elsewhere reads as its own colour,
+    # never a fifth status -- only idle+unseen changes what is drawn.
+    assert colour_for(a("x", "idle"), unseen=True) == DONE
+    assert colour_for(a("x", "idle"), unseen=False) == (GREEN, STATIC)
+    assert colour_for(a("x", "working"), unseen=True) == (YELLOW, PULSE), \
+        "unseen only ever applies once idle -- working ignores it"
+    assert DONE not in (STATUS["working"], STATUS["blocked"],
+                        STATUS["idle"], UNKNOWN), "done needs its own colour"
+
+    # apply_unseen: the edge-detector behind DONE
+    unseen, prev_status, slots = {}, {}, {0: "x", 1: "y"}
+    apply_unseen(unseen, prev_status,
+                 {"x": a("x", "working"), "y": a("y", "working")}, slots, 0)
+    assert unseen == {}, "first sighting never flags -- no prior to transition from"
+    apply_unseen(unseen, prev_status,
+                 {"x": a("x", "working"), "y": a("y", "idle")}, slots, 0)
+    assert unseen == {"y": True}, "y went idle off the seat you're driving"
+    by_id = {"x": a("x", "idle"), "y": a("y", "idle")}
+    apply_unseen(unseen, prev_status, by_id, slots, 0)
+    assert unseen == {"y": True}, "x went idle on your own seat -- stays plain idle"
+    apply_unseen(unseen, prev_status, by_id, slots, 0)   # still idle, again
+    assert unseen == {"y": True}, "level, not edge: still-idle must not re-add or drop it"
+    unseen.pop("y", None)                    # tap_seat's own clear, simulated
+    apply_unseen(unseen, prev_status, by_id, slots, 1)
+    assert unseen == {}, "cleared, and still idle -- no re-flag without a fresh transition"
+    apply_unseen(unseen, prev_status, {"x": a("x", "working")}, {0: "x"}, 0)
+    assert "y" not in prev_status and "y" not in unseen, \
+        "a closed agent drops out of both, not left to leak forever"
 
     # tests: the tree the grid navigates, and reading a runner's output
     assert test_tree(["a/b.test.ts", "a/c.test.ts", "d.test.ts"]) == \
@@ -3150,10 +3241,15 @@ def selftest():
     col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
                      "terminal_id": "t", "focused": False})
     assert 0.0 <= col["context"] <= 1.0, "context fraction stays in range"
+    assert col["unseen"] is False, "the default is seen, not done"
     # every renderer reads by key, so a new field cannot break an old unpack
     assert set(col) == {"name", "status", "model", "effort", "sub", "tid",
-                        "cwd", "focused", "context"}, col
+                        "cwd", "focused", "unseen", "context"}, col
     assert col["tid"] == "t", "the app acts on a seat and must know which agent"
+    done_col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
+                          "terminal_id": "t", "focused": False}, unseen=True)
+    assert done_col["unseen"] is True and done_col["status"] == "idle", \
+        "unseen rides beside status, not instead of it"
 
     # no Push on the desk is not a reason for the app's surface to stop. Every
     # method that touches the wire has to survive having no wire, and mido is

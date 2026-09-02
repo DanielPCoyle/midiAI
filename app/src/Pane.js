@@ -14,7 +14,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
 import { pasteImage, promptAgent, startRecording, stopRecording } from './api';
 import PushButton from './PushButton';
-import { ANSWER_HEX, BREAK, C, S, SEAT_HEX, mono } from './theme';
+import { ANSWER_HEX, BREAK, C, S, SEAT_HEX, seatHue, seatWord, mono } from './theme';
 
 // Below BREAK.mid the app is one scrollable column (App.js's own doing),
 // so a pane built to fill a flex:1 slot -- transcript included -- would
@@ -648,7 +648,7 @@ function Sessions({ cols, current }) {
       </View>
       <View style={[styles.cols, narrow && styles.colsNarrow]}>
         {live.map(({ c, i }) => {
-          const hue = SEAT_HEX[c.status] || C.faint;
+          const hue = seatHue(c);
           return (
             <View
               key={i}
@@ -661,7 +661,7 @@ function Sessions({ cols, current }) {
               <Text style={styles.colName} numberOfLines={2}>
                 {c.name}
               </Text>
-              <Text style={[styles.rowSub, { color: hue }]}>{c.status}</Text>
+              <Text style={[styles.rowSub, { color: hue }]}>{seatWord(c)}</Text>
               <Text style={[styles.rowSub, mono]}>{c.model}</Text>
               <Text style={[styles.rowSub, mono]}>{c.effort}</Text>
               <View style={styles.spacer} />

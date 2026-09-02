@@ -59,12 +59,31 @@ export const ANSWER_HEX = [
 // `unknown` is a claude whose process is there but whose session has not
 // started -- present, unclassified. It was falling through to C.faint by
 // accident; grey is the right answer, but it should be chosen.
+// `done` is not a status -- status stays `idle` on the wire, same as
+// push_cc.DONE and display.DONE_RGB. It is what an idle seat draws as when
+// its `unseen` flag is set, combined by seatHue below rather than looked up
+// by status alone. Violet: distinct from idle/working/blocked/unknown and
+// from every hue ANSWER_HEX already spends on an option chip.
 export const SEAT_HEX = {
   idle: '#3cd05a',
   working: '#f0c828',
   blocked: '#f03c3c',
   unknown: '#6b7280',
+  done: '#b04ae0',
 };
+
+// The hue told you an agent had finished while you were elsewhere; the word
+// beside it still said "idle", so violet was something to learn rather than
+// something to read. `status` stays "idle" -- three predicates depend on it --
+// and only the label changes, which is the whole reason `unseen` is a flag.
+export const seatWord = (col) =>
+  col && col.status === 'idle' && col.unseen ? 'done' : (col || {}).status || '';
+
+
+// The one place idle+unseen becomes a colour on this side, so the rail card
+// and the sessions list can't drift into combining the two differently.
+export const seatHue = (col) =>
+  SEAT_HEX[col?.status === 'idle' && col?.unseen ? 'done' : col?.status] || C.faint;
 
 // The chassis, off the photographs: the buttons sit darker than the panel
 // around them, ringed by a hairline that catches light along the top edge.

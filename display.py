@@ -82,6 +82,22 @@ STATUS_RGB = {
     "idle": (60, 220, 90), "working": (240, 200, 40),
     "blocked": (240, 60, 60), None: (110, 110, 110),
 }
+# push_cc.DONE in screen colours -- idle, but the seat was not the one
+# focused when it got there. Not a STATUS_RGB entry: status itself never
+# becomes "done" (push_cc.DONE's comment explains why), so this is combined
+# with STATUS_RGB by the two renderers below rather than looked up by status
+# alone. Matches app/src/theme.js's SEAT_HEX.done -- change both.
+DONE_RGB = (176, 74, 224)
+
+
+def status_rgb(status, unseen=False):
+    """The one place idle+unseen becomes a colour, for both glass renderers
+    that draw a seat's status (seat_strip's band, render(cols)'s column)."""
+    if status == "idle" and unseen:
+        return DONE_RGB
+    return STATUS_RGB.get(status, STATUS_RGB[None])
+
+
 COL_W = WIDTH // 8
 SEAT_H = 12                             # seat_strip's height, at the far edge
 BOTTOM = 160 - SEAT_H                   # where content has to stop; HEIGHT below
@@ -173,7 +189,7 @@ def view_strip(img, names, current, page=0, pages=1):
 
 
 def seat_strip(img, seats, current):
-    """seats: up to 8 (name, status) pairs or None, in button order
+    """seats: up to 8 (name, status, unseen) triples or None, in button order
        current: index of the session you are driving
        Draws in place on `img` and returns it.
 
@@ -187,8 +203,9 @@ def seat_strip(img, seats, current):
         x, active = i * COL_W, i == current
         if active:
             d.rectangle([x, BOTTOM, x + COL_W - 1, HEIGHT - 1], fill=(48, 70, 96))
-        name, status = seat if seat else (str(i + 1), None)
-        rgb = STATUS_RGB.get(status, (70, 70, 70)) if seat else (55, 55, 55)
+        name, status, unseen = seat if seat else (str(i + 1), None, False)
+        rgb = (DONE_RGB if status == "idle" and unseen else
+               STATUS_RGB.get(status, (70, 70, 70))) if seat else (55, 55, 55)
         if active:                      # lift it off the highlight
             rgb = tuple(min(255, c + 70) for c in rgb)
         t, f = fit(d, name, COL_W - 8, 12)
@@ -1079,7 +1096,7 @@ def render_tests(info):
 
 
 def render(cols):
-    """cols: 8 entries of (name, status, model, sub, focused), None.
+    """cols: 8 entries of (name, status, model, sub, focused, unseen), None.
 
     Eight cards, and only that. A half-written prompt belongs to the focus
     view, which is where you go to read one; letting it take this glass meant
@@ -1097,7 +1114,7 @@ def render(cols):
             continue
         name, status, model = col["name"], col["status"], col["model"]
         sub = col["sub"]
-        rgb = STATUS_RGB.get(status, STATUS_RGB[None])
+        rgb = status_rgb(status, col.get("unseen"))
         _column(d, i, rgb, col["focused"])
         # ctx_bar and sub shifted (+10/+10) to stay paired with the swatch
         # row in _column, which itself shifted to clear the view_strip band

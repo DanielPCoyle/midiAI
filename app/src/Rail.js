@@ -11,7 +11,7 @@ import {
 import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
 import Worktrees from './Worktrees';
-import { C, S, SEAT_HEX } from './theme';
+import { C, S, seatHue, seatWord } from './theme';
 
 // The agents, as a rail you can read rather than eight anonymous buttons.
 // The Push needs them anonymous -- it has exactly eight physical buttons and no
@@ -19,7 +19,7 @@ import { C, S, SEAT_HEX } from './theme';
 //
 // props:
 //   cols       array(8)                 -- unchanged: each slot null or
-//                                           { name, status, model, effort, sub, tid, focused, context, cwd? }.
+//                                           { name, status, model, effort, sub, tid, focused, unseen, context, cwd? }.
 //                                           `cwd` is not on the shape yet -- read optionally so the 'new'
 //                                           and 'worktree' sheets default their cwd field the moment a
 //                                           caller starts including it, without another round of edits here.
@@ -102,7 +102,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
         {Array.from({ length: 8 }, (_, i) => {
           const col = cols[i] || null;
           if (!col) return null;
-          const hue = SEAT_HEX[col.status] || C.faint;
+          const hue = seatHue(col);
           const on = i === current;
           return (
             <PushButton
@@ -111,7 +111,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
               // left to itself this announces as "midiAIidle⋯%0" -- the name,
               // the status, the menu glyph and the tmux id run together. Same
               // shape as the tab that answered to "· 0".
-              accessibilityLabel={`${col.name} · ${col.status}`}
+              accessibilityLabel={`${col.name} · ${seatWord(col)}`}
               lit={on}
               onPress={() => onSeat(i)}
               style={[styles.card, on && { borderColor: hue }]}>
@@ -123,7 +123,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                     {col.name}
                   </Text>
                   <View style={[styles.dot, { backgroundColor: hue }]} />
-                  <Text style={[styles.status, { color: hue }]}>{col.status}</Text>
+                  <Text style={[styles.status, { color: hue }]}>{seatWord(col)}</Text>
                   <Pressable
                     ref={(el) => {
                       menuBtnRefs.current[i] = el;
