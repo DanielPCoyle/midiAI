@@ -556,6 +556,18 @@ function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, on
         editable={!sending}
       />
       {!!err && <Text style={styles.err}>{err}</Text>}
+      {/* The box mirrors the agent's own input line so dictation can be edited
+          before it goes. Nothing said so, though, so text that arrived on its
+          own looked like text you had typed -- and a cursor sitting at the end
+          of it meant the next thing you typed joined it into one prompt. Said
+          only while it is still untouched: the moment you edit, it is yours
+          and the line has nothing left to warn about. */}
+      {!!text.trim() && text === seen.current && (
+        <Text style={styles.mirrored}>
+          this is the agent's own input line, not yours yet — edit it, or clear
+          it before typing
+        </Text>
+      )}
       {/* One row of three dispatch actions, icon-only in every state: a word
           next to a glyph was redundant once the glyph itself changed with the
           state, and dropping it is what let the toggle's real label (prompts
@@ -910,6 +922,7 @@ const styles = StyleSheet.create({
   // this isn't one.
   caption: { color: C.faint, fontSize: 12, fontStyle: 'italic' },
   act: { color: C.warn, fontSize: 12, flexShrink: 1 },
+  mirrored: { color: C.dim, fontSize: 11, paddingHorizontal: 4, paddingTop: 4 },
   err: { color: C.bad, fontSize: 12 },
   head: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
   card: {
