@@ -734,10 +734,22 @@ function Usage({ data, mode, onMode }) {
   );
 }
 
+// The server sends {label, used, severity, ...}. This read `bar.frac`, which
+// has never been a key it sends, so every bar fell through to the ?? 0 and
+// drew 0% in the comfortable green -- at 98% of a session budget, on the one
+// screen you check to decide whether to keep working.
+//
+// Colour comes off display.py's ramp rather than a threshold of our own:
+// severity can push it hotter than the number alone would, never cooler, and
+// two places deciding the same thing is what put a 0 here in the first place.
+const PLAN_RAMP = ['#3cd05a', '#e0d02c', '#e03c3c'];
+const SEVERITY_FLOOR = { warning: 1, critical: 2 };
+
 function Bar({ bar }) {
-  const pct = Math.max(0, Math.min(1, Number(bar.frac ?? bar[1] ?? 0)));
+  const pct = Math.max(0, Math.min(1, Number(bar.used ?? bar.frac ?? bar[1] ?? 0)));
   const label = bar.label ?? bar[0] ?? '';
-  const hue = pct > 0.8 ? '#e08a2c' : '#3cd05a';
+  const level = pct < 0.6 ? 0 : pct < 0.85 ? 1 : 2;
+  const hue = PLAN_RAMP[Math.max(level, SEVERITY_FLOOR[bar.severity] ?? 0)];
   return (
     <View style={styles.bar}>
       <View style={styles.title}>
