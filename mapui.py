@@ -330,22 +330,39 @@ class Handler(BaseHTTPRequestHandler):
                    "text/plain")
 
     def _press(self):
-        """A button on the mirror. push_cc consumes the file on its next poll,
-        which is the same path a physical press takes -- so a click and a press
-        cannot mean two different things."""
+        """A button on the mirror, or any of the ~54 controls the Push itself
+        maps -- push_cc drains the queue on its next poll and turns a "cc" or
+        "pitch" entry into the identical mido message a physical press or
+        touchstrip move would have produced, which is the same path a
+        physical press takes -- so a click and a press cannot mean two
+        different things. Queued rather than replaced: see
+        push_cc.append_command for why a hold's press and release must both
+        survive."""
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
             cmd = json.loads(raw)
+            if not isinstance(cmd, dict):
+                raise TypeError
             keep = {k: int(cmd[k])
                     for k in ("tab", "seat", "page", "answer") if k in cmd}
+            if "cc" in cmd:
+                cc = int(cmd["cc"])
+                if not 0 <= cc <= 127:
+                    raise ValueError("cc out of range")
+                value = int(cmd.get("value", 127))
+                if not 0 <= value <= 127:
+                    raise ValueError("value out of range")
+                keep["cc"], keep["value"] = cc, value
+            if "pitch" in cmd:
+                pitch = int(cmd["pitch"])
+                if not -8192 <= pitch <= 8191:
+                    raise ValueError("pitch out of range")
+                keep["pitch"] = pitch
         except (json.JSONDecodeError, TypeError, ValueError):
             return self._send(400, "bad request", "text/plain")
         if not keep:
             return self._send(400, "nothing to press", "text/plain")
-        tmp = push_cc.CMD_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(keep, f)
-        os.replace(tmp, push_cc.CMD_FILE)
+        push_cc.append_command(keep)
         self._send(200, "ok", "text/plain")
 
     def _agents_create(self):

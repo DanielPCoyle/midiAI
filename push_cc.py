@@ -54,7 +54,9 @@ of the eight encoders scrolls the agent above it, and touching one peeks at it.
   python3 push_cc.py --debug     log every control you press, with its number
   python3 mapui.py               edit the 64 pads in a browser, live
 """
+import fcntl
 import glob
+import itertools
 import json
 import os
 import re
@@ -193,6 +195,13 @@ TARGET_FILE = os.path.join(_HERE, ".target.json")
 FRAME_FILE = os.path.join(_HERE, ".frame.png")
 SURFACE_FILE = os.path.join(_HERE, ".surface.json")
 CMD_FILE = os.path.join(_HERE, ".command.json")
+# append_command (mapui, one call per HTTP POST) and take_commands (push_cc,
+# one call per poll) both do a read-modify-write on CMD_FILE from separate
+# processes. os.replace makes each write atomic on its own, but the pair of
+# them is not: without a lock, a command could land in the gap between one
+# side's read and its write and be silently overwritten. This file is held
+# with flock for exactly that read-modify-write, nothing else.
+CMD_LOCK_FILE = os.path.join(_HERE, ".command.lock")
 SCRAPE_LINES = "400"               # how far back the focus view can scroll
 SWEEP_LINES = "40"                 # enough to spot a question at the foot of a pane
 SWEEP_S = 1.5                      # every agent, throttled: 8 reads is not free
@@ -423,19 +432,60 @@ def publish_surface(surface):
         print(f"mirror: {e}", file=sys.stderr, flush=True)
 
 
-def take_command():
-    """A press from the browser mirror, consumed exactly once."""
+def _cmd_lock():
+    """Held across one read-modify-write of CMD_FILE -- see CMD_LOCK_FILE."""
+    lock = open(CMD_LOCK_FILE, "a+")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    return lock
+
+
+def append_command(cmd):
+    """A press from the browser mirror, queued rather than overwritten.
+
+    CMD_FILE used to hold one dict, replaced whole. A press and its release
+    landing inside the same 0.5s poll window would overwrite each other, and
+    holds -- Record, Automate, Shift -- are press-and-release pairs where both
+    ends matter. So this appends to a list instead, and take_commands drains
+    it in order. Locked against take_commands: see CMD_LOCK_FILE."""
+    lock = _cmd_lock()
     try:
-        with open(CMD_FILE) as f:
-            raw = f.read()
-        os.remove(CMD_FILE)
-    except OSError:
-        return None
+        try:
+            with open(CMD_FILE) as f:
+                queue = json.loads(f.read())
+            if not isinstance(queue, list):
+                queue = []
+        except (OSError, json.JSONDecodeError):
+            queue = []          # missing, or a bad one: start clean either way
+        queue.append(cmd)
+        tmp = CMD_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(queue, f)
+        os.replace(tmp, CMD_FILE)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+def take_commands():
+    """Every press from the browser mirror since the last poll, consumed
+    exactly once, in the order they arrived. Locked against append_command:
+    see CMD_LOCK_FILE."""
+    lock = _cmd_lock()
     try:
-        cmd = json.loads(raw)
-    except json.JSONDecodeError:
-        return None         # already unlinked: a bad one cannot loop
-    return cmd if isinstance(cmd, dict) else None
+        try:
+            with open(CMD_FILE) as f:
+                raw = f.read()
+            os.remove(CMD_FILE)
+        except OSError:
+            return []
+        try:
+            queue = json.loads(raw)
+        except json.JSONDecodeError:
+            return []            # already unlinked: a bad one cannot loop
+        return queue if isinstance(queue, list) else []
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
 
 
 def reload_macros():
@@ -2292,6 +2342,10 @@ def run():
     try:
         while True:
             now = time.monotonic()
+            # Filled below, when there is a poll's worth of mirror cc/pitch
+            # commands to translate, and drained by the iter_pending loop a
+            # little further down in this same pass -- see the comment there.
+            mirror_msgs = []
             # First, before anything that can block. Claude infers the hold
             # from these spaces arriving and calls it released after ~120ms of
             # quiet, so a gap is not a slow frame -- it is a release, and the
@@ -2360,8 +2414,7 @@ def run():
                 if (cur or {}).get("terminal_id") != published:
                     published = (cur or {}).get("terminal_id")
                     publish_target(cur)
-                cmd = take_command()
-                if cmd:
+                for cmd in take_commands():
                     print(f"mirror: {cmd}", flush=True)
                     if "tab" in cmd:
                         tap_tab(int(cmd["tab"]))
@@ -2376,6 +2429,32 @@ def run():
                                   answer_keys(k, summary.get("sel") or 0))
                             print(f"answer {k + 1}/{len(opts)} from the mirror",
                                   flush=True)
+                    # Any of the ~54 mapped controls, not just the four above.
+                    # Rather than re-implement what each CC means a second
+                    # time here, build the identical mido message a physical
+                    # press would have produced and let it run the 30-branch
+                    # control_change chain below -- so a mirror click and a
+                    # real press are, from that point on, the same event and
+                    # cannot drift out of sync with each other.
+                    if "cc" in cmd:
+                        mirror_msgs.append(mido.Message(
+                            "control_change", control=int(cmd["cc"]),
+                            value=int(cmd.get("value", 127))))
+                    if "pitch" in cmd:
+                        # The strip only listens to pitchwheel while a finger
+                        # is down (see strip_touch below), and only commits
+                        # /effort on lift-off -- a bare pitchwheel here would
+                        # be heard and then discarded. A mirror click has no
+                        # separate press/drag/release the way a real finger
+                        # does, so one "pitch" is the whole gesture: touch
+                        # down, move to position, lift off.
+                        pitch = int(cmd["pitch"])
+                        mirror_msgs.append(mido.Message(
+                            "note_on", note=STRIP_NOTE, velocity=127))
+                        mirror_msgs.append(
+                            mido.Message("pitchwheel", pitch=pitch))
+                        mirror_msgs.append(mido.Message(
+                            "note_off", note=STRIP_NOTE, velocity=0))
                 if reload_macros():
                     shown = None
                     print("macros reloaded", flush=True)
@@ -2658,7 +2737,13 @@ def run():
                                    if MACROS[i] and lit_macros else BLACK))
                     push.note("macro", i, MACRO_NOTES[i], colour, anim)
 
-            for msg in (inp.iter_pending() if inp else ()):
+            # mirror_msgs first: a mirror click queued this pass takes the
+            # identical code path a physical press takes, and in the order it
+            # arrived relative to the others queued alongside it -- nothing
+            # below this line can tell a synthetic control_change or
+            # pitchwheel apart from one the Push itself sent.
+            for msg in itertools.chain(mirror_msgs,
+                                       inp.iter_pending() if inp else ()):
                 if msg.type == "sysex":
                     # The Push sends this when it switches Live/User mode, which
                     # also blanks its LEDs. painted still believes they are lit,
@@ -3576,6 +3661,33 @@ def selftest():
                         "  ⏵⏵ auto mode on"]) == "run the tests and report what failscontinue"
     assert prompt_text(["❯ /clear", "  ⏵⏵ footer", "❯ later"]) == "later"  # last caret wins
     assert prompt_text(["nothing here"]) == ""
+
+    # the mirror's command queue: append_command/take_commands, against a
+    # temp file so this cannot collide with a push_cc actually running
+    # against the real CMD_FILE
+    global CMD_FILE, CMD_LOCK_FILE
+    _real_cmd_file, _real_cmd_lock = CMD_FILE, CMD_LOCK_FILE
+    with tempfile.TemporaryDirectory() as tmp:
+        CMD_FILE = os.path.join(tmp, ".command.json")
+        CMD_LOCK_FILE = os.path.join(tmp, ".command.lock")
+        assert take_commands() == [], "nothing written yet -> nothing to drain"
+        append_command({"cc": 49, "value": 127})
+        append_command({"cc": 49, "value": 0})
+        append_command({"pitch": 4000})
+        # order preserved: a press and its release must not be free to land
+        # in either order, or a hold reads as released-then-pressed
+        assert take_commands() == [{"cc": 49, "value": 127},
+                                   {"cc": 49, "value": 0},
+                                   {"pitch": 4000}], \
+            "several presses queue up and drain in the order they arrived"
+        assert take_commands() == [], "consumed exactly once"
+        assert not os.path.exists(CMD_FILE), "and the file goes with it"
+        with open(CMD_FILE, "w") as f:
+            f.write("not json")
+        assert take_commands() == [], "a malformed file is discarded, not retried"
+        assert not os.path.exists(CMD_FILE), "consumed even when it cannot be read"
+    CMD_FILE, CMD_LOCK_FILE = _real_cmd_file, _real_cmd_lock
+
     print("ok")
 
 

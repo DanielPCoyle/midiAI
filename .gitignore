@@ -7,3 +7,4 @@ __pycache__/
 .claude/
 desktop/node_modules/
 app/dist/
+.command.lock
