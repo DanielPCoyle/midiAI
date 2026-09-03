@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { Image, PanResponder, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, PanResponder, StyleSheet, Text, View } from 'react-native';
 import PushButton from './PushButton';
 import { C, KEY, S, SEAT_HEX, hexFor } from './theme';
 
@@ -45,6 +45,57 @@ const ENC_CCS = [71, 72, 73, 74, 75, 76, 77, 78]; // one per agent column
 // mido pitchwheel runs -8192..8191, same span push_cc.py's effort_at reads.
 const PITCH_SPAN = 8192 * 2;
 
+// The physical map, sourced rather than remembered: Ableton's own
+// "Ableton/push-interface" repo (github.com/Ableton/push-interface,
+// doc/AbletonPush2MIDIDisplayInterface.asc + doc/MidiMapping.png) is the
+// public MIDI and Display Interface Manual the ticket points at, and its
+// diagram lays out every control at its real position. Read top to bottom:
+//
+//   - encoders (Tempo, 8 assignable, Master) across the very top
+//   - Metronome sits at the left end of the row of 8 view buttons above the
+//     display; Setup/User (unmapped here) sit at the right end
+//   - Delete/Undo stack at the display's left edge; Add Device/Add Track
+//     stack at its right edge, with Browse (of an unmapped 2x2 with Device/
+//     Mix/Clip) beside them -- collapsed to one 3-tall column here rather
+//     than a stack-plus-grid, noted as an approximation
+//   - Mute/Solo/Stop Clip sit left of the 8 under-display buttons; the
+//     Left/Up/Down/Right diamond sits to their right, past an unmapped
+//     Master button
+//   - left of the touchstrip, top to bottom: Convert/Double Loop/Quantize,
+//     then Duplicate/New, then Automate/Record (bigger cells, RGB LEDs),
+//     then Play alone at the very bottom -- exactly this grouping and order
+//   - right of the pad grid, an unmapped column (Repeat/Accent/Scale/
+//     Layout/Note/Session) before the Octave/Page diamond and, below that,
+//     Shift/Select in the bottom-right corner
+//
+// Everything above is a direct read of the manual. The one genuine guess is
+// collapsing Add Device/Add Track/Browse into a single column instead of a
+// stack beside a 2x2 grid -- see the comment on DisplayRight below.
+// A pad grid this wide is also, near enough, this tall (PadRows' height is
+// an identity of its own width -- 8 square cells plus 7 gaps sums back to
+// the width they were cut from), and that single fact drives the whole
+// canvas towards square unless the rails either side of it carry real
+// width. The manual's own device outline (its drawn border, not the legend
+// or the encoder labels hanging above it) measures 4950x3974px --
+// 1.25:1, matching the ticket's anchor -- with the rails either side of the
+// pad grid at roughly 30% (left) and 35% (right) of the grid's own width.
+// RAIL_L/RAIL_R below lean on that ratio, widened a little further to buy
+// back what the fixed-height rows above the pads (encoders, the display)
+// don't otherwise contribute, so the mirror lands wider than tall the way
+// the hardware does rather than the square-ish result a narrower rail
+// produces.
+const RAIL_L = 280; // the left-edge column's width, in canvas px (see CANVAS_W)
+const RAIL_R = 340; // the right-edge column's width -- wider, it carries a diamond
+const STRIP_W = 36; // the touchstrip, immediately left of the pad grid
+const DIAMOND_SIZE = 120; // the 4-way diamonds' own size, independent of their rail's width
+const CANVAS_W = 1400; // the whole mirror is authored at this width and scaled to fit
+// The pad row has a 4th column (the touchstrip) the rows above and below it
+// don't -- so its left rail has to give up exactly the width the strip and
+// its own gap take, or the pad grid stops lining up under the button rows
+// above it. Derived, not picked, so the two stay in sync if RAIL_L ever
+// moves.
+const PAD_RAIL_L = RAIL_L - STRIP_W - S.gap / 2;
+
 // A tap is one POST: push_cc only ever looks for the down-edge (`if
 // msg.value`) on a plain button, so the wire contract's default value of 127
 // is a whole press by itself and there is nothing to release. `press` is
@@ -85,6 +136,36 @@ function useLatest(value) {
   return ref;
 }
 
+// The mirror is authored once at CANVAS_W and an intrinsic height (the
+// display's real aspect ratio and the pad grid's square cells decide that,
+// not a number picked here), then the whole thing is scaled uniformly to
+// whatever room the pane actually has -- width or height, whichever binds
+// first -- the same way a photo fits inside a frame. A CSS transform scales
+// text, LEDs and hit targets together, so nothing about "small buttons stay
+// small" needs separate handling: the diamond keys read tiny at 820px
+// because the same diamond keys are tiny on the hardware.
+//
+// Two measurements, not one: `box` is how much room the surrounding pane
+// gives this component (its own onLayout), and `native` is how tall the
+// authored-at-CANVAS_W content turns out to be (the canvas's own onLayout).
+// RN computes layout before it applies a transform, so reading the canvas's
+// size while a scale transform is already applied still returns the
+// unscaled, native number -- there is no chicken-and-egg here.
+function useFit() {
+  const [box, setBox] = useState({ w: CANVAS_W, h: CANVAS_W / 1.25 });
+  const [native, setNative] = useState({ w: CANVAS_W, h: CANVAS_W / 1.25 });
+  const onBoxLayout = useCallback((e) => {
+    const { width, height } = e.nativeEvent.layout;
+    if (width > 0 && height > 0) setBox({ w: width, h: height });
+  }, []);
+  const onCanvasLayout = useCallback((e) => {
+    const { width, height } = e.nativeEvent.layout;
+    if (width > 0 && height > 0) setNative({ w: width, h: height });
+  }, []);
+  const scale = Math.min(box.w / native.w, box.h / native.h) || 1;
+  return { onBoxLayout, onCanvasLayout, scale };
+}
+
 export default function PushMirror({ base, surface, macros, onTab, onSeat, press }) {
   const views = Array.isArray(surface?.views) ? surface.views : null;
   const hasSurface = !!views;
@@ -92,335 +173,363 @@ export default function PushMirror({ base, surface, macros, onTab, onSeat, press
   // because one did would be a worse failure than a control that quietly
   // does nothing -- the same standard the wire contract itself asks for.
   const send = press || (() => {});
+  const { onBoxLayout, onCanvasLayout, scale } = useFit();
 
-  // ~54 controls do not fit a fixed viewport height the way the original
-  // four rows did -- that version's PadRows was `flex:1`, expanding or
-  // shrinking to soak up whatever room was left. With this many more rows
-  // above it there may be nothing left to soak up at 820px tall, and a pad
-  // grid squeezed to zero height is clipped in exactly the sense the ticket
-  // rules out. So the pad grid goes back to sizing itself (aspect-ratio
-  // squares, see `pad` below) and the whole device scrolls vertically
-  // instead -- everything stays legible at its natural size, and a short
-  // window trades a scrollbar for what would otherwise be missing rows.
-  // Nothing about the horizontal layout changes: it already fits three
-  // widths without help, because every row keeps the same 8-column split
-  // TabRow and SeatRow always used.
   return (
-    <ScrollView style={styles.wrap} contentContainerStyle={styles.wrapContent}>
-      <EncoderRow press={send} />
-      <TabRow surface={surface} views={views} onTab={onTab} />
-      <Frame base={base} surface={hasSurface ? surface : null} />
-      <View style={styles.seatBlock}>
-        <LeftColumn press={send} />
-        <SeatRow surface={surface} onSeat={onSeat} />
+    <View style={styles.wrap} onLayout={onBoxLayout}>
+      <View
+        onLayout={onCanvasLayout}
+        style={[styles.canvas, { width: CANVAS_W, transform: [{ scale }] }]}>
+        <EncoderRow press={send} />
+        <AboveDisplayRow surface={surface} views={views} onTab={onTab} press={send} />
+        <DisplayRow base={base} surface={hasSurface ? surface : null} press={send} />
+        <UnderDisplayRow surface={surface} onSeat={onSeat} press={send} />
+        <PadArea macros={macros || []} press={send} />
       </View>
-      <SlashRow press={send} />
-      <TransportRow press={send} />
-      <NavRow press={send} />
-      <BigTransport press={send} />
-      <View style={styles.padArea}>
-        <TouchStrip press={send} />
-        <PadRows macros={macros || []} />
-      </View>
-    </ScrollView>
+    </View>
   );
 }
 
-function TabRow({ surface, views, onTab }) {
+// Tempo and Master flank the eight assignable encoders the same way they
+// flank them on the hardware -- and now the same way RAIL_L/RAIL_R flank
+// every row below, so the encoder row's ends line up with the columns
+// beside the display, the under-display row and the pads.
+function EncoderRow({ press }) {
+  return (
+    <View style={styles.railRow}>
+      <Encoder
+        label="Tempo"
+        accessibilityLabel="Tempo encoder — scrolls the focus view"
+        press={press}
+        cc={TEMPO_CC}
+        style={{ width: RAIL_L }}
+      />
+      <View style={[styles.row, styles.mid]}>
+        {ENC_CCS.map((cc, i) => (
+          <Encoder
+            key={cc}
+            label={String(i + 1)}
+            accessibilityLabel={`Encoder ${i + 1} — scrolls the agent above it`}
+            press={press}
+            cc={cc}
+            style={styles.slot}
+          />
+        ))}
+      </View>
+      <Encoder
+        label="Master"
+        accessibilityLabel="Master encoder — up and down arrows at the current agent"
+        press={press}
+        cc={VOLUME_CC}
+        style={{ width: RAIL_R }}
+      />
+    </View>
+  );
+}
+
+// The row of 8 view buttons above the display, Metronome at its left end
+// exactly where the manual puts it -- the far right (Setup/User) is
+// unmapped, so it stays a blank spacer rather than an invented button, kept
+// only to hold the display's width steady against the row below it.
+function AboveDisplayRow({ surface, views, onTab, press }) {
   const modes = surface?.modes || [];
   const at = surface?.at || [];
   const colours = surface?.colours || [];
   const active = surface?.view;
 
   return (
-    <View style={styles.row}>
-      {Array.from({ length: SLOTS }, (_, i) => {
-        if (!views || i >= views.length) {
-          return <PushButton key={i} label="" disabled style={styles.slot} />;
-        }
-        const mode = modes[i];
-        const label = mode > 1 ? `${views[i]} ${(at[i] ?? 0) + 1}/${mode}` : views[i];
-        return (
-          <PushButton
-            key={i}
-            label={label}
-            colour={colours[i] ? rgb(colours[i]) : C.accentText}
-            lit={i === active}
-            onPress={() => onTab(i)}
-            style={styles.slot}
-          />
-        );
-      })}
+    <View style={styles.railRow}>
+      <PushButton
+        label="Metronome"
+        accessibilityLabel="Metronome — /mcp"
+        colour={C.accentText}
+        style={{ width: RAIL_L }}
+        onPress={tapCC(press, METRO_CC)}
+      />
+      <View style={[styles.row, styles.mid]}>
+        {Array.from({ length: SLOTS }, (_, i) => {
+          if (!views || i >= views.length) {
+            return <PushButton key={i} label="" disabled style={styles.slot} />;
+          }
+          const mode = modes[i];
+          const label = mode > 1 ? `${views[i]} ${(at[i] ?? 0) + 1}/${mode}` : views[i];
+          return (
+            <PushButton
+              key={i}
+              label={label}
+              colour={colours[i] ? rgb(colours[i]) : C.accentText}
+              lit={i === active}
+              onPress={() => onTab(i)}
+              style={styles.slot}
+            />
+          );
+        })}
+      </View>
+      <View style={{ width: RAIL_R }} />
     </View>
   );
 }
 
-// Under the display, unchanged from before this ticket -- but no longer the
-// full width of the row on its own. The left-hand device/track column sits
-// beside it now, so this needs to claim the width that column doesn't, hence
-// `styles.seatRowFill` rather than the plain `styles.row` every other row
-// uses: it is the only row nested inside another row instead of sitting
-// straight in the wrap's own column flow, and Yoga only stretches a
-// non-flex child along a cross axis, never a main one.
-function SeatRow({ surface, onSeat }) {
+// Delete/Undo stack at the display's left edge; Add Device/Add Track/Browse
+// at its right. On the hardware the right side is a 2-stack (Add Device,
+// Add Track) beside a 2x2 grid (Device/Mix above Browse/Clip) -- Device, Mix
+// and Clip aren't in push_cc.py's map, so rather than draw empty cells next
+// to real ones, this collapses the mapped three into one column. Real
+// grouping (all three sit right of the display, nowhere else), approximate
+// arrangement (one column, not stack-beside-grid).
+//
+// Both rail columns default to stretch (no alignSelf override) so they fill
+// whatever height the display itself settles at, same trick PadArea's
+// flanks use below.
+function DisplayRow({ base, surface, press }) {
+  return (
+    <View style={styles.railRow}>
+      <View style={[styles.railCol, { width: RAIL_L }]}>
+        <PushButton
+          label="Delete"
+          accessibilityLabel="Delete — close the current agent's pane"
+          colour={C.bad}
+          style={styles.fill}
+          onPress={tapCC(press, DELETE_CC)}
+        />
+        <PushButton
+          label="Undo"
+          accessibilityLabel="Undo — backspace the prompt empty"
+          colour={C.accentText}
+          style={styles.fill}
+          onPress={tapCC(press, UNDO_CC)}
+        />
+      </View>
+      <Frame base={base} surface={surface} />
+      <View style={[styles.railCol, { width: RAIL_R }]}>
+        <PushButton
+          label="Add Device"
+          accessibilityLabel="Add Device — split, new claude in auto mode"
+          colour={C.accentText}
+          style={styles.fill}
+          onPress={tapCC(press, ADD_DEVICE_CC)}
+        />
+        <PushButton
+          label="Add Track"
+          accessibilityLabel="Add Track — new worktree, named from what is typed"
+          colour={C.accentText}
+          style={styles.fill}
+          onPress={tapCC(press, ADD_TRACK_CC)}
+        />
+        <PushButton
+          label="Browse"
+          accessibilityLabel="Browse — this repo's pull requests, in a browser"
+          colour={C.accentText}
+          style={styles.fill}
+          onPress={tapCC(press, BROWSE_CC)}
+        />
+      </View>
+    </View>
+  );
+}
+
+// Mute/Solo/Stop Clip sit left of the 8 under-display (session) buttons, and
+// the Left/Up/Down/Right diamond sits to their right -- the manual's Master
+// button between them is unmapped and skipped. Both flanks opt out of
+// stretch (alignSelf: flex-start) so the compact session row doesn't get
+// stretched to the diamond's taller, self-sized square -- the diamond alone
+// decides this row's height, the same way the display alone decides
+// DisplayRow's, just with the tall/short roles swapped.
+function UnderDisplayRow({ surface, onSeat, press }) {
   const seats = surface?.seats || [];
   const current = surface?.current;
 
   return (
-    <View style={[styles.row, styles.seatRowFill]}>
-      {Array.from({ length: SLOTS }, (_, i) => {
-        const seat = seats[i] || null;
-        if (!seat) {
-          return <PushButton key={i} label={String(i + 1)} disabled style={styles.slot} />;
-        }
-        const [name, status] = seat;
-        return (
-          <PushButton
-            key={i}
-            label={name}
-            colour={SEAT_HEX[status] || C.faint}
-            lit={i === current}
-            onPress={() => onSeat(i)}
-            style={styles.slot}
-          />
-        );
-      })}
-    </View>
-  );
-}
-
-// Add Device, Add Track and Browse: on the hardware these sit to the left of
-// the under-display row rather than in line with it, so they get their own
-// column here too instead of being folded into an 8-wide row that has no
-// room for a ninth thing. Taller than the row it stands beside on purpose --
-// `seatBlock` below opts out of the default cross-axis stretch so this can
-// be its own natural height without forcing every seat button to match it.
-function LeftColumn({ press }) {
-  return (
-    <View style={styles.leftColumn}>
-      <PushButton
-        label="Browse"
-        accessibilityLabel="Browse — this repo's pull requests, in a browser"
-        colour={C.accentText}
-        onPress={tapCC(press, BROWSE_CC)}
-      />
-      <PushButton
-        label="Add Device"
-        accessibilityLabel="Add Device — split, new claude in auto mode"
-        colour={C.accentText}
-        onPress={tapCC(press, ADD_DEVICE_CC)}
-      />
-      <PushButton
-        label="Add Track"
-        accessibilityLabel="Add Track — new worktree, named from what is typed"
-        colour={C.accentText}
-        onPress={tapCC(press, ADD_TRACK_CC)}
-      />
-    </View>
-  );
-}
-
-// Convert, New, Quantize, Double Loop, Metronome -- five buttons that each
-// type a fixed slash command and, bar Convert, a newline that submits it.
-function SlashRow({ press }) {
-  const cmds = [
-    ['Convert', '/compact', CONVERT_CC],
-    ['New', '/clear', NEW_CC],
-    ['Quantize', '/model', QUANTIZE_CC],
-    ['Double Loop', '/effort', DBLOOP_CC],
-    ['Metronome', '/mcp', METRO_CC],
-  ];
-  return (
-    <View style={styles.row}>
-      {cmds.map(([label, cmd, cc]) => (
+    <View style={styles.railRow}>
+      <View style={[styles.row, { width: RAIL_L, alignSelf: 'flex-start' }]}>
         <PushButton
-          key={cc}
-          label={label}
-          accessibilityLabel={`${label} — ${cmd}`}
+          label="Mute"
+          accessibilityLabel="Mute — tab, accepts an autocomplete"
           colour={C.accentText}
           style={styles.slot}
-          onPress={tapCC(press, cc)}
+          onPress={tapCC(press, MUTE_CC)}
         />
-      ))}
+        <PushButton
+          label="Solo"
+          accessibilityLabel="Solo — pin the screen"
+          colour={C.accentText}
+          style={styles.slot}
+          onPress={tapCC(press, SOLO_CC)}
+        />
+        <PushButton
+          label="Stop"
+          accessibilityLabel="Stop Clip — escape, interrupts the agent"
+          colour={C.bad}
+          style={styles.slot}
+          onPress={tapCC(press, STOP_CC)}
+        />
+      </View>
+      <View style={[styles.row, styles.mid, { alignSelf: 'flex-start' }]}>
+        {Array.from({ length: SLOTS }, (_, i) => {
+          const seat = seats[i] || null;
+          if (!seat) {
+            return <PushButton key={i} label={String(i + 1)} disabled style={styles.slot} />;
+          }
+          const [name, status] = seat;
+          return (
+            <PushButton
+              key={i}
+              label={name}
+              colour={SEAT_HEX[status] || C.faint}
+              lit={i === current}
+              onPress={() => onSeat(i)}
+              style={styles.slot}
+            />
+          );
+        })}
+      </View>
+      <View style={{ width: RAIL_R, alignItems: 'center' }}>
+        <FourWay
+          style={{ width: DIAMOND_SIZE }}
+          up={{ label: '↑', accessibilityLabel: 'Up arrow — straight through to the agent', onPress: tapCC(press, UP_CC) }}
+          down={{ label: '↓', accessibilityLabel: 'Down arrow — straight through to the agent', onPress: tapCC(press, DOWN_CC) }}
+          left={{ label: '←', accessibilityLabel: 'Left arrow — straight through to the agent', onPress: tapCC(press, LEFT_CC) }}
+          right={{ label: '→', accessibilityLabel: 'Right arrow — straight through to the agent', onPress: tapCC(press, RIGHT_CC) }}
+        />
+      </View>
     </View>
   );
 }
 
-// The rest of the transport/edit cluster, eight across like every other row
-// here: Shift is the one hold in this row (Record and Automate get their own
-// row below, sized to match how much bigger they are on the hardware).
-function TransportRow({ press }) {
+// Left of the touchstrip: Convert/Double Loop/Quantize, then Duplicate/New,
+// then the bigger Automate/Record pair, then Play alone at the bottom --
+// this is the manual's own grouping and order, not a guess. Right of the
+// pad grid: a flex spacer standing in for the unmapped Repeat/Accent/Scale/
+// Layout/Note/Session column, then the Octave/Page diamond, then Shift/
+// Select in the bottom-right corner, all three real positions.
+function PadArea({ macros, press }) {
+  const record = useHold(press, RECORD_CC);
   const shift = useHold(press, SHIFT_CC);
   return (
-    <View style={styles.row}>
-      <PushButton
-        label="Shift"
-        accessibilityLabel="Shift — held modifier; hold and tap a pad to read what it does without running it"
-        colour={C.accentText}
-        lit={shift.held}
-        style={styles.slot}
-        onPressIn={shift.onPressIn}
-        onPressOut={shift.onPressOut}
-      />
-      <PushButton
-        label="Select"
-        accessibilityLabel="Select — tap, then tap two pads, to swap them on the grid"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, SELECT_CC)}
-      />
-      <PushButton
-        label="Mute"
-        accessibilityLabel="Mute — tab, accepts an autocomplete"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, MUTE_CC)}
-      />
-      <PushButton
-        label="Solo"
-        accessibilityLabel="Solo — pin the screen"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, SOLO_CC)}
-      />
-      <PushButton
-        label="Undo"
-        accessibilityLabel="Undo — backspace the prompt empty"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, UNDO_CC)}
-      />
-      <PushButton
-        label="Delete"
-        accessibilityLabel="Delete — close the current agent's pane"
-        colour={C.bad}
-        style={styles.slot}
-        onPress={tapCC(press, DELETE_CC)}
-      />
-      <PushButton
-        label="Duplicate"
-        accessibilityLabel="Duplicate — fork the current agent into a new session"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, DUPLICATE_CC)}
-      />
-      <PushButton
-        label="Stop Clip"
-        accessibilityLabel="Stop Clip — escape, interrupts the agent"
-        colour={C.bad}
-        style={styles.slot}
-        onPress={tapCC(press, STOP_CC)}
-      />
+    <View style={styles.railRow}>
+      <View style={[styles.padRail, { width: PAD_RAIL_L }]}>
+        <View style={styles.padRailGroup}>
+          <PushButton
+            label="Convert"
+            accessibilityLabel="Convert — /compact"
+            colour={C.accentText}
+            style={styles.fill}
+            onPress={tapCC(press, CONVERT_CC)}
+          />
+          <PushButton
+            label="Double Loop"
+            accessibilityLabel="Double Loop — /effort"
+            colour={C.accentText}
+            style={styles.fill}
+            onPress={tapCC(press, DBLOOP_CC)}
+          />
+          <PushButton
+            label="Quantize"
+            accessibilityLabel="Quantize — /model"
+            colour={C.accentText}
+            style={styles.fill}
+            onPress={tapCC(press, QUANTIZE_CC)}
+          />
+        </View>
+        <View style={styles.padRailGroup}>
+          <PushButton
+            label="Duplicate"
+            accessibilityLabel="Duplicate — fork the current agent into a new session"
+            colour={C.accentText}
+            style={styles.fill}
+            onPress={tapCC(press, DUPLICATE_CC)}
+          />
+          <PushButton
+            label="New"
+            accessibilityLabel="New — /clear"
+            colour={C.accentText}
+            style={styles.fill}
+            onPress={tapCC(press, NEW_CC)}
+          />
+        </View>
+        <View style={[styles.padRailGroup, { flex: 1.4 }]}>
+          <PushButton
+            label="Automate"
+            accessibilityLabel="Automate — tap, then tap a pad, to arm that row as a chain"
+            colour={C.warn}
+            style={styles.fill}
+            onPress={tapCC(press, AUTOMATE_CC)}
+          />
+          <PushButton
+            label="Record"
+            accessibilityLabel="Record — hold, then tap a pad, to save the prompt onto it"
+            colour={C.bad}
+            lit={record.held}
+            style={styles.fill}
+            onPressIn={record.onPressIn}
+            onPressOut={record.onPressOut}
+          />
+        </View>
+        <PushButton
+          label="Play"
+          accessibilityLabel="Play — enter, submits what is typed"
+          colour={C.good}
+          style={[styles.fill, { flex: 1.6 }]}
+          onPress={tapCC(press, PLAY_CC)}
+        />
+      </View>
+      <TouchStrip press={press} />
+      <PadRows macros={macros} />
+      <View style={[styles.padRail, { width: RAIL_R }]}>
+        <View style={{ flex: 1 }} />
+        <FourWay
+          style={{ width: DIAMOND_SIZE, alignSelf: 'center' }}
+          up={{ label: '▲', accessibilityLabel: 'Octave up — pages the focus view back through history', onPress: tapCC(press, SCROLL_UP_CC) }}
+          down={{ label: '▼', accessibilityLabel: 'Octave down — pages the focus view forward', onPress: tapCC(press, SCROLL_DOWN_CC) }}
+          left={{ label: '‹', accessibilityLabel: 'Page left — previous pad page', onPress: () => press({ page: -1 }) }}
+          right={{ label: '›', accessibilityLabel: 'Page right — next pad page', onPress: () => press({ page: 1 }) }}
+        />
+        <View style={styles.row}>
+          <PushButton
+            label="Shift"
+            accessibilityLabel="Shift — held modifier; hold and tap a pad to read what it does without running it"
+            colour={C.accentText}
+            lit={shift.held}
+            style={styles.slot}
+            onPressIn={shift.onPressIn}
+            onPressOut={shift.onPressOut}
+          />
+          <PushButton
+            label="Select"
+            accessibilityLabel="Select — tap, then tap two pads, to swap them on the grid"
+            colour={C.accentText}
+            style={styles.slot}
+            onPress={tapCC(press, SELECT_CC)}
+          />
+        </View>
+      </View>
     </View>
   );
 }
 
-// Page left/right use `page`, the old four-verb vocabulary, not `cc` -- the
-// ticket calls this out on purpose: it is the one control here that works
-// against push_cc.py exactly as it stands today, which is the end-to-end
-// proof that the wiring above the network call is right regardless of how
-// far the parallel worker has got. Arrows and octave up/down are genuinely
-// new (`cc`) and wait on that work the way every other new control does.
-function NavRow({ press }) {
+// A generic 4-way diamond: up/down/left/right each a cell in a 3x3 grid with
+// the corners left empty, the nearest a rectangular grid gets to the
+// hardware's diamond-shaped cluster. Used for both the arrow-key diamond
+// (under-display row) and the Octave/Page diamond (beside the pads) --
+// same shape on the hardware, same component here.
+function FourWay({ up, down, left, right, style }) {
   return (
-    <View style={styles.row}>
-      <PushButton
-        label="‹"
-        accessibilityLabel="Page left — previous pad page"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={() => press({ page: -1 })}
-      />
-      <PushButton
-        label="←"
-        accessibilityLabel="Left arrow — straight through to the agent"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, LEFT_CC)}
-      />
-      <PushButton
-        label="↑"
-        accessibilityLabel="Up arrow — straight through to the agent"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, UP_CC)}
-      />
-      <PushButton
-        label="↓"
-        accessibilityLabel="Down arrow — straight through to the agent"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, DOWN_CC)}
-      />
-      <PushButton
-        label="→"
-        accessibilityLabel="Right arrow — straight through to the agent"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, RIGHT_CC)}
-      />
-      <PushButton
-        label="›"
-        accessibilityLabel="Page right — next pad page"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={() => press({ page: 1 })}
-      />
-      <PushButton
-        label="▲"
-        accessibilityLabel="Octave up — pages the focus view back through history"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, SCROLL_UP_CC)}
-      />
-      <PushButton
-        label="▼"
-        accessibilityLabel="Octave down — pages the focus view forward"
-        colour={C.accentText}
-        style={styles.slot}
-        onPress={tapCC(press, SCROLL_DOWN_CC)}
-      />
-    </View>
-  );
-}
-
-// Record, Automate and Play, bigger than everything above them the way they
-// are on the actual device -- three keys splitting the row rather than eight.
-function BigTransport({ press }) {
-  const record = useHold(press, RECORD_CC);
-  return (
-    <View style={styles.row}>
-      <PushButton
-        label="Record"
-        accessibilityLabel="Record — hold, then tap a pad, to save the prompt onto it"
-        colour={C.bad}
-        lit={record.held}
-        style={styles.slot}
-        onPressIn={record.onPressIn}
-        onPressOut={record.onPressOut}
-      />
-      {/* A latch on the hardware, not a hold: push_cc toggles `automating`
-          on the press and ignores the release, and its comment says why --
-          picking a row to run does not want deliberation the way overwriting
-          a pad does, and a two-handed hold does not land on a surface played
-          one-handed. Record beside it really is a hold, which is why they
-          look alike here and behave differently. Nothing in the payload says
-          whether the latch is currently on, so this does not pretend to
-          know. */}
-      <PushButton
-        label="Automate"
-        accessibilityLabel="Automate — tap, then tap a pad, to arm that row as a chain"
-        colour={C.warn}
-        style={styles.slot}
-        onPress={tapCC(press, AUTOMATE_CC)}
-      />
-      <PushButton
-        label="Play"
-        accessibilityLabel="Play — enter, submits what is typed"
-        colour={C.good}
-        style={styles.slot}
-        onPress={tapCC(press, PLAY_CC)}
-      />
+    <View style={[styles.fourWay, style]}>
+      <View style={styles.fourWayRow}>
+        <View style={styles.fourWaySpacer} />
+        <PushButton {...up} colour={C.accentText} style={styles.fourWayCell} />
+        <View style={styles.fourWaySpacer} />
+      </View>
+      <View style={styles.fourWayRow}>
+        <PushButton {...left} colour={C.accentText} style={styles.fourWayCell} />
+        <View style={styles.fourWaySpacer} />
+        <PushButton {...right} colour={C.accentText} style={styles.fourWayCell} />
+      </View>
+      <View style={styles.fourWayRow}>
+        <View style={styles.fourWaySpacer} />
+        <PushButton {...down} colour={C.accentText} style={styles.fourWayCell} />
+        <View style={styles.fourWaySpacer} />
+      </View>
     </View>
   );
 }
@@ -469,40 +578,6 @@ function Encoder({ label, accessibilityLabel, press, cc, style }) {
       style={[styles.knob, style]}
       {...responder.panHandlers}>
       <Text style={styles.knobLabel}>{label}</Text>
-    </View>
-  );
-}
-
-// Tempo and Master flank the eight assignable encoders the same way they
-// flank them on the hardware -- narrower, because the knob itself is
-// smaller, not because either matters less.
-function EncoderRow({ press }) {
-  return (
-    <View style={styles.row}>
-      <Encoder
-        label="Tempo"
-        accessibilityLabel="Tempo encoder — scrolls the focus view"
-        press={press}
-        cc={TEMPO_CC}
-        style={styles.knobSide}
-      />
-      {ENC_CCS.map((cc, i) => (
-        <Encoder
-          key={cc}
-          label={String(i + 1)}
-          accessibilityLabel={`Encoder ${i + 1} — scrolls the agent above it`}
-          press={press}
-          cc={cc}
-          style={styles.slot}
-        />
-      ))}
-      <Encoder
-        label="Master"
-        accessibilityLabel="Master encoder — up and down arrows at the current agent"
-        press={press}
-        cc={VOLUME_CC}
-        style={styles.knobSide}
-      />
     </View>
   );
 }
@@ -569,14 +644,13 @@ function TouchStrip({ press }) {
 // note 36 is the bottom-left pad, so the top screen row is the highest indices
 const ROWS = [7, 6, 5, 4, 3, 2, 1, 0];
 
-// The grid shares one 8-column track with the button rows above and below it,
-// so a pad sits under the button that governs its column. Centring it on its
-// own width made a tidier square and a worse mirror -- alignment is the only
-// thing this view owes you. The labels are the app's own addition: on the glass
-// a pad is light alone, and light alone is not readable across a desk.
+// The grid shares its width with the button rows above and below it via
+// `styles.mid`, so a pad sits under the button that governs its column. The
+// labels are the app's own addition: on the glass a pad is light alone, and
+// light alone is not readable across a desk.
 function PadRows({ macros }) {
   return (
-    <View style={styles.pads}>
+    <View style={[styles.pads, styles.mid]}>
       {ROWS.map((r) => (
         <View key={r} style={styles.padRow}>
           {Array.from({ length: SLOTS }, (_, c) => {
@@ -606,7 +680,7 @@ function PadRows({ macros }) {
 function Frame({ base, surface }) {
   if (!surface) {
     return (
-      <View style={[styles.frame, styles.frameEmpty]}>
+      <View style={[styles.frame, styles.frameEmpty, styles.mid]}>
         <Text style={styles.waiting}>waiting for push_cc</Text>
       </View>
     );
@@ -618,7 +692,7 @@ function Frame({ base, surface }) {
   const visible = h - top - bottom;
 
   return (
-    <View style={[styles.frame, { aspectRatio: w / visible }]}>
+    <View style={[styles.frame, styles.mid, { aspectRatio: w / visible, alignSelf: 'flex-start' }]}>
       {/* display.py draws its own view/seat labels into the top and bottom
           `bands` of the PNG -- this component draws those same labels itself
           as real buttons, so the image is shifted up by `top` and clipped to
@@ -634,10 +708,17 @@ function Frame({ base, surface }) {
 const styles = StyleSheet.create({
   wrap: {
     flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
-  wrapContent: {
+  // Authored at a fixed CANVAS_W and an intrinsic height, then scaled as one
+  // unit by `useFit` -- see the comment there. transform-origin defaults to
+  // the element's own centre, which is exactly right here: `wrap` centres
+  // this box at its native size, and the scale then shrinks or grows around
+  // that same centre, so the result stays centred in `wrap` either way.
+  canvas: {
     gap: S.gap,
-    paddingBottom: S.gap,
   },
   row: {
     flexDirection: 'row',
@@ -646,28 +727,39 @@ const styles = StyleSheet.create({
   slot: {
     flex: 1,
   },
-  // Only SeatRow nests inside another row (seatBlock, for the left column)
-  // rather than sitting straight in wrap's own column flow -- see the
-  // comment on SeatRow for why that needs flex:1 where styles.row alone
-  // would collapse it.
-  seatRowFill: {
+  fill: {
     flex: 1,
   },
-  seatBlock: {
+  // Every row below the encoders shares this shape: a fixed-width column at
+  // each edge (RAIL_L/RAIL_R, matching the encoder row's Tempo/Master) and a
+  // flexible middle -- `mid` below -- so the display, the two 8-wide button
+  // rows and the pad grid all come out the same width and stay lined up
+  // under each other, the way they are on the hardware.
+  railRow: {
     flexDirection: 'row',
     gap: S.gap / 2,
-    // Default stretch would force SeatRow's own row to match LeftColumn's
-    // taller, three-button height -- and stretching *that* row would in turn
-    // stretch its eight buttons into something much taller than every other
-    // row on this surface. flex-start lets each side keep its own height.
-    alignItems: 'flex-start',
   },
-  leftColumn: {
-    width: 92,
+  // The middle column's width: not a flex ratio (rows around it don't all
+  // have the same number of flex siblings), an explicit share of CANVAS_W so
+  // every row's middle is the same pixel width regardless of what's next to
+  // it. See the RAIL_L/RAIL_R/STRIP_W comment above CANVAS_W.
+  mid: {
+    width: CANVAS_W - RAIL_L - RAIL_R - S.gap,
+  },
+  // Delete/Undo and Add Device/Add Track/Browse: stacked, stretched to
+  // whatever height the display next to them settles at (default
+  // alignItems is stretch; `fill` on each button turns that stretch into an
+  // even 2- or 3-way split).
+  railCol: {
+    gap: S.gap / 2,
+  },
+  padRail: {
+    gap: S.gap,
+  },
+  padRailGroup: {
     gap: S.gap / 2,
   },
   frame: {
-    width: '100%',
     overflow: 'hidden',
     borderRadius: S.radius,
     backgroundColor: '#000',
@@ -684,8 +776,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   knob: {
-    flex: 1,
-    height: 34,
+    height: 60,
     borderRadius: 6,
     backgroundColor: KEY.face,
     borderWidth: 1,
@@ -694,21 +785,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  knobSide: {
-    flex: 0.6,
-  },
   knobLabel: {
     color: C.dim,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '500',
   },
-  padArea: {
-    flexDirection: 'row',
-    gap: S.gap / 2,
-  },
   strip: {
-    width: 28,
-    borderRadius: 14,
+    width: STRIP_W,
+    borderRadius: STRIP_W / 2,
     backgroundColor: KEY.face,
     borderWidth: 1,
     borderColor: KEY.edge,
@@ -719,15 +803,9 @@ const styles = StyleSheet.create({
   stripFill: {
     width: '100%',
     backgroundColor: C.accentText,
-    borderRadius: 14,
+    borderRadius: STRIP_W / 2,
   },
-  // Still `flex: 1`, but only doing half the job it used to: inside
-  // `padArea`'s row, that's what claims the width TouchStrip's fixed 28px
-  // doesn't -- same reason SeatRow needs `seatRowFill`. It no longer governs
-  // height (see the comment on the ScrollView above); a pad is a square now,
-  // sized off its own width, so the grid's total height is just eight of
-  // those plus the row gaps, whatever that comes to.
-  pads: { flex: 1, gap: S.gap / 2 },
+  pads: { gap: S.gap / 2 },
   padRow: { flexDirection: 'row', gap: S.gap / 2 },
   pad: {
     flex: 1,
@@ -744,5 +822,24 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  // The diamond: a 3x3 grid with the corners left empty. Square (aspectRatio
+  // 1) against its own width, so it reads as a compact cluster rather than
+  // a stretched row -- on the hardware it is taller than the single button
+  // row beside it, which is exactly what a square gets you here for free.
+  fourWay: {
+    aspectRatio: 1,
+    gap: S.gap / 4,
+  },
+  fourWayRow: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: S.gap / 4,
+  },
+  fourWayCell: {
+    flex: 1,
+  },
+  fourWaySpacer: {
+    flex: 1,
   },
 });
