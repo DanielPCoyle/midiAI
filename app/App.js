@@ -627,6 +627,7 @@ export default function App() {
             macros={macros}
             onTab={(i) => press({ tab: i })}
             onSeat={(i) => press({ seat: i })}
+            press={press}
           />
         </View>
       ) : narrow ? (

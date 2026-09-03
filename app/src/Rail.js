@@ -105,8 +105,13 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
           const hue = seatHue(col);
           const on = i === current;
           return (
+            /* The ⋯ used to sit inside the card. Both are buttons, and a
+               button inside a button is not valid HTML -- React says so and
+               refuses to hydrate it. It was only a div until it was given a
+               name, so naming it is what surfaced this. Sibling now, laid
+               over the corner it already occupied. */
+            <View key={i} style={styles.slot}>
             <PushButton
-              key={i}
               colour={hue}
               // left to itself this announces as "midiAIidle⋯%0" -- the name,
               // the status, the menu glyph and the tmux id run together. Same
@@ -124,17 +129,6 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                   </Text>
                   <View style={[styles.dot, { backgroundColor: hue }]} />
                   <Text style={[styles.status, { color: hue }]}>{seatWord(col)}</Text>
-                  <Pressable
-                    ref={(el) => {
-                      menuBtnRefs.current[i] = el;
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel={`more actions for ${col.name}`}
-                    onPress={() => openMenu(i)}
-                    hitSlop={8}
-                    style={styles.menuBtn}>
-                    <Text style={styles.menuDots}>⋯</Text>
-                  </Pressable>
                 </View>
                 <View style={styles.row}>
                   {[col.model, col.effort]
@@ -155,6 +149,18 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                 </View>
               </View>
             </PushButton>
+            <Pressable
+              ref={(el) => {
+                menuBtnRefs.current[i] = el;
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`more actions for ${col.name}`}
+              onPress={() => openMenu(i)}
+              hitSlop={8}
+              style={styles.menuBtn}>
+              <Text style={styles.menuDots}>⋯</Text>
+            </Pressable>
+            </View>
           );
         })}
         {free > 0 && (
@@ -253,7 +259,8 @@ const styles = StyleSheet.create({
   status: { fontSize: 11 },
   meta: { color: C.faint, fontSize: 11, flexShrink: 1 },
   metaId: { color: C.edge, fontSize: 11, flexShrink: 1 },
-  menuBtn: { marginLeft: 'auto', paddingHorizontal: 4 },
+  slot: { position: 'relative' },
+  menuBtn: { position: 'absolute', top: 6, right: 6, paddingHorizontal: 4, paddingVertical: 2 },
   menuDots: { color: C.faint, fontSize: 16, fontWeight: '700' },
   free: {
     minHeight: 44,

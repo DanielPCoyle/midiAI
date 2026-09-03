@@ -10,7 +10,7 @@ without touching the keyboard.
 | **The grid** | 36–99 | 64 prompt pads — insert canned text, no submit |
 | **The grid, asked a question** | 36–99 | one pad per option down the left column, each its own colour — the prompt pads go dark |
 | **Play** | CC 85 | enter — submits, to the focused agent · runs an armed chain |
-| **Automate** | CC 89 | hold, tap a pad: arms that pad's row as a chain |
+| **Automate** | CC 89 | tap, then tap a pad: arms that pad's row as a chain |
 | **Touchstrip** | pitchbend | slide to set reasoning effort, `low` → `max` |
 | **Buttons above screen** | CC 102–109 | pick a view — each with its own colour, named on the screen above it; press the one you are on to walk its modes |
 | **Buttons below screen** | CC 20–27 | the agents: tap = focus · hold = talk · named on the screen above them |
@@ -274,7 +274,7 @@ before. Renaming is a convenience, not a requirement.
 
 ## Chains
 
-A **row is a chain**. Hold **Automate** and tap a pad: everything from that pad
+A **row is a chain**. Tap **Automate**, then tap a pad: everything from that pad
 rightward to the end of its row is queued, in order, empties skipped. The pads
 light up, the screen lists the steps, and nothing has happened yet — **Play**
 runs it, **Stop** throws it away.
