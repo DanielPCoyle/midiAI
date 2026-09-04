@@ -156,7 +156,26 @@ JSON is refused rather than rewritten. A row is addressed by `(event, group
 index, entry index)` from the catalog, not by its command text, because
 matching on the text edits the wrong one the moment two of them agree; and the
 matcher belongs to the group, so an existing hook cannot be moved between
-groups by retyping it. The event field is an autocomplete over all
+groups by retyping it. All five hook types are writable — `command`, `http`, `mcp_tool`, `prompt`
+and `agent` — each with its own fields, plus the shared `timeout`, `if` and
+`once`. The server keeps a **whitelist per type**, which is what makes writing
+one from an HTTP request reasonable at all: the caller says which type, and
+only that type's own fields reach the file. A key nobody here has heard of is
+dropped rather than passed through, and a `timeout` of `"soon"` is refused
+before it becomes a settings file Claude Code will not boot from.
+
+A hook's **name** is its `statusMessage` — a real documented field, and the
+spinner text shown while the hook runs, so it earns its place twice. The
+**description** has no home in the schema at all. Unknown keys do survive
+today (measured: a session ran with an invented `description` key and the hook
+still fired), but settings.json failing to load because a future version got
+stricter about a field we made up is not a trade worth making for a note. So
+descriptions live in `~/.midiai/hook-notes.json`, filed under what the hook
+looks like rather than under its group and entry indices — those renumber the
+moment a sibling is deleted, which would hand one hook's description to
+another. A note follows an edit that changes the hook, and is deleted with it.
+
+The event field is an autocomplete over all
 thirty-three of Claude Code's hook events, in the order they happen rather than
 alphabetically, each with what it actually fires on. The names alone are a
 quiz: `Stop`, `StopFailure` and `SubagentStop` are guesses apart, `PostToolUse`
@@ -342,7 +361,7 @@ rest over HTTP:
 | `GET /skill?scope=&name=` | one skill's description and instructions, for the editor |
 | `POST /skill` | `{scope, name, description, body, replace?}` — create or replace |
 | `POST /skill/delete` | `{scope, name}` — its SKILL.md, and the directory if that empties it |
-| `POST /hook` | `{scope, event, matcher, command, gi?, hi?}` — append, or replace that row |
+| `POST /hook` | `{scope, event, matcher, type, …, name?, description?, gi?, hi?}` — append, or replace that row |
 | `POST /hook/delete` | `{scope, event, gi, hi}` |
 | `POST /skill/move` | `{name, scope, to, to_cwd?}` — global ↔ a project; a plugin's is copied |
 | `POST /open` | `{path}` — open that folder in the editor on this machine |

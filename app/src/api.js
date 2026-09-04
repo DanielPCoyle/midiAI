@@ -160,6 +160,15 @@ export const openInEditor = (base, path) => post(base, '/open', { path });
 
 // `gi`/`hi` are the hook's address in its settings file, straight off the
 // catalog row. Without them this appends a new hook instead.
+//
+// `type` picks which of the five hook shapes this is, and the server keeps
+// only that type's own fields -- anything else sent is dropped rather than
+// written, because settings.json decides how the whole tool behaves and is no
+// place to forward unknown data into. `name` becomes the entry's
+// `statusMessage`, which Claude Code shows while the hook runs; `description`
+// is kept beside the app's own files, since the schema has no home for it and
+// inventing a key that a stricter future version might reject is not a trade
+// worth making for a note.
 export const saveHook = (base, fields) => post(base, '/hook', fields);
 
 export const deleteHook = (base, scope, event, gi, hi, cwd) =>

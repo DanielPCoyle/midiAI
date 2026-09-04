@@ -97,6 +97,56 @@ const HOOK_SCOPES = [
   ['user', 'global'],
 ];
 
+// The five shapes a hook can take. `command` is the one everybody reaches
+// for first, so it stays the default; the rest exist because a hook that
+// wants to hit a URL, an MCP tool, or Claude itself shouldn't have to fake
+// it through a shell command.
+const HOOK_TYPES = [
+  ['command', 'command'],
+  ['http', 'http'],
+  ['mcp_tool', 'mcp tool'],
+  ['prompt', 'prompt'],
+  ['agent', 'agent'],
+];
+const SHELLS = ['bash', 'powershell'];
+
+// `args`, `allowedEnvVars`, `headers` and `input` are each one JSON array or
+// object in settings.json -- one to four entries, almost never touched. A
+// key/value row editor for that is a component of its own for a field
+// nobody opens twice a year; a text box that splits on newlines is what you
+// would have typed into the row editor anyway, minus the rows. One item per
+// line for the arrays, `key: value` per line for the objects.
+function linesToArray(text) {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+function linesToObject(text) {
+  const obj = {};
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    const i = t.indexOf(':');
+    if (i === -1) continue; // no colon -- dropped silently, flagged by hasBadLine
+    const key = t.slice(0, i).trim();
+    if (key) obj[key] = t.slice(i + 1).trim();
+  }
+  return obj;
+}
+function objectToLines(obj) {
+  return obj ? Object.entries(obj).map(([k, v]) => `${k}: ${v}`).join('\n') : '';
+}
+function linesFromArray(arr) {
+  return Array.isArray(arr) ? arr.join('\n') : '';
+}
+function hasBadLine(text) {
+  return text.split('\n').some((line) => {
+    const t = line.trim();
+    return !!t && !t.includes(':');
+  });
+}
+
 // props:
 //   kind     'skill' | 'hook'
 //   row      the catalog row being edited, or null to create a new one
@@ -121,11 +171,39 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
   const [body, setBody] = useState('');
   const [event, setEvent] = useState(row?.event || 'Stop');
   const [matcher, setMatcher] = useState(row?.matcher || '');
-  const [command, setCommand] = useState(row?.command || '');
   const [loading, setLoading] = useState(skill && editing);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sure, setSure] = useState(false);
+
+  // row.entry is the raw hook object from settings.json -- everything below
+  // seeds from it rather than from `row` directly, because `row` only ever
+  // guaranteed `command` (the one field the old single-shape editor knew
+  // about).
+  const entry = row?.entry || {};
+  const [hookType, setHookType] = useState(row?.type || 'command');
+  // command
+  const [command, setCommand] = useState(entry.command ?? row?.command ?? '');
+  const [argsText, setArgsText] = useState(linesFromArray(entry.args));
+  const [shell, setShell] = useState(entry.shell || '');
+  const [async_, setAsync] = useState(!!entry.async);
+  const [asyncRewake, setAsyncRewake] = useState(!!entry.asyncRewake);
+  // http
+  const [url, setUrl] = useState(entry.url || '');
+  const [headersText, setHeadersText] = useState(objectToLines(entry.headers));
+  const [envVarsText, setEnvVarsText] = useState(linesFromArray(entry.allowedEnvVars));
+  // mcp_tool
+  const [server, setServer] = useState(entry.server || '');
+  const [tool, setTool] = useState(entry.tool || '');
+  const [inputText, setInputText] = useState(objectToLines(entry.input));
+  // prompt and agent share a shape
+  const [prompt, setPrompt] = useState(entry.prompt || '');
+  const [model, setModel] = useState(entry.model || '');
+  // shared across every type, and rare enough on all of them to live under
+  // `advanced` rather than above the fields people actually came here for
+  const [timeoutText, setTimeoutText] = useState(entry.timeout != null ? String(entry.timeout) : '');
+  const [ifRule, setIfRule] = useState(entry.if || '');
+  const [once, setOnce] = useState(!!entry.once);
 
   // /catalog carries a skill's name and description but not its instructions:
   // shipping every body in the list would make it many times larger for a
@@ -147,7 +225,14 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
   }, [base, cwd, skill, editing, row?.scope, row?.name]);
 
   const nameOk = !skill || SKILL_NAME_RE.test(name);
-  const filled = skill ? !!name && !!body.trim() : !!event.trim() && !!command.trim();
+  // each type has exactly one thing it cannot be saved without; everything
+  // else on the form is optional
+  const hookTypeOk =
+    hookType === 'command' ? !!command.trim()
+    : hookType === 'http' ? !!url.trim()
+    : hookType === 'mcp_tool' ? !!server.trim() && !!tool.trim()
+    : !!prompt.trim(); // prompt, agent
+  const filled = skill ? !!name && !!body.trim() : !!event.trim() && hookTypeOk;
   const canSave = nameOk && filled && !busy && !loading;
 
   async function save() {
@@ -163,11 +248,44 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
           replace: editing && row.scope === scope && row.name === name,
         });
       } else {
-        await saveHook(base, {
-          scope, cwd, event: event.trim(), matcher, command,
+        const timeoutNum = Number(timeoutText);
+        const fields = {
+          scope, cwd, event: event.trim(), matcher,
           // the row's own address in its settings file; absent, this appends
           ...(editing && row.scope === scope ? { gi: row.gi, hi: row.hi } : {}),
-        });
+          name, description, type: hookType,
+        };
+        // omitted rather than sent blank -- the server whitelists per type
+        // and drops what it doesn't recognise, but a "" it does recognise
+        // would still overwrite a field that was never set
+        if (timeoutText.trim() && Number.isFinite(timeoutNum)) fields.timeout = timeoutNum;
+        if (ifRule.trim()) fields.if = ifRule.trim();
+        if (once) fields.once = true;
+
+        if (hookType === 'command') {
+          fields.command = command;
+          const args = linesToArray(argsText);
+          if (args.length) fields.args = args;
+          if (shell) fields.shell = shell;
+          if (async_) fields.async = true;
+          if (asyncRewake) fields.asyncRewake = true;
+        } else if (hookType === 'http') {
+          fields.url = url.trim();
+          const headers = linesToObject(headersText);
+          if (Object.keys(headers).length) fields.headers = headers;
+          const allowedEnvVars = linesToArray(envVarsText);
+          if (allowedEnvVars.length) fields.allowedEnvVars = allowedEnvVars;
+        } else if (hookType === 'mcp_tool') {
+          fields.server = server.trim();
+          fields.tool = tool.trim();
+          const input = linesToObject(inputText);
+          if (Object.keys(input).length) fields.input = input;
+        } else {
+          // prompt and agent share a shape
+          fields.prompt = prompt;
+          if (model.trim()) fields.model = model.trim();
+        }
+        await saveHook(base, fields);
       }
       onSaved();
     } catch (e) {
@@ -321,6 +439,57 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
               </>
             ) : (
               <>
+                {/* Claude Code has no name for a hook -- the closest thing is
+                    the spinner text it shows while the hook is running, so
+                    that is what this field becomes on the wire. Description
+                    is yours alone: the server keeps it beside the hook for
+                    this panel and never writes it into settings.json. */}
+                <Text style={styles.label}>
+                  name <Text style={styles.hint}>— shown as the spinner text while the hook runs</Text>
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="checking the thing"
+                  placeholderTextColor={C.faint}
+                />
+
+                <Text style={styles.label}>
+                  description <Text style={styles.hint}>— your own note, for this panel only</Text>
+                </Text>
+                <TextInput
+                  style={[styles.input, styles.tall]}
+                  value={description}
+                  onChangeText={setDescription}
+                  multiline
+                  placeholder="what this hook is for"
+                  placeholderTextColor={C.faint}
+                />
+
+                {/* the type decides which fields show up below; it does not
+                    clear them when you change your mind -- every type's
+                    state stays put, so switching back finds it as you left
+                    it */}
+                <Text style={styles.label}>type</Text>
+                <View style={styles.chips}>
+                  {HOOK_TYPES.map(([key, word]) => (
+                    <Text
+                      key={key}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: hookType === key }}
+                      onPress={() => setHookType(key)}
+                      style={[styles.chip, hookType === key && styles.chipOn]}>
+                      {word}
+                    </Text>
+                  ))}
+                </View>
+                {hookType === 'agent' && (
+                  <Text style={styles.hint}>
+                    experimental — Claude Code's own docs mark this hook type as such
+                  </Text>
+                )}
+
                 <Text style={styles.label}>
                   event <Text style={styles.hint}>— type to narrow it</Text>
                 </Text>
@@ -385,17 +554,202 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
                   </Text>
                 )}
 
-                <Text style={styles.label}>command</Text>
+                {hookType === 'command' && (
+                  <>
+                    <Text style={styles.label}>command</Text>
+                    <TextInput
+                      style={[styles.input, styles.tall, mono]}
+                      value={command}
+                      onChangeText={setCommand}
+                      multiline
+                      placeholder="afplay /System/Library/Sounds/Glass.aiff"
+                      placeholderTextColor={C.faint}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text style={styles.label}>
+                      args <Text style={styles.hint}>— one per line</Text>
+                    </Text>
+                    <TextInput
+                      style={[styles.input, styles.tall, mono]}
+                      value={argsText}
+                      onChangeText={setArgsText}
+                      multiline
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text style={styles.label}>
+                      shell <Text style={styles.hint}>(optional — tap again to clear)</Text>
+                    </Text>
+                    <View style={styles.chips}>
+                      {SHELLS.map((s) => (
+                        <Text
+                          key={s}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: shell === s }}
+                          onPress={() => setShell((v) => (v === s ? '' : s))}
+                          style={[styles.chip, shell === s && styles.chipOn]}>
+                          {s}
+                        </Text>
+                      ))}
+                    </View>
+
+                    <Pressable style={styles.checkRow} onPress={() => setAsync((v) => !v)}>
+                      <View style={[styles.checkbox, async_ && styles.checkboxOn]}>
+                        {async_ && <Text style={styles.checkMark}>✓</Text>}
+                      </View>
+                      <Text style={styles.checkLabel}>async — run in the background, don't block on it</Text>
+                    </Pressable>
+                    {async_ && (
+                      <Pressable style={styles.checkRow} onPress={() => setAsyncRewake((v) => !v)}>
+                        <View style={[styles.checkbox, asyncRewake && styles.checkboxOn]}>
+                          {asyncRewake && <Text style={styles.checkMark}>✓</Text>}
+                        </View>
+                        <Text style={styles.checkLabel}>asyncRewake — wake Claude when it finishes</Text>
+                      </Pressable>
+                    )}
+                  </>
+                )}
+
+                {hookType === 'http' && (
+                  <>
+                    <Text style={styles.label}>url</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={url}
+                      onChangeText={setUrl}
+                      placeholder="https://example.com/hook"
+                      placeholderTextColor={C.faint}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text style={styles.label}>
+                      headers <Text style={styles.hint}>— one `Key: value` per line</Text>
+                    </Text>
+                    <TextInput
+                      style={[styles.input, styles.tall, mono]}
+                      value={headersText}
+                      onChangeText={setHeadersText}
+                      multiline
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    {hasBadLine(headersText) && (
+                      <Text style={styles.rule}>a line with no colon here will be dropped</Text>
+                    )}
+
+                    <Text style={styles.label}>
+                      allowedEnvVars <Text style={styles.hint}>— one per line</Text>
+                    </Text>
+                    <TextInput
+                      style={[styles.input, styles.tall, mono]}
+                      value={envVarsText}
+                      onChangeText={setEnvVarsText}
+                      multiline
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </>
+                )}
+
+                {hookType === 'mcp_tool' && (
+                  <>
+                    <Text style={styles.label}>server</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={server}
+                      onChangeText={setServer}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text style={styles.label}>tool</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={tool}
+                      onChangeText={setTool}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text style={styles.label}>
+                      input <Text style={styles.hint}>— one `Key: value` per line</Text>
+                    </Text>
+                    <TextInput
+                      style={[styles.input, styles.tall, mono]}
+                      value={inputText}
+                      onChangeText={setInputText}
+                      multiline
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    {hasBadLine(inputText) && (
+                      <Text style={styles.rule}>a line with no colon here will be dropped</Text>
+                    )}
+                  </>
+                )}
+
+                {(hookType === 'prompt' || hookType === 'agent') && (
+                  <>
+                    <Text style={styles.label}>
+                      prompt <Text style={styles.hint}>— supports a $ARGUMENTS placeholder</Text>
+                    </Text>
+                    <TextInput
+                      style={[styles.input, styles.tall, mono]}
+                      value={prompt}
+                      onChangeText={setPrompt}
+                      multiline
+                      placeholder="Summarise $ARGUMENTS"
+                      placeholderTextColor={C.faint}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text style={styles.label}>model <Text style={styles.hint}>(optional)</Text></Text>
+                    <TextInput
+                      style={styles.input}
+                      value={model}
+                      onChangeText={setModel}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </>
+                )}
+
+                {/* real, but rarely wanted -- kept below the fields everyone
+                    actually fills in rather than in front of them */}
+                <Text style={styles.advanced}>advanced</Text>
+
+                <Text style={styles.label}>timeout <Text style={styles.hint}>— seconds</Text></Text>
                 <TextInput
-                  style={[styles.input, styles.tall, mono]}
-                  value={command}
-                  onChangeText={setCommand}
-                  multiline
-                  placeholder="afplay /System/Library/Sounds/Glass.aiff"
+                  style={styles.input}
+                  value={timeoutText}
+                  onChangeText={setTimeoutText}
+                  keyboardType="numeric"
+                  placeholder="none"
                   placeholderTextColor={C.faint}
+                />
+
+                <Text style={styles.label}>
+                  if <Text style={styles.hint}>— permission-rule syntax, tool events only</Text>
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={ifRule}
+                  onChangeText={setIfRule}
                   autoCapitalize="none"
                   autoCorrect={false}
                 />
+
+                <Pressable style={styles.checkRow} onPress={() => setOnce((v) => !v)}>
+                  <View style={[styles.checkbox, once && styles.checkboxOn]}>
+                    {once && <Text style={styles.checkMark}>✓</Text>}
+                  </View>
+                  <Text style={styles.checkLabel}>once — remove the hook after it runs successfully</Text>
+                </Pressable>
               </>
             )}
 
@@ -497,6 +851,23 @@ const styles = StyleSheet.create({
   },
   tall: { minHeight: 72, textAlignVertical: 'top' },
   taller: { minHeight: 200, textAlignVertical: 'top' },
+  // a section break rather than a field label -- quieter than `label` and
+  // pulled off the field above it, so it reads as "everything past here is
+  // optional" rather than as one more required row
+  advanced: { color: C.faint, fontSize: 11, marginTop: 6, textTransform: 'uppercase', letterSpacing: 0.5 },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: S.hit },
+  checkbox: {
+    width: 18,
+    height: 18,
+    borderWidth: 1,
+    borderColor: C.edge,
+    borderRadius: S.radius,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxOn: { borderColor: C.accentText },
+  checkMark: { color: C.accentText, fontSize: 12, fontWeight: '700' },
+  checkLabel: { color: C.dim, fontSize: 12 },
   rule: { color: C.warn, fontSize: 11 },
   error: { color: C.bad, fontSize: 12 },
   row: { flexDirection: 'row', gap: 8, marginTop: 8 },

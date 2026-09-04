@@ -472,6 +472,115 @@ def skill_rows(skill_md_paths, scope):
     return out
 
 
+# What a hook entry may contain, per type, straight off Claude Code's own
+# reference. This is a whitelist and is the reason it can be written from an
+# HTTP request at all: the caller says which type, and only that type's fields
+# reach the file. A key nobody here has heard of is dropped, not passed
+# through -- settings.json is the file that decides how the whole tool behaves
+# and it is not a place to forward unknown data into.
+HOOK_COMMON = {"if": str, "timeout": (int, float), "statusMessage": str,
+               "once": bool}
+HOOK_TYPES = {
+    "command": (("command",), {"command": str, "args": list, "shell": str,
+                               "async": bool, "asyncRewake": bool}),
+    "http": (("url",), {"url": str, "headers": dict, "allowedEnvVars": list}),
+    "mcp_tool": (("server", "tool"), {"server": str, "tool": str, "input": dict}),
+    "prompt": (("prompt",), {"prompt": str, "model": str}),
+    "agent": (("prompt",), {"prompt": str, "model": str}),
+}
+
+
+def hook_entry(body):
+    """(entry, error): one hook object built from a request, or why not.
+
+    Nothing is copied that the type does not name, and nothing is copied whose
+    value is the wrong shape -- a `timeout` of "soon" would be written straight
+    into a file Claude Code reads on every start, and the first anyone heard of
+    it would be the tool refusing to boot."""
+    kind = body.get("type") or "command"
+    if kind not in HOOK_TYPES:
+        return None, f"a hook is one of: {', '.join(HOOK_TYPES)}"
+    required, fields = HOOK_TYPES[kind]
+    entry = {"type": kind}
+    for key, want in list(fields.items()) + list(HOOK_COMMON.items()):
+        if key not in body or body[key] in (None, "", [], {}):
+            continue
+        val = body[key]
+        # bool is a subclass of int in Python, so a `true` would satisfy a
+        # number field without this
+        if want is str and not isinstance(val, str):
+            return None, f"{key} has to be text"
+        if want is bool and not isinstance(val, bool):
+            return None, f"{key} has to be true or false"
+        if want is list and not (isinstance(val, list)
+                                 and all(isinstance(x, str) for x in val)):
+            return None, f"{key} has to be a list of text"
+        if want is dict and not (isinstance(val, dict)
+                                 and all(isinstance(x, str) for x in val.values())):
+            return None, f"{key} has to be names and text values"
+        if want == (int, float) and (isinstance(val, bool)
+                                     or not isinstance(val, (int, float))):
+            return None, f"{key} has to be a number"
+        entry[key] = val
+    missing = [k for k in required if not entry.get(k)]
+    if missing:
+        return None, f"a {kind} hook needs {' and '.join(missing)}"
+    return entry, None
+
+
+def hook_summary(entry):
+    """The one line the panel shows for a hook. Every type has a different
+    field that identifies it, and showing "type: mcp_tool" would name the
+    mechanism where the reader wants the errand."""
+    kind = entry.get("type") or "command"
+    if kind == "http":
+        return str(entry.get("url") or "")
+    if kind == "mcp_tool":
+        return f"{entry.get('server', '?')} · {entry.get('tool', '?')}"
+    if kind in ("prompt", "agent"):
+        return " ".join(str(entry.get("prompt") or "").split())
+    return str(entry.get("command") or "")
+
+
+# Names and descriptions for hooks. The name is `statusMessage`, which is a
+# real documented field and shows as the spinner text while the hook runs, so
+# it earns its place twice. A description has no home in the schema at all --
+# unknown keys survive today, but settings.json failing to load because a
+# future version got stricter about a field we invented is not a trade worth
+# making for a note. So the notes live here, beside the pastes and the
+# projects, and settings.json keeps only what Claude Code documents.
+NOTES_FILE = os.path.expanduser("~/.midiai/hook-notes.json")
+
+
+def note_key(scope, event, matcher, summary):
+    """What a note is filed under. Not the group/entry index: those renumber
+    the moment a sibling is deleted, which would silently hand one hook's
+    description to another."""
+    return "\u0000".join([scope or "", event or "", matcher or "", summary or ""])
+
+
+def load_notes():
+    try:
+        with open(NOTES_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def save_notes(notes):
+    """Best effort, like the projects list: a note that cannot be written is
+    not a reason to fail the hook write it was describing."""
+    try:
+        os.makedirs(os.path.dirname(NOTES_FILE), exist_ok=True)
+        tmp = NOTES_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(notes, f, indent=1, sort_keys=True)
+        os.replace(tmp, NOTES_FILE)
+    except OSError as e:
+        print(f"hook notes: {e}", file=sys.stderr, flush=True)
+
+
 def hook_rows(settings_path, scope):
     """One settings file's hooks, flattened to one row per command.
 
@@ -487,6 +596,7 @@ def hook_rows(settings_path, scope):
     hooks = data.get("hooks") if isinstance(data, dict) else None
     if not isinstance(hooks, dict):
         return []
+    notes = load_notes()
     out = []
     for event, groups in hooks.items():
         if not isinstance(groups, list):
@@ -499,15 +609,27 @@ def hook_rows(settings_path, scope):
             if not isinstance(entries, list):
                 continue
             for hi, entry in enumerate(entries):
-                command = entry.get("command") if isinstance(entry, dict) else None
-                if not command:
+                if not isinstance(entry, dict):
+                    continue
+                summary = hook_summary(entry)
+                if not summary:
                     continue
                 # `gi`/`hi` are the row's address in the file it came from --
                 # the editor sends them back to say which of several hooks on
-                # the same event it means. Matching on the command text instead
+                # the same event it means. Matching on the summary instead
                 # would edit the wrong one the moment two of them agreed.
                 out.append({"event": event, "matcher": matcher,
-                            "command": str(command)[:400],
+                            "type": entry.get("type") or "command",
+                            "summary": summary[:400],
+                            # kept under its old name for the panel, which has
+                            # always drawn this row from `command`
+                            "command": summary[:400],
+                            # the whole entry, so the editor round-trips every
+                            # field rather than rewriting one it cannot see
+                            "entry": entry,
+                            "name": str(entry.get("statusMessage") or ""),
+                            "description": notes.get(
+                                note_key(scope, event, matcher, summary), ""),
                             "gi": gi, "hi": hi,
                             "scope": scope, "path": settings_path})
     return out
@@ -1170,12 +1292,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(raw)
             event = str(body["event"]).strip()
-            command = str(body["command"]).strip()
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return self._send(400, "bad request", "text/plain")
-        if not event or not command:
-            return self._send(400, "a hook needs an event and a command",
-                              "text/plain")
+        if not event:
+            return self._send(400, "a hook needs an event", "text/plain")
+        # the name is `statusMessage`, which Claude Code shows as the spinner
+        # text while the hook runs -- a documented field doing the job an
+        # invented one would have done invisibly
+        if body.get("name"):
+            body["statusMessage"] = str(body["name"])
+        entry, why = hook_entry(body)
+        if why:
+            return self._send(400, why, "text/plain")
         path, err = self._hook_target(body)
         if err:
             return self._send(400, err, "text/plain")
@@ -1189,7 +1317,6 @@ class Handler(BaseHTTPRequestHandler):
             groups = hooks.setdefault(event, [])
             if not isinstance(groups, list):
                 return f"hooks.{event} in that settings file is not a list"
-            entry = {"type": "command", "command": command}
             if gi is not None and hi is not None:
                 try:
                     group = groups[int(gi)]
@@ -1213,10 +1340,27 @@ class Handler(BaseHTTPRequestHandler):
             groups.append(group)
             return None
 
+        was = None
+        if gi is not None and hi is not None:
+            # the note is filed under what the hook looks like, so an edit that
+            # changes that has to move it rather than orphan it
+            rows = hook_rows(path, body.get("scope") or "")
+            was = next((r for r in rows if r["gi"] == gi and r["hi"] == hi), None)
         bad = edit_settings(path, change)
         if bad:
             return self._send(409 if "no longer" in bad or "shared" in bad else 500,
                               bad, "text/plain")
+        notes = load_notes()
+        scope = body.get("scope") or ""
+        if was:
+            notes.pop(note_key(scope, was["event"], was["matcher"], was["summary"]), None)
+        key = note_key(scope, event, matcher, hook_summary(entry))
+        text = " ".join(str(body.get("description") or "").split())
+        if text:
+            notes[key] = text[:600]
+        else:
+            notes.pop(key, None)
+        save_notes(notes)
         self._send(200, json.dumps({"path": path}), "application/json")
 
     def _hook_delete(self):
@@ -1233,6 +1377,9 @@ class Handler(BaseHTTPRequestHandler):
         path, err = self._hook_target(body)
         if err:
             return self._send(400, err, "text/plain")
+        scope = body.get("scope") or ""
+        gone = next((r for r in hook_rows(path, scope)
+                     if r["gi"] == gi and r["hi"] == hi), None)
 
         def change(data):
             hooks = data.get("hooks")
@@ -1254,6 +1401,14 @@ class Handler(BaseHTTPRequestHandler):
         bad = edit_settings(path, change)
         if bad:
             return self._send(409 if "no longer" in bad else 500, bad, "text/plain")
+        if gone:
+            # a note for a hook that no longer exists is a note nothing will
+            # ever show again, and the next hook to land on that summary would
+            # inherit it
+            notes = load_notes()
+            if notes.pop(note_key(scope, gone["event"], gone["matcher"],
+                                  gone["summary"]), None) is not None:
+                save_notes(notes)
         self._send(200, "ok", "text/plain")
 
     def _catalog(self):
