@@ -140,8 +140,13 @@ export default function App() {
     return {
       repo: p.name,
       branch: w.detached ? (w.head || '').slice(0, 7) : w.branch || '',
+      // the worktree itself, so the rail can ask "is this agent in here too"
+      path: w.path,
     };
   })();
+  // What "here" means to the AGENTS filter: the worktree you picked in the
+  // rail if you picked one, otherwise the one the focused agent is living in.
+  const scopePath = pick?.path || place?.path || '';
   // A pick only stands while it is still empty: the moment an agent turns up
   // in that worktree the transcript is the better thing to be looking at, and
   // it clears itself rather than needing an effect to notice.
@@ -744,6 +749,7 @@ export default function App() {
             onPanel={showPanel}
             counts={panelCounts}
             place={place}
+            subs={subs}
           />
           )}
           {!picked && anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
@@ -791,6 +797,7 @@ export default function App() {
               onSeat={(i) => press({ seat: i })}
               onPick={setPick}
               subs={subs}
+              scopePath={scopePath}
               base={base}
               onChanged={refresh}
             />
@@ -815,6 +822,7 @@ export default function App() {
             onPanel={showPanel}
             counts={panelCounts}
             place={place}
+            subs={subs}
             onTogglePads={anyAgent ? () => setPadsOpen((o) => !o) : undefined}
             />
             )}
@@ -878,6 +886,7 @@ export default function App() {
                 if (p) setRailOpen(false);
               }}
               subs={subs}
+              scopePath={scopePath}
               base={base}
               onChanged={refresh}
             />
@@ -891,6 +900,7 @@ export default function App() {
           row={entry.row}
           base={base}
           cwd={hereCwd}
+          projects={projects}
           onClose={() => setEntry(null)}
           onSaved={() => {
             setEntry(null);

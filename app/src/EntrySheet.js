@@ -9,7 +9,15 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { deleteHook, deleteSkill, readSkill, saveHook, saveSkill } from './api';
+import {
+  deleteHook,
+  deleteSkill,
+  moveSkill,
+  openInEditor,
+  readSkill,
+  saveHook,
+  saveSkill,
+} from './api';
 import PushButton from './PushButton';
 import { C, S, mono } from './theme';
 
@@ -30,19 +38,21 @@ const SKILL_NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const SKILL_NAME_HELP =
   'lowercase letters, digits and dashes, starting with a letter';
 
-// Claude Code's own event names. Offered, not enforced: the list grows with
-// the tool and a field that refuses a new one is worse than a field that lets
-// you type it.
+// Claude Code's hook events, with what each one actually fires on. The names
+// alone are a quiz -- Stop and SubagentStop are a guess apart, and PreCompact
+// tells you nothing about when compaction happens. Offered, not enforced: the
+// list grows with the tool, and a field that refuses a name it has not heard
+// of is worse than one that lets you type it.
 const EVENTS = [
-  'PreToolUse',
-  'PostToolUse',
-  'UserPromptSubmit',
-  'Notification',
-  'Stop',
-  'SubagentStop',
-  'SessionStart',
-  'SessionEnd',
-  'PreCompact',
+  ['PreToolUse', 'before a tool runs — the one that can block it'],
+  ['PostToolUse', 'after a tool returns, with its result'],
+  ['UserPromptSubmit', 'you pressed enter, before Claude sees the prompt'],
+  ['Notification', 'Claude wants your attention: input needed, or permission'],
+  ['Stop', 'the main agent finished answering'],
+  ['SubagentStop', 'a Task subagent finished — not the main one'],
+  ['PreCompact', 'before the context is compacted, manual or automatic'],
+  ['SessionStart', 'a session begins, or resumes with --continue'],
+  ['SessionEnd', 'a session ends'],
 ];
 
 // Only two of the four scopes can be written. `plugin` belongs to something
@@ -64,11 +74,18 @@ const HOOK_SCOPES = [
 //   row      the catalog row being edited, or null to create a new one
 //   base     string    -- api base url
 //   cwd      string    -- which checkout project/local scope means
+//   projects array     -- the repos this machine knows about, for "move it to
+//                         that one" -- the server will only accept one of these
 //   onClose  () => void
 //   onSaved  () => void -- the panel should re-read /catalog
-export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
+export default function EntrySheet({ kind, row, base, cwd, projects = [], onClose, onSaved }) {
   const skill = kind === 'skill';
   const editing = !!row;
+  // A plugin's skill is somebody else's file. It opens here to be read, to be
+  // opened in an editor, and to be copied somewhere it becomes yours -- never
+  // to be saved over, which its next update would undo without saying so.
+  const locked = skill && row?.scope === 'plugin';
+  const [toCwd, setToCwd] = useState(cwd);
 
   const [scope, setScope] = useState(row?.scope || 'project');
   const [name, setName] = useState(row?.name || '');
@@ -88,7 +105,7 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
   useEffect(() => {
     if (!skill || !editing) return;
     let live = true;
-    readSkill(base, row.scope, row.name, cwd)
+    readSkill(base, row.scope, row.name, cwd, row.path)
       .then((d) => {
         if (!live) return;
         setDescription(d.description || '');
@@ -148,20 +165,57 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
   }
 
   const scopes = skill ? SKILL_SCOPES : HOOK_SCOPES;
+  // changing `where` on something that already exists is a move, and the key
+  // says which it is rather than leaving you to find out
+  const moving = skill && editing && (locked || scope !== row.scope ||
+    (scope === 'project' && toCwd !== cwd));
+
+  async function move() {
+    if (busy) return;
+    setErr('');
+    setBusy(true);
+    try {
+      await moveSkill(base, {
+        name: row.name, scope: row.scope, path: row.path,
+        to: scope, cwd, to_cwd: toCwd,
+      });
+      onSaved();
+    } catch (e) {
+      setErr(e.message || String(e));
+      setBusy(false);
+    }
+  }
+
+  function open() {
+    setErr('');
+    openInEditor(base, row.path).catch((e) => setErr(e.message || String(e)));
+  }
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
           <Text style={styles.title}>
-            {editing ? `edit ${skill ? 'skill' : 'hook'}` : `new ${skill ? 'skill' : 'hook'}`}
+            {locked
+              ? `${row.name} — a plugin's skill`
+              : editing
+              ? `edit ${skill ? 'skill' : 'hook'}`
+              : `new ${skill ? 'skill' : 'hook'}`}
           </Text>
+          {locked && (
+            <Text style={styles.hint}>
+              it belongs to something installed, so it is read-only here — open it, or
+              copy it somewhere it is yours
+            </Text>
+          )}
 
           <ScrollView
             style={styles.bodyScroll}
             contentContainerStyle={styles.bodyCol}
             keyboardShouldPersistTaps="handled">
-            <Text style={styles.label}>where</Text>
+            <Text style={styles.label}>
+              where{locked ? <Text style={styles.hint}> — copy it to</Text> : null}
+            </Text>
             <View style={styles.chips}>
               {scopes.map(([key, word]) => (
                 <Text
@@ -174,6 +228,23 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
                 </Text>
               ))}
             </View>
+            {/* which project, when there is more than one to mean. The server
+                takes a directory here and nowhere else, so it takes one off
+                this list rather than out of a request. */}
+            {skill && scope === 'project' && projects.length > 1 && (
+              <View style={styles.chips}>
+                {projects.map((p) => (
+                  <Text
+                    key={p.path}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: toCwd === p.path }}
+                    onPress={() => setToCwd(p.path)}
+                    style={[styles.chip, toCwd === p.path && styles.chipOn]}>
+                    {p.name}
+                  </Text>
+                ))}
+              </View>
+            )}
 
             {loading && <ActivityIndicator size="small" color={C.faint} />}
 
@@ -184,6 +255,7 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
                   style={styles.input}
                   value={name}
                   onChangeText={setName}
+                  editable={!locked}
                   placeholder="my-skill"
                   placeholderTextColor={C.faint}
                   autoCapitalize="none"
@@ -198,6 +270,7 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
                   style={[styles.input, styles.tall]}
                   value={description}
                   onChangeText={setDescription}
+                  editable={!locked}
                   multiline
                   placeholder="Use when the user asks to…"
                   placeholderTextColor={C.faint}
@@ -208,6 +281,7 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
                   style={[styles.input, styles.taller, mono]}
                   value={body}
                   onChangeText={setBody}
+                  editable={!locked}
                   multiline
                   // a JS string, not an HTML entity: RN draws the placeholder
                   // as text and &#10; came out as the five characters it is
@@ -219,7 +293,9 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
               </>
             ) : (
               <>
-                <Text style={styles.label}>event</Text>
+                <Text style={styles.label}>
+                  event <Text style={styles.hint}>— type to narrow it</Text>
+                </Text>
                 <TextInput
                   style={styles.input}
                   value={event}
@@ -227,17 +303,34 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
                   autoCapitalize="none"
                   autoCorrect={false}
                 />
-                <View style={styles.chips}>
-                  {EVENTS.map((e) => (
-                    <Text
-                      key={e}
-                      accessibilityRole="button"
-                      onPress={() => setEvent(e)}
-                      style={[styles.chip, event === e && styles.chipOn]}>
-                      {e}
-                    </Text>
-                  ))}
-                </View>
+                {/* The list narrows as you type and disappears once what you
+                    have typed is exactly one of them -- an autocomplete still
+                    offering the answer you have already given is just a list
+                    in the way of the next field. */}
+                {(() => {
+                  const find = event.trim().toLowerCase();
+                  const exact = EVENTS.some(([e]) => e.toLowerCase() === find);
+                  const hits = EVENTS.filter(
+                    ([e, what]) =>
+                      !find || e.toLowerCase().includes(find) || what.includes(find)
+                  );
+                  if (exact || !hits.length) return null;
+                  return (
+                    <ScrollView style={styles.events} keyboardShouldPersistTaps="handled">
+                      {hits.map(([e, what]) => (
+                        <Pressable
+                          key={e}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${e} — ${what}`}
+                          onPress={() => setEvent(e)}
+                          style={styles.eventRow}>
+                          <Text style={styles.eventName}>{e}</Text>
+                          <Text style={styles.eventWhat}>{what}</Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  );
+                })()}
 
                 <Text style={styles.label}>
                   matcher <Text style={styles.hint}>(optional — a tool name, or blank for all)</Text>
@@ -278,9 +371,20 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
             {!!err && <Text style={styles.error}>{err}</Text>}
           </ScrollView>
 
+          {/* the editor runs where the agents do, not where you are looking:
+              the app may be a tablet and the files are over there */}
+          {skill && editing && (
+            <PushButton
+              label="open the folder in the editor"
+              onPress={open}
+              disabled={busy}
+              style={styles.wide}
+            />
+          )}
+
           <View style={styles.row}>
             <PushButton label="cancel" onPress={onClose} disabled={busy} style={styles.btn} />
-            {editing && (
+            {editing && !locked && (
               <PushButton
                 label={sure ? 'really delete' : 'delete'}
                 colour={C.bad}
@@ -291,11 +395,11 @@ export default function EntrySheet({ kind, row, base, cwd, onClose, onSaved }) {
               />
             )}
             <PushButton
-              label={busy ? '' : 'save'}
+              label={busy ? '' : moving ? (locked ? 'copy here' : 'move here') : 'save'}
               colour={C.accentText}
               lit
-              onPress={save}
-              disabled={!canSave}
+              onPress={moving ? move : save}
+              disabled={moving ? busy : !canSave}
               style={styles.btn}>
               {busy && <ActivityIndicator size="small" color={C.text} />}
             </PushButton>
@@ -340,6 +444,16 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   chipOn: { color: C.text, borderColor: C.accentText },
+  events: {
+    maxHeight: 210,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: S.radius,
+    backgroundColor: C.bg,
+  },
+  eventRow: { paddingHorizontal: 10, paddingVertical: 7, gap: 2 },
+  eventName: { color: C.text, fontSize: 13, fontWeight: '600' },
+  eventWhat: { color: C.faint, fontSize: 11 },
   input: {
     backgroundColor: C.raised,
     color: C.text,
@@ -355,5 +469,6 @@ const styles = StyleSheet.create({
   rule: { color: C.warn, fontSize: 11 },
   error: { color: C.bad, fontSize: 12 },
   row: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  wide: { minHeight: S.hit, marginTop: 8 },
   btn: { flex: 1, minHeight: S.hit },
 });

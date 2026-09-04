@@ -137,6 +137,17 @@ only if that leaves it empty; a skill with scripts or a `references/` beside it
 is a small project, and a button in a side panel is not where anyone means to
 delete one.
 
+A plugin's skill opens too, read-only: to be read, to be **opened in the
+editor** — which runs where the agents do, not where you are looking, because
+the app may be a tablet and the files are over there — and to be **copied**
+somewhere it becomes yours. Copying is what a plugin skill does instead of
+moving: taking it would break the package and be undone by its next update
+anyway, and the reason to reach for one is to have your own version. Your own
+skills move rather than copy, between global and any project this machine
+already knows about. That list is the whitelist: a scope and a name derive the
+file everywhere else, and `/skill/move` is the one call that takes a directory,
+so it takes one off the projects list rather than out of the request.
+
 Hooks live in files that are not ours — `settings.json` also holds
 permissions, env and whatever else you keep there — so a hook edit reads the
 file, changes the one entry, and writes it back whole, with the previous
@@ -145,7 +156,10 @@ JSON is refused rather than rewritten. A row is addressed by `(event, group
 index, entry index)` from the catalog, not by its command text, because
 matching on the text edits the wrong one the moment two of them agree; and the
 matcher belongs to the group, so an existing hook cannot be moved between
-groups by retyping it.
+groups by retyping it. The event field is an autocomplete over all nine of
+Claude Code's hook events, each with what it actually fires on: the names alone
+are a quiz — `Stop` and `SubagentStop` are a guess apart, and `PreCompact` says
+nothing about when compaction happens.
 
 The prompts tab is the **prompt library**: the pads as a searchable list,
 grouped by their colour labels, with **run** and **edit** on whichever one you
@@ -324,6 +338,8 @@ rest over HTTP:
 | `POST /skill/delete` | `{scope, name}` — its SKILL.md, and the directory if that empties it |
 | `POST /hook` | `{scope, event, matcher, command, gi?, hi?}` — append, or replace that row |
 | `POST /hook/delete` | `{scope, event, gi, hi}` |
+| `POST /skill/move` | `{name, scope, to, to_cwd?}` — global ↔ a project; a plugin's is copied |
+| `POST /open` | `{path}` — open that folder in the editor on this machine |
 
 `/prompt` without a `terminal_id` goes to whichever agent the Push is
 pointed at, which is the same target a pad fires into: one place decides what
@@ -381,11 +397,19 @@ go down the same pty a pad fires into. Clear arms before it fires: it throws
 away everything the agent knows and it is a 20px target in a 268px column, so
 one tap reddens it and the next does it.
 
-When the focused agent has subagents they hang under the AGENTS list as a
-collapsible tree — yellow still going, green came back, the same two colours
-the subagent pads use on the glass. Only the **focused** agent's: reading them
-per seat would mean globbing and parsing every agent's transcript on every
-400ms poll.
+The lit card carries a subagent count, and the tree itself is a sub-tab in the
+focus view — under the agent it belongs to, rather than under the list you use
+to leave it. Only the **focused** agent's, either way: reading them per seat
+would mean globbing and parsing every agent's transcript on every 400ms poll,
+so a card that is not lit shows no count at all rather than showing zero, which
+would be a lie.
+
+Eight seats is few enough to read at a glance and too many to read while you
+are working in one repo of three, so the AGENTS heading carries **all · here** —
+`here` being the worktree you picked in PROJECTS, or the one the focused agent
+is in. It is never the default: hiding agents by default is how you lose one.
+Filtered, never renumbered — `i` is still the seat index a `/press` carries,
+and the Push's eighth button is still the eighth seat.
 
 ### No active agent
 

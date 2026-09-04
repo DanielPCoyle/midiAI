@@ -1,15 +1,13 @@
 import { useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { promptAgent } from './api';
-import Projects from './Projects';
+import Projects, { inside } from './Projects';
 import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
 import { C, S, seatHue, seatWord } from './theme';
 
-// The same two colours the subagent pads use on the glass: yellow is still
-// going, green came back.
+// Yellow is still going, the same colour the subagent pads use on the glass.
 const SUB_RUN = '#f0c828';
-const SUB_DONE = '#3cd05a';
 
 // The left rail, in two groups: the repos with their worktrees, and the agents.
 //
@@ -34,10 +32,24 @@ const SUB_DONE = '#3cd05a';
 //                                          straight off surface.views_data.sessions[0].rows. The wire
 //                                          only carries the FOCUSED agent's: reading them per seat
 //                                          means globbing and parsing every agent's transcript on
-//                                          every 400ms poll, so the tree hangs under the lit card.
+//                                          every 400ms poll. So the count sits on the lit card only,
+//                                          and says nothing at all about the others rather than
+//                                          saying zero about them, which would be a lie.
+//   scopePath  string                    -- the worktree "here" means: the one picked in PROJECTS,
+//                                          else the one the focused agent is in. What the AGENTS
+//                                          filter filters to.
 //   onChanged  () => void               -- fired after any of the four operations succeeds, so the
 //                                           coordinator knows to refetch /agents and refresh `cols`
-export default function Rail({ cols, current, onSeat, base, onChanged, onPick, subs = [] }) {
+export default function Rail({
+  cols,
+  current,
+  onSeat,
+  base,
+  onChanged,
+  onPick,
+  subs = [],
+  scopePath = '',
+}) {
   // { mode: 'new'|'rename'|'close'|'worktree', seatIndex: number|null } | null
   const [sheet, setSheet] = useState(null);
   // Projects reads git, not the surface poll, so nothing tells it a worktree
@@ -49,6 +61,13 @@ export default function Rail({ cols, current, onSeat, base, onChanged, onPick, s
     onChanged && onChanged();
   };
   const free = 8 - cols.filter(Boolean).length;
+
+  // Eight seats is few enough to read at a glance and too many to read while
+  // you are working in one repo of three. `here` is not a default: hiding
+  // agents by default is how you lose one, so you have to ask.
+  const [onlyHere, setOnlyHere] = useState(false);
+  const inScope = (col) => !!scopePath && !!col?.cwd && inside(col.cwd, scopePath);
+  const hidden = onlyHere ? cols.filter((c) => c && !inScope(c)).length : 0;
 
   // The card's corner used to be one ⋮ over a menu. It is four keys now: the
   // three things you actually do to a running agent are one tap each rather
@@ -75,10 +94,9 @@ export default function Rail({ cols, current, onSeat, base, onChanged, onPick, s
     armTimer.current = setTimeout(() => setArmed(null), 3000);
   };
 
-  // The subagent tree under the lit card. Collapsed is not the resting state:
-  // they are only listed while one is running, and something running is worth
-  // seeing without a click.
-  const [treeShut, setTreeShut] = useState(false);
+  // The tree itself moved into the focus view, where the agent it belongs to
+  // already is -- see Pane.js's sub-tabs. What stays here is the count, which
+  // is the part you want while scanning the list rather than reading one.
   const live = subs.filter((x) => x.running).length;
 
   const seatFor = (i) => (i != null ? cols[i] : null);
@@ -95,11 +113,34 @@ export default function Rail({ cols, current, onSeat, base, onChanged, onPick, s
           onPick={onPick}
           onChanged={changed}
         />
-        <Text style={styles.head}>AGENTS</Text>
+        <View style={styles.headRow}>
+          <Text style={styles.head}>AGENTS</Text>
+          <View style={styles.spacer} />
+          {/* only offered when there is a worktree to mean by "here" -- a
+              filter that cannot filter is a control that lies about having
+              something behind it */}
+          {!!scopePath &&
+            [
+              ['all', false],
+              ['here', true],
+            ].map(([word, on]) => (
+              <Text
+                key={word}
+                accessibilityRole="button"
+                accessibilityState={{ selected: onlyHere === on }}
+                onPress={() => setOnlyHere(on)}
+                style={[styles.filter, onlyHere === on && styles.filterOn]}>
+                {word}
+              </Text>
+            ))}
+        </View>
         <View style={styles.list}>
           {Array.from({ length: 8 }, (_, i) => {
             const col = cols[i] || null;
             if (!col) return null;
+            // filtered, never renumbered: `i` is the seat index a /press
+            // carries and the Push's eighth button is still the eighth seat
+            if (onlyHere && !inScope(col)) return null;
             const hue = seatHue(col);
             const on = i === current;
             return (
@@ -147,6 +188,16 @@ export default function Rail({ cols, current, onSeat, base, onChanged, onPick, s
                         {col.model || col.effort ? `· ${col.sub}` : col.sub}
                       </Text>
                     )}
+                    {/* only the lit card: the wire carries the focused agent's
+                        subagents and nobody else's, and a blank where a count
+                        would go says "not known" where a 0 would say "none" */}
+                    {on && subs.length > 0 && (
+                      <Text
+                        style={[styles.subs, live > 0 && styles.subsLive]}
+                        numberOfLines={1}>
+                        {live ? `▸ ${live}/${subs.length}` : `▸ ${subs.length}`}
+                      </Text>
+                    )}
                   </View>
                 </View>
               </PushButton>
@@ -180,40 +231,16 @@ export default function Rail({ cols, current, onSeat, base, onChanged, onPick, s
               </View>
             );
           })}
-          {/* Hung under the AGENTS list rather than inside the lit card: the
-              card is a PushButton, and a collapsing tree inside a button is
-              the same nested-interactive problem the ⋮ already taught us. */}
-          {subs.length > 0 && (
-            <View style={styles.tree}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`${treeShut ? 'show' : 'hide'} subagents`}
-                onPress={() => setTreeShut((v) => !v)}
-                style={styles.treeHead}>
-                <Text style={styles.caret}>{treeShut ? '▸' : '▾'}</Text>
-                <Text style={styles.treeName}>subagents</Text>
-                <Text style={styles.treeN}>
-                  {live ? `${live} running` : subs.length}
-                </Text>
-              </Pressable>
-              {!treeShut &&
-                subs.map((x, k) => (
-                  <View key={k} style={styles.treeRow}>
-                    <View
-                      style={[
-                        styles.subDot,
-                        { backgroundColor: x.running ? SUB_RUN : SUB_DONE },
-                      ]}
-                    />
-                    <Text style={styles.subName} numberOfLines={1}>
-                      {x.label}
-                    </Text>
-                    <Text style={styles.subType} numberOfLines={1}>
-                      {x.type}
-                    </Text>
-                  </View>
-                ))}
-            </View>
+          {hidden > 0 && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`show all agents — ${hidden} hidden`}
+              onPress={() => setOnlyHere(false)}
+              style={styles.hidden}>
+              <Text style={styles.hiddenText}>
+                {hidden} elsewhere — show all
+              </Text>
+            </Pressable>
           )}
           {free > 0 && (
             <PushButton
@@ -261,6 +288,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     paddingTop: 14,
   },
+  headRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  spacer: { flex: 1 },
+  filter: { color: C.faint, fontSize: 11, paddingHorizontal: 2 },
+  filterOn: { color: C.accentText },
+  hidden: { minHeight: 26, justifyContent: 'center', paddingHorizontal: 4 },
+  hiddenText: { color: C.edge, fontSize: 11 },
   scroll: { paddingBottom: 12 },
   list: { gap: S.gap, paddingTop: 10 },
   card: {
@@ -279,26 +312,13 @@ const styles = StyleSheet.create({
   status: { fontSize: 11 },
   meta: { color: C.faint, fontSize: 11, flexShrink: 1 },
   metaId: { color: C.edge, fontSize: 11, flexShrink: 1 },
+  subs: { color: C.edge, fontSize: 11, marginLeft: 'auto' },
+  subsLive: { color: SUB_RUN },
   slot: { position: 'relative' },
   keys: { position: 'absolute', top: 4, right: 4, flexDirection: 'row' },
   keyBtn: { paddingHorizontal: 4, paddingVertical: 2 },
   keyGlyph: { color: C.edge, fontSize: 13 },
   keyBad: { color: C.bad },
-  tree: { paddingLeft: 6, paddingTop: 4 },
-  treeHead: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 26 },
-  caret: { color: C.dim, fontSize: 11, width: 11 },
-  treeName: { color: C.faint, fontSize: 11, letterSpacing: 0.6 },
-  treeN: { color: C.edge, fontSize: 11, marginLeft: 'auto', paddingRight: 4 },
-  treeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    minHeight: 24,
-    paddingLeft: 17,
-  },
-  subDot: { width: 6, height: 6, borderRadius: 3 },
-  subName: { color: C.dim, fontSize: 12, flexShrink: 1 },
-  subType: { color: C.edge, fontSize: 10, marginLeft: 'auto', paddingRight: 4 },
   free: {
     minHeight: 44,
     borderWidth: 1,

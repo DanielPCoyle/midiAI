@@ -94,6 +94,7 @@ export default function Pane({
   onPanel,
   counts,
   place,
+  subs,
 }) {
   const kind = (data || {}).kind;
   // A question takes the glass only where the glass was already about this
@@ -118,6 +119,7 @@ export default function Pane({
         onPanel={onPanel}
         counts={counts}
         place={place}
+        subs={subs}
       />
     );
   if (kind === 'sessions') return <Sessions cols={cols} current={current} />;
@@ -185,9 +187,15 @@ function Focus({
   onPanel,
   counts,
   place,
+  subs = [],
 }) {
   // { anchor } | null -- the panel picker, drawn by Menu.js against the key
   const [pick, setPick] = useState(null);
+  // The focus view has two things to show about one agent: what it is saying,
+  // and what it has dispatched. A sub-tab rather than a second view, because
+  // both are this agent -- switching views to see its subagents means leaving
+  // the agent to look at it.
+  const [tab, setTab] = useState('transcript');
   const narrow = useNarrow();
   const railHidden = useRailHidden();
   if (!info) return <Empty what="no agent selected" />;
@@ -241,18 +249,37 @@ function Focus({
       {/* which checkout you are actually typing into. Two agents in one repo
           is the normal case here, and on different branches is the reason this
           line exists rather than the repo name alone. */}
-      {!!place && (
-        <View style={styles.place}>
-          <Text style={styles.placeRepo} numberOfLines={1}>
-            {place.repo}
-          </Text>
-          {!!place.branch && (
-            <Text style={styles.placeBranch} numberOfLines={1}>
-              ↳ {place.branch}
+      <View style={styles.place}>
+        {!!place && (
+          <>
+            <Text style={styles.placeRepo} numberOfLines={1}>
+              {place.repo}
             </Text>
-          )}
-        </View>
-      )}
+            {!!place.branch && (
+              <Text style={styles.placeBranch} numberOfLines={1}>
+                ↳ {place.branch}
+              </Text>
+            )}
+          </>
+        )}
+        <View style={styles.spacer} />
+        {/* far right of the line that already says where you are, because
+            which of this agent's two faces you are looking at is the same
+            kind of fact */}
+        {[
+          ['transcript', 'transcript'],
+          ['subagents', `subagents · ${subs.length}`],
+        ].map(([key, word]) => (
+          <Text
+            key={key}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: tab === key }}
+            onPress={() => setTab(key)}
+            style={[styles.subTab, tab === key && styles.subTabOn]}>
+            {word}
+          </Text>
+        ))}
+      </View>
 
       {pick && (
         <Menu
@@ -271,10 +298,39 @@ function Focus({
         />
       )}
 
+      {tab === 'subagents' && (
+        <View style={[styles.transcript, narrow && styles.transcriptNarrow]}>
+          <View style={styles.title}>
+            <Text style={styles.head}>SUBAGENTS</Text>
+          </View>
+          <ScrollView contentContainerStyle={styles.rows}>
+            {subs.map((r, i) => (
+              <View key={i} style={styles.row}>
+                <View
+                  style={[
+                    styles.dot,
+                    { backgroundColor: r.running ? '#f0c828' : '#3cd05a' },
+                  ]}
+                />
+                <View style={styles.rowBody}>
+                  <Text style={styles.rowName}>{r.label}</Text>
+                  <Text style={styles.rowSub}>
+                    {r.type} · {r.running ? 'running' : 'returned'}
+                  </Text>
+                </View>
+                {!!r.focused && <Text style={styles.tag}>focused</Text>}
+              </View>
+            ))}
+            {!subs.length && <Empty what="no subagents spawned yet" />}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Composer stays reachable at every width, so the transcript is what
           gives -- below 820 it stops being a bounded scroll box of its own
           (there is no flex:1 ancestor to bound it inside) and just lays its
           lines into the page, which is one long scroll by then anyway. */}
+      {tab === 'transcript' && (
       <View style={[styles.transcript, narrow && styles.transcriptNarrow]}>
         <View style={styles.title}>
           <Text style={styles.head}>TRANSCRIPT</Text>
@@ -303,6 +359,7 @@ function Focus({
           </ScrollView>
         </ScrollView>
       </View>
+      )}
 
       {tldr.length > 0 && (
         <View style={styles.card}>
@@ -982,7 +1039,9 @@ const styles = StyleSheet.create({
   },
   panelKeyOn: { borderColor: C.accentText },
   panelKeyText: { color: C.accentText, fontSize: 12, fontWeight: '500' },
-  place: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 2 },
+  place: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingBottom: 2 },
+  subTab: { color: C.faint, fontSize: 11 },
+  subTabOn: { color: C.text, borderBottomWidth: 1, borderBottomColor: C.accentText },
   placeRepo: { color: C.faint, fontSize: 11 },
   placeBranch: { color: C.dim, fontSize: 11, flexShrink: 1 },
   titleBtn: { alignSelf: 'center', paddingHorizontal: 14 },

@@ -279,20 +279,17 @@ function Scoped({ rows, q, kind, onEntry }) {
         {!!at && (
         <View key={at.scope} style={styles.group}>
           {at.items.map((r, i) => {
-            // a plugin's skill is somebody else's package: editing one in
-            // place would be undone by its next update without saying so, so
-            // the row is a row rather than a way in
-            const editable = r.scope !== 'plugin';
+            // a plugin's skill opens too -- read-only, to be read, opened in an
+            // editor, or copied somewhere it becomes yours. What it is not is
+            // saveable, which its next update would undo without saying so.
+            const locked = r.scope === 'plugin';
             return (
             <Pressable
               key={i}
-              accessibilityRole={editable ? 'button' : undefined}
-              accessibilityLabel={
-                editable
-                  ? `edit ${kind === 'skills' ? r.name : `${r.event} hook`}`
-                  : undefined
-              }
-              disabled={!editable}
+              accessibilityRole="button"
+              accessibilityLabel={`${locked ? 'read' : 'edit'} ${
+                kind === 'skills' ? r.name : `${r.event} hook`
+              }`}
               onPress={() => onEntry && onEntry(kind, r)}
               style={styles.item}>
               <View style={styles.pick}>

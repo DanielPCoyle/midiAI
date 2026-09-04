@@ -132,11 +132,15 @@ export const listCatalog = async (base, cwd) =>
 // A skill's frontmatter and its instructions. /catalog carries the first two
 // fields for every skill; the body is a second call because shipping every
 // one of them would make that list many times larger.
-export const readSkill = async (base, scope, name, cwd) =>
+// `path` is only read for plugin scope, whose location the server cannot
+// derive from a scope and a name -- it checks the path really is inside
+// ~/.claude/plugins before it opens it.
+export const readSkill = async (base, scope, name, cwd, path) =>
   getJSON(
     base,
     `/skill?scope=${encodeURIComponent(scope)}&name=${encodeURIComponent(name)}` +
-      (cwd ? `&cwd=${encodeURIComponent(cwd)}` : '')
+      (cwd ? `&cwd=${encodeURIComponent(cwd)}` : '') +
+      (path ? `&path=${encodeURIComponent(path)}` : '')
   );
 
 // Create or replace. The server derives the path from scope + name -- there is
@@ -145,6 +149,14 @@ export const saveSkill = (base, fields) => post(base, '/skill', fields);
 
 export const deleteSkill = (base, scope, name, cwd) =>
   post(base, '/skill/delete', { scope, name, cwd });
+
+// Global to a project, or the other way. A plugin's skill is copied instead --
+// the server decides that, not this call.
+export const moveSkill = (base, fields) => post(base, '/skill/move', fields);
+
+// Open a folder in the editor on the machine the agents run on, which is where
+// the files are. The app may be a tablet.
+export const openInEditor = (base, path) => post(base, '/open', { path });
 
 // `gi`/`hi` are the hook's address in its settings file, straight off the
 // catalog row. Without them this appends a new hook instead.

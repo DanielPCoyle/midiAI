@@ -323,6 +323,58 @@ def skill_path(scope, name, root):
     return os.path.join(home, name, "SKILL.md")
 
 
+# The editor to open a folder in. Fixed here rather than taken from a request:
+# the caller picks WHAT to open, never WITH WHAT, so there is no argument on
+# this wire that turns into a command. Overridable by whoever starts the
+# server, which is the person whose editor it is.
+EDITOR_CMD = os.environ.get("MIDIAI_EDITOR", "code-insiders")
+
+
+def openable(path):
+    """A directory this server will hand to the editor, resolved -- or None.
+
+    Anything under the home directory, and nothing else. That is a wide rule
+    and deliberately so: the useful things to open are repos, worktrees and
+    skill folders, which have no single root between them. What it does rule
+    out is /etc, another user, and the class of request whose whole point is
+    the path being somewhere you would not have gone."""
+    if not path:
+        return None
+    real = os.path.realpath(os.path.expanduser(path))
+    if os.path.isfile(real):
+        real = os.path.dirname(real)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if not os.path.isdir(real):
+        return None
+    try:
+        if os.path.commonpath([real, home]) != home:
+            return None
+    except ValueError:              # different drives -- not under home either
+        return None
+    return real
+
+
+def plugin_skill(path):
+    """A plugin's SKILL.md, resolved -- or None.
+
+    Plugin skills are the one kind whose location this file cannot derive from
+    a scope and a name: they live wherever their package put them, one or two
+    directories deep. So this is the one place a path arrives from the caller,
+    and it is admitted only if it really is a SKILL.md really inside
+    ~/.claude/plugins. commonpath, not startswith: /a/bc must not pass for
+    /a/b."""
+    if not path:
+        return None
+    real = os.path.realpath(path)
+    home = os.path.realpath(os.path.expanduser("~/.claude/plugins"))
+    try:
+        if os.path.commonpath([real, home]) != home:
+            return None
+    except ValueError:
+        return None
+    return real if os.path.isfile(real) else None
+
+
 def skill_text(name, description, body):
     """A SKILL.md, front to back. Claude Code reads the frontmatter and the
     body is the instructions -- so this writes exactly the two keys it needs
@@ -558,6 +610,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._skill_write()
         if self.path == "/skill/delete":
             return self._skill_delete()
+        if self.path == "/skill/move":
+            return self._skill_move()
+        if self.path == "/open":
+            return self._open_in_editor()
         if self.path == "/hook":
             return self._hook_write()
         if self.path == "/hook/delete":
@@ -909,9 +965,12 @@ class Handler(BaseHTTPRequestHandler):
         scope = (q.get("scope") or [""])[0]
         name = (q.get("name") or [""])[0]
         cwd = (q.get("cwd") or [None])[0] or target_cwd()
-        path = skill_path(scope, name, self._skill_root(cwd))
+        # a plugin's skill is readable and not writable -- reading one is
+        # exactly what you want when you are about to write your own version
+        path = (plugin_skill((q.get("path") or [""])[0]) if scope == "plugin"
+                else skill_path(scope, name, self._skill_root(cwd)))
         if not path:
-            return self._send(400, "not an editable scope, or a bad name",
+            return self._send(400, "not a skill this server can read",
                               "text/plain")
         if not os.path.isfile(path):
             return self._send(404, "no such skill", "text/plain")
@@ -991,6 +1050,104 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return self._send(500, f"could not remove the skill: {e}", "text/plain")
         self._send(200, json.dumps({"kept": leftover}), "application/json")
+
+    def _open_in_editor(self):
+        """Open a folder in the editor on the machine the agents run on.
+
+        Which is the whole point: the app may be a tablet, and the files are
+        over here. A plugin's skill cannot be edited in this panel and should
+        not be -- but reading one is exactly what you want when you are about
+        to write your own version of it, so opening beats copying it out.
+
+        The command is a fixed binary and a list argv: no shell, so a path
+        cannot become anything but a path."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            path = json.loads(raw)["path"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        dest = openable(path)
+        if not dest:
+            return self._send(400, "that is not a folder under your home "
+                                   "directory", "text/plain")
+        if not shutil.which(EDITOR_CMD):
+            return self._send(
+                501, f"{EDITOR_CMD} is not on this machine's PATH -- set "
+                     f"MIDIAI_EDITOR to the one you use", "text/plain")
+        try:
+            subprocess.Popen([EDITOR_CMD, dest],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            return self._send(500, f"could not open it: {e}", "text/plain")
+        self._send(200, json.dumps({"path": dest, "with": EDITOR_CMD}),
+                   "application/json")
+
+    def _skill_move(self):
+        """Move a skill to another scope -- global to this project, or to one
+        you name.
+
+        A plugin's skill is COPIED, never moved: it belongs to something
+        installed, and taking it would break the package and be undone by its
+        next update anyway. Copying it is the useful half of that anyway --
+        the reason to reach for one is to have your own version.
+
+        The destination project has to be one this machine already knows
+        about. That is the whitelist: a scope and a name derive the file
+        everywhere else in here, and this is the one call that takes a
+        directory, so it takes one off a list rather than out of a request."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            name, scope, to = body["name"], body["scope"], body["to"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+
+        if scope == "plugin":
+            real = plugin_skill(body.get("path"))
+            if not real:
+                return self._send(400, "that is not a plugin skill", "text/plain")
+            src = os.path.dirname(real)
+        else:
+            src_md = skill_path(scope, name, self._skill_root(
+                body.get("cwd") or target_cwd()))
+            if not src_md or not os.path.isfile(src_md):
+                return self._send(404, "no such skill", "text/plain")
+            src = os.path.dirname(src_md)
+
+        if to == "project":
+            to_cwd = body.get("to_cwd") or body.get("cwd") or target_cwd()
+            root = self._skill_root(to_cwd)
+            known = {os.path.realpath(p) for p in load_projects()}
+            known.add(os.path.realpath(self._skill_root(target_cwd())))
+            if os.path.realpath(root) not in known:
+                return self._send(400, "that project is not one this machine "
+                                       "knows about -- add it first", "text/plain")
+        elif to == "user":
+            root = ""
+        else:
+            return self._send(400, "a skill moves to user or project scope",
+                              "text/plain")
+
+        dest_md = skill_path(to, name, root)
+        if not dest_md:
+            return self._send(400, "bad name for a skill", "text/plain")
+        dest = os.path.dirname(dest_md)
+        if os.path.realpath(dest) == os.path.realpath(src):
+            return self._send(409, "it is already there", "text/plain")
+        if os.path.exists(dest):
+            return self._send(409, f"a {to} skill called {name} already exists",
+                              "text/plain")
+        try:
+            shutil.copytree(src, dest)
+            # only what this server put there is taken away again: a plugin's
+            # copy stays where its package expects it
+            if scope != "plugin":
+                shutil.rmtree(src)
+        except OSError as e:
+            return self._send(500, f"could not move it: {e}", "text/plain")
+        self._send(200, json.dumps({"path": dest_md,
+                                    "copied": scope == "plugin"}),
+                   "application/json")
 
     def _hook_target(self, body):
         """(path, error) for the scope this request names."""
