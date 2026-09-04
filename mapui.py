@@ -9,6 +9,7 @@ this file only serves the data it needs.
 import argparse
 import base64
 import binascii
+import glob
 import json
 import os
 import re
@@ -241,6 +242,102 @@ def repo_worktrees(cwd):
     return rows or None
 
 
+def skill_description(skill_md_path):
+    """The `description:` line out of a SKILL.md's YAML frontmatter, without
+    pulling in a YAML dependency for what is, in practice, a handful of
+    `key: value` lines between two `---` markers. Reading a full parser's
+    worth of edge cases isn't worth it for one field, so this reads only what
+    the spec actually requires: a top-of-file frontmatter block, the
+    `description:` key, and its value folded across any more-indented
+    continuation lines that follow it.
+
+    Reads at most the first 4KB -- frontmatter lives at the very top of the
+    file or nowhere, so a skill authored with a huge SKILL.md body is never a
+    reason to read the whole thing just to find one field."""
+    try:
+        with open(skill_md_path, "r", errors="replace") as f:
+            head = f.read(4096)
+    except OSError:
+        return ""
+    lines = head.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""            # no frontmatter block -- nothing to read
+    closing = None
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            closing = i
+            break
+    if closing is None:
+        return ""            # frontmatter never closes within the 4KB read
+    description, capturing = "", False
+    for line in lines[1:closing]:
+        if capturing and line[:1] in (" ", "\t") and line.strip():
+            # a continuation line: fold it onto the value with one space,
+            # the same way YAML's own folded scalars behave
+            description += " " + line.strip()
+            continue
+        capturing = False
+        if line.lstrip().startswith("description:"):
+            description = line.split(":", 1)[1].strip()
+            capturing = True
+    # YAML's quotes are syntax, not part of the sentence: about one skill in
+    # seven writes the value quoted, and left in they read as a typo in a list
+    # where every neighbour is bare. Stripped only when both ends match, so a
+    # description that genuinely opens with a quote keeps it.
+    if len(description) > 1 and description[0] == description[-1] and description[0] in "\"'":
+        description = description[1:-1]
+    return description[:300]
+
+
+def skill_rows(skill_md_paths, scope):
+    """Turn a list of SKILL.md paths into /catalog rows. A thin wrapper, but
+    it's the one place that decides a skill's `name` is its directory name
+    -- the same name the user types after the slash -- rather than anything
+    parsed out of the file itself."""
+    out = []
+    for path in skill_md_paths:
+        name = os.path.basename(os.path.dirname(path))
+        out.append({"name": name, "description": skill_description(path),
+                    "scope": scope, "path": path})
+    return out
+
+
+def hook_rows(settings_path, scope):
+    """One settings file's hooks, flattened to one row per command.
+
+    The file is read best-effort: a settings.json that is missing (no user
+    hooks configured), unreadable, or hand-edited into invalid JSON is a
+    normal state for a machine to be in, not a reason to fail the whole
+    /catalog request over one scope this agent may not even have hooks in."""
+    try:
+        with open(settings_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return []
+    out = []
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            matcher = group.get("matcher") or ""
+            entries = group.get("hooks")
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                command = entry.get("command") if isinstance(entry, dict) else None
+                if not command:
+                    continue
+                out.append({"event": event, "matcher": matcher,
+                            "command": str(command)[:400],
+                            "scope": scope, "path": settings_path})
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     # the app runs from Metro or Expo Go, never this origin, so every
     # response needs this or the browser build just can't read it
@@ -309,6 +406,8 @@ class Handler(BaseHTTPRequestHandler):
             self._projects()
         elif self.path == "/branches" or self.path.startswith("/branches?"):
             self._branches()
+        elif self.path == "/catalog" or self.path.startswith("/catalog?"):
+            self._catalog()
         else:
             self._send(200, API_NOTE, "text/plain")
 
@@ -658,6 +757,54 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             result = {"branches": [], "type": "branch_list"}
         self._send(200, json.dumps(result), "application/json")
+
+    def _catalog(self):
+        """Every skill and hook an agent working in `cwd` can actually see,
+        each tagged with the scope it came from -- user (this machine's own
+        ~/.claude), project (checked into the repo, shared with whoever
+        clones it), local (this checkout's own settings.local.json, which
+        stays out of git), or plugin (bundled with something installed from
+        the marketplace).
+
+        This exists for the same reason /projects exists: an agent (or the
+        app, on an agent's behalf) working out "what can I reach from here"
+        by walking the filesystem itself would have to know all four of
+        these locations and get the scope labelling right every time. One
+        call is cheaper than four kinds of mistake."""
+        query = urllib.parse.urlsplit(self.path).query
+        cwd = (urllib.parse.parse_qs(query).get("cwd") or [None])[0] or target_cwd()
+        rows = repo_worktrees(cwd)
+        # repo_worktrees resolves any path inside a repo -- worktree
+        # included -- to the main checkout, which is where a repo's own
+        # .claude/ actually lives; a cwd that isn't a repo at all (or isn't
+        # a directory) just falls back to itself, same as target_cwd() does
+        # elsewhere in this file
+        root = rows[0]["path"] if rows else cwd
+
+        user_skills = sorted(glob.glob(os.path.expanduser("~/.claude/skills/*/SKILL.md")))
+        project_skills = sorted(glob.glob(os.path.join(root, ".claude/skills/*/SKILL.md")))
+        # two glob depths because a plugin's skills can live either directly
+        # under the plugin, or nested one level deeper inside a named
+        # sub-package of it -- both are real layouts on disk. Capped at 200
+        # *before* any file is opened, so a user with a large plugin cache
+        # never turns a read-only catalog lookup into a slow one.
+        plugin_skills = sorted(set(
+            glob.glob(os.path.expanduser("~/.claude/plugins/*/*/*/skills/*/SKILL.md")) +
+            glob.glob(os.path.expanduser("~/.claude/plugins/*/*/skills/*/SKILL.md"))
+        ))[:200]
+
+        skills = (skill_rows(user_skills, "user") +
+                 skill_rows(project_skills, "project") +
+                 skill_rows(plugin_skills, "plugin"))
+        skills.sort(key=lambda s: (s["scope"], s["name"].lower()))
+
+        hooks = (hook_rows(os.path.expanduser("~/.claude/settings.json"), "user") +
+                hook_rows(os.path.join(root, ".claude/settings.json"), "project") +
+                hook_rows(os.path.join(root, ".claude/settings.local.json"), "local"))
+        hooks.sort(key=lambda h: (h["scope"], h["event"].lower()))
+
+        self._send(200, json.dumps({"skills": skills, "hooks": hooks}),
+                  "application/json")
 
     def _worktrees_switch(self):
         """Check a different branch out in a worktree.

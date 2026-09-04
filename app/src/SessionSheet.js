@@ -37,14 +37,21 @@ const NAME_HELP = 'lowercase letters, digits, _ or - only, must start with a let
 // this repo -- in front of you every single time. Adding the project answers
 // it once; `new` picks from what has been answered.
 //
-// The path field and the list are one control, not two. Typing jumps, tapping
-// walks, and either way the field IS the answer -- there is no separate
-// "use this folder", because the folder you are looking at is the one you get.
+// Walking and choosing used to be the same gesture: the folder you were
+// looking at WAS the answer, so there was no "use this one". That reads fine
+// until the modal has a branch list under it and the folder list is holding
+// 190px open for a question already answered. So a row now offers **select**,
+// and selecting folds the whole list away to one line with **remove** on it.
 function FolderPick({ base, value, onChange }) {
   const [listing, setListing] = useState(null);
   const [loading, setLoading] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [err, setErr] = useState('');
+  const [chosen, setChosen] = useState(false);
+  // hover is a mouse's answer and the iPad has none, so the row that is
+  // already the value shows its key unconditionally -- a touch can always
+  // reach at least the one it is on.
+  const [hover, setHover] = useState(null);
 
   const load = async (path) => {
     setLoading(true);
@@ -78,7 +85,9 @@ function FolderPick({ base, value, onChange }) {
     setErr('');
     try {
       const path = await chooseDir(base, value);
-      if (path) go(path);   // null is a cancel, and a cancel changes nothing
+      // null is a cancel, and a cancel changes nothing. A path is not a walk:
+      // the Finder dialog's whole gesture is "this one", so it selects.
+      if (path) choose(path);
     } catch (e) {
       setErr(String(e.message || e));
     } finally {
@@ -90,6 +99,34 @@ function FolderPick({ base, value, onChange }) {
   const entries = [...(listing?.entries || [])].sort(
     (a, b) => (b.git ? 1 : 0) - (a.git ? 1 : 0) || a.name.localeCompare(b.name)
   );
+
+  const choose = (path) => {
+    onChange(path);
+    setChosen(true);
+  };
+
+  if (chosen) {
+    return (
+      <View style={styles.chosen}>
+        <Text style={styles.chosenPath} numberOfLines={1}>
+          {value}
+        </Text>
+        {/* the list is still mounted behind this, so reopening lands back
+            where you were rather than at the top of the disk */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="remove this folder and choose another"
+          hitSlop={6}
+          onPress={() => {
+            setChosen(false);
+            onChange('');
+          }}
+          style={styles.rowKey}>
+          <Text style={styles.removeText}>remove</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.pick}>
@@ -111,6 +148,15 @@ function FolderPick({ base, value, onChange }) {
         </Text>
         {loading && <ActivityIndicator size="small" color={C.faint} />}
         <View style={styles.spacer} />
+        {!!listing?.path && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="select this folder"
+            onPress={() => choose(listing.path)}
+            style={styles.rowKey}>
+            <Text style={styles.selectText}>select this folder</Text>
+          </Pressable>
+        )}
         <Pressable onPress={browse} disabled={browsing} style={styles.browse}>
           {browsing ? (
             <ActivityIndicator size="small" color={C.faint} />
@@ -127,14 +173,32 @@ function FolderPick({ base, value, onChange }) {
           </Pressable>
         )}
         {entries.map((e) => (
-          <Pressable key={e.path} style={styles.pickRow} onPress={() => go(e.path)}>
-            <Text style={[styles.pickName, e.git && styles.pickRepo]} numberOfLines={1}>
-              {e.name}
-            </Text>
+          <View
+            key={e.path}
+            onPointerEnter={() => setHover(e.path)}
+            onPointerLeave={() => setHover((h) => (h === e.path ? null : h))}
+            style={styles.pickRow}>
+            {/* the name still walks into the folder -- select is the separate
+                act, so browsing through a folder never chooses it by accident */}
+            <Pressable style={styles.pickWalk} onPress={() => go(e.path)}>
+              <Text style={[styles.pickName, e.git && styles.pickRepo]} numberOfLines={1}>
+                {e.name}
+              </Text>
+            </Pressable>
             {/* an agent already lives here; starting a second is allowed but
                 worth knowing before you do it */}
             {e.busy && <Text style={styles.pickTag}>in use</Text>}
-          </Pressable>
+            {(hover === e.path || value === e.path) && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`select ${e.name}`}
+                hitSlop={4}
+                onPress={() => choose(e.path)}
+                style={styles.rowKey}>
+                <Text style={styles.selectText}>select</Text>
+              </Pressable>
+            )}
+          </View>
         ))}
       </ScrollView>
     </View>
@@ -211,23 +275,54 @@ function PlacePick({ base, value, onChange }) {
 // somewhere else is shown and not offered: git refuses a second checkout of the
 // same branch, so a row that could only ever produce that error is drawn as the
 // fact it is rather than as a button.
-function BranchPick({ base, cwd, value, onChange }) {
+function BranchPick({ base, cwd, value, onChange, onRows, quiet }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
+  // Debounced, because `cwd` is a field somebody is typing into in two of the
+  // three places this is used -- without it every keystroke asks the server
+  // about a path that is half a path.
   useEffect(() => {
     let live = true;
-    listBranches(base, cwd)
-      .then((got) => live && setRows(got))
-      .catch((e) => live && setErr(String(e.message || e)))
-      .finally(() => live && setLoading(false));
+    setLoading(true);
+    if (!cwd) {
+      // an empty path is not a repo to ask about -- and /branches with no cwd
+      // answers for whatever the server itself is sitting in, which is a list
+      // of somebody else's branches under a blank field
+      setRows([]);
+      setLoading(false);
+      onRows && onRows([]);
+      return () => {
+        live = false;
+      };
+    }
+    const t = setTimeout(() => {
+      listBranches(base, cwd)
+        .then((got) => {
+          if (!live) return;
+          setRows(got);
+          setErr('');
+          onRows && onRows(got);
+        })
+        // not a repo (yet) is the ordinary case while typing a path, not an
+        // error worth a red line under the field
+        .catch((e) => live && (setRows([]), onRows && onRows([]), setErr(quiet ? '' : String(e.message || e))))
+        .finally(() => live && setLoading(false));
+    }, 250);
     return () => {
       live = false;
+      clearTimeout(t);
     };
-  }, [base, cwd]);
+    // onRows is a fresh closure every render and is not a reason to refetch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base, cwd, quiet]);
 
   const same = (p) => p && cwd && p.replace(/\/$/, '') === cwd.replace(/\/$/, '');
+
+  // `quiet` is the optional use: a folder that is not a repo has nothing to
+  // say here, and saying it takes up the modal.
+  if (quiet && !rows.length) return null;
 
   return (
     <View style={styles.pick}>
@@ -297,6 +392,10 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
   const [cwdField, setCwdField] = useState('');
   const [nameField, setNameField] = useState('');
   const [branchField, setBranchField] = useState('');
+  // The branches BranchPick last read, so a name picked off that list passes
+  // validation as itself. NAME_RE is the rule for names we mint; a branch that
+  // already exists may carry a slash or a capital and is not ours to judge.
+  const [branchRows, setBranchRows] = useState([]);
   const [wt, setWt] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -308,6 +407,7 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
     setCwdField(cwd || '');
     setNameField(mode === 'rename' ? name || '' : '');
     setBranchField('');
+    setBranchRows([]);
     setWt(false);
     setBusy(false);
     setErr('');
@@ -318,8 +418,13 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
   const nameOk = nameValid(mode, nameField);
   // `branch` picks an existing name off a list, so NAME_RE has no business
   // near it -- real branches carry slashes, and the rule is for names we mint.
+  // a branch that already exists is always a legal answer, whatever it is
+  // called -- `worktree create` falls back to checking one out when `-b` finds
+  // it taken, which is exactly what picking it off the list means
+  const existing = branchRows.some((b) => b.name === branchField);
   const branchOk =
-    mode === 'worktree' || (mode === 'new' && wt) ? NAME_RE.test(branchField)
+    mode === 'worktree' || (mode === 'new' && wt)
+      ? existing || NAME_RE.test(branchField)
       : mode === 'branch' ? branchField.length > 0
       : true;
   const canConfirm = cwdOk && nameOk && branchOk && !busy;
@@ -335,7 +440,14 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
       else if (mode === 'rename') await renameAgent(base, tid, nameField.trim());
       else if (mode === 'close') await closeAgent(base, tid);
       else if (mode === 'worktree') await makeWorktree(base, cwdField.trim(), branchField.trim());
-      else if (mode === 'project') await addProject(base, cwdField.trim());
+      else if (mode === 'project') {
+        const where = cwdField.trim();
+        await addProject(base, where);
+        // asked for, not required: adding a repo you already have is often
+        // "and put me on this branch", and doing it in two steps means
+        // finding the row again first
+        if (branchField) await switchBranch(base, where, branchField);
+      }
       else if (mode === 'branch') await switchBranch(base, cwd, branchField);
       onDone();
     } catch (e) {
@@ -349,6 +461,14 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
       <View style={styles.backdrop}>
         <View style={styles.card}>
           <Text style={styles.title}>{TITLE[mode] || mode}</Text>
+          {/* the body scrolls, the title and the keys do not: `project` can
+              carry a folder list and a branch list at once, which is taller
+              than a short window, and confirm sliding off the bottom edge is
+              the one thing this modal must never do */}
+          <ScrollView
+            style={styles.bodyScroll}
+            contentContainerStyle={styles.body}
+            keyboardShouldPersistTaps="handled">
 
           {mode === 'new' && (
             <>
@@ -424,7 +544,9 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
                 autoCapitalize="none"
                 autoCorrect={false}
               />
-              <Text style={styles.label}>new branch name</Text>
+              <Text style={styles.label}>
+                branch <Text style={styles.hint}>(a new name, or one that exists)</Text>
+              </Text>
               <TextInput
                 style={styles.input}
                 value={branchField}
@@ -433,6 +555,17 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
                 placeholderTextColor={C.faint}
                 autoCapitalize="none"
                 autoCorrect={false}
+              />
+              {/* `worktree create` already falls back to checking a branch out
+                  when `-b` finds it taken, so an existing name has always
+                  worked here -- there was just no way to see one from the app */}
+              <BranchPick
+                base={base}
+                cwd={cwdField.trim()}
+                value={branchField}
+                onChange={setBranchField}
+                onRows={setBranchRows}
+                quiet
               />
               {!branchOk && branchField.length > 0 && <Text style={styles.rule}>{NAME_HELP}</Text>}
             </>
@@ -445,6 +578,19 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
               <Text style={styles.hint}>
                 any path inside the repo will do — it is remembered as the main checkout
               </Text>
+              {/* quiet: a folder that is not a repo draws nothing at all here,
+                  which is most of the folders you pass through on the way */}
+              <BranchPick
+                base={base}
+                cwd={cwdField.trim()}
+                value={branchField}
+                onChange={setBranchField}
+                onRows={setBranchRows}
+                quiet
+              />
+              {!!branchRows.length && (
+                <Text style={styles.hint}>branch — optional, checks it out as you add it</Text>
+              )}
             </>
           )}
 
@@ -458,6 +604,7 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
           )}
 
           {!!err && <Text style={styles.error}>{err}</Text>}
+          </ScrollView>
 
           <View style={styles.row}>
             <PushButton label="cancel" onPress={onClose} disabled={busy} style={styles.btn} />
@@ -487,6 +634,7 @@ const styles = StyleSheet.create({
   card: {
     width: 340,
     maxWidth: '90%',
+    maxHeight: '88%',
     backgroundColor: C.panel,
     borderRadius: S.radius,
     borderWidth: 1,
@@ -495,6 +643,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   title: { color: C.text, fontSize: 16, fontWeight: '600', marginBottom: 4 },
+  bodyScroll: { flexGrow: 0, flexShrink: 1 },
+  body: { gap: 8 },
   label: { color: C.dim, fontSize: 12 },
   hint: { color: C.faint, fontSize: 11 },
   input: {
@@ -526,6 +676,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     minHeight: 34,
   },
+  pickWalk: { flex: 1, justifyContent: 'center', minHeight: 34 },
+  rowKey: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: C.edge,
+  },
+  selectText: { color: C.accentText, fontSize: 11 },
+  removeText: { color: C.bad, fontSize: 11 },
+  chosen: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: S.hit,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: C.edge,
+    borderRadius: S.radius,
+    backgroundColor: C.raised,
+  },
+  chosenPath: { color: C.text, fontSize: 13, flex: 1 },
   pickGroup: {
     color: C.faint,
     fontSize: 10,

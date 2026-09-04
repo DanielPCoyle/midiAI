@@ -94,8 +94,10 @@ export const addProject = (base, path) => post(base, '/projects', { path });
 // puts it straight back.
 export const forgetProject = (base, path) => post(base, '/projects/remove', { path });
 
-// Worktrees. `cwd` says which repo to ask about; the server defaults it to
-// whichever session the Push is pointed at when omitted.
+// Worktrees of one repo. `/projects` carries these already, attached to the
+// project they belong to, which is how the rail reads them -- this is the bare
+// per-repo form, kept because the route is the older and simpler contract and
+// the server still answers it.
 export const listWorktrees = async (base, cwd) =>
   (await getJSON(base, `/worktrees${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`))
     .worktrees || [];
@@ -119,6 +121,13 @@ export const switchBranch = (base, path, branch) =>
 // while an agent is living in it, and that refusal is not overridable.
 export const removeWorktree = (base, cwd, path, force) =>
   post(base, '/worktrees/remove', { cwd, path, force: !!force });
+
+// What an agent working in `cwd` can reach: its skills and its hooks, each
+// tagged with the scope it came from (user / project / local / plugin). Read
+// off disk by the server, because the files are on the machine the agents run
+// on and this app may be a tablet on the other side of the room.
+export const listCatalog = async (base, cwd) =>
+  getJSON(base, `/catalog${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`);
 
 // The folders on the machine running the agents. A picker on the tablet would
 // browse the tablet, which is not where the repos are.

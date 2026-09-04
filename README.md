@@ -109,7 +109,17 @@ reading in the middle, the prompt library down the right. The Push itself —
 its screen, its two button rows, all 64 pads — is a **tab** you switch to, not
 the shell you live in.
 
-The right-hand panel is the **prompt library**: the pads as a searchable list,
+The right-hand panel has three tabs — **prompts**, **skills**, **hooks** — and
+the key in the pane's title row is the menu that picks between them, because a
+third and fourth key across a title row is how a title row stops being
+readable. Prompts are what you send an agent; skills and hooks are what it
+already has, read off disk by `GET /catalog` and split by **scope** into
+sub-tabs: project, project · local, global, plugins. Where a thing comes from
+is the first fact about it — a hook in the repo is the team's, one in
+`~/.claude` is yours — and 131 plugin skills over 38 of your own is not a list
+you scroll looking for one of the 38.
+
+The prompts tab is the **prompt library**: the pads as a searchable list,
 grouped by their colour labels, with **run** and **edit** on whichever one you
 have picked. It used to carry a `Library | Grid` toggle whose second half drew
 an on-screen 8×8 replica. That replica was the Push mirror, worse — a second
@@ -127,6 +137,10 @@ whose every button is a guaranteed error is not worth the width.
 The pad editor is a sheet, not a column — an **edit pad** key appears once you
 have picked one, and the editor was holding a third of the screen open next to
 the thing you were reading.
+
+Under the focus title, one line names the checkout and the branch you are
+actually typing into — two agents in one repo is the normal case here, and on
+two different branches is why the line exists rather than the repo name alone.
 
 The tabs are the views, uppercased so the one row of chrome reads as chrome:
 **FOCUS · TESTS · GIT · USAGE**. `prs` reads GIT because the view is the
@@ -276,6 +290,7 @@ rest over HTTP:
 | `POST /projects/remove` | `{path}` — forget one; nothing on disk is touched |
 | `GET /branches?cwd=` | local branches, each naming the worktree that holds it |
 | `POST /worktrees/switch` | `{path, branch}` — check another branch out in a worktree |
+| `GET /catalog?cwd=` | the skills and hooks an agent there can reach, each tagged with its scope |
 
 `/prompt` without a `terminal_id` goes to whichever agent the Push is
 pointed at, which is the same target a pad fires into: one place decides what
@@ -291,9 +306,10 @@ before. Renaming is a convenience, not a requirement.
 ### The rail, in two groups
 
 The left rail is **PROJECTS** over **AGENTS**. The lower group is the eight
-seats as cards — name, status, model, effort — with rename / new worktree /
-worktrees… / close behind the `⋯`. The upper group is the repos, each opening
-onto its worktrees.
+seats as cards — name, status, model, effort — with four keys in the corner of
+each. The upper group is the repos, each opening onto its worktrees. There used
+to be a `worktrees…` sheet behind an agent's menu; the PROJECTS group is that
+sheet, always on screen, so the sheet is gone.
 
 Projects are a **server-side list**, `~/.midiai/projects.json`, and `GET
 /projects` returns each one with its worktrees already attached — one call, not
@@ -311,15 +327,41 @@ is placed in its **longest** matching worktree, not its first. This repo keeps
 its own worktrees under `.claude/worktrees/`, inside the main checkout, and a
 first-match rule files every one of them under the checkout instead.
 
-Per row: a worktree with an agent shows that agent's status hue and taps
-through to its seat; one without shows a hollow dot and taps through to
-`POST /worktrees/open`, which starts a claude there. The `⇄` beside it switches
-which branch that worktree has out. `GET /branches` says which branches another
-worktree already holds, because git will not check one out twice — so a branch
-that could only produce that error is drawn as the fact rather than offered as
-a button. There is no dirty check of ours: git refuses a checkout that would
-lose work and carries changes over when it would not, and its own sentence
-comes back as the error.
+Per row: a linked worktree is marked `↳`, the checkout is not. One with an
+agent shows that agent's status hue and taps through to its seat; one without
+**selects** it, and the pane draws the panel below rather than starting a
+claude on the spot — one tap on a list is not enough intent to spawn a process.
+The `⋮` on the row holds *switch branch*, *close agent* and *close + delete
+worktree*; the parent row carries a `＋` for a new worktree and a `×` to forget
+the project.
+
+`GET /branches` says which branches another worktree already holds, because git
+will not check one out twice — so a branch that could only produce that error
+is drawn as the fact rather than offered as a button. There is no dirty check
+of ours: git refuses a checkout that would lose work and carries changes over
+when it would not, and its own sentence comes back as the error.
+
+An agent card carries four keys rather than a menu: **✎** rename, **⊟**
+`/compact`, **⊘** `/clear`, **×** close. Compact and clear are *typed*, not
+called — they are Claude Code's own commands with no API behind them, so they
+go down the same pty a pad fires into. Clear arms before it fires: it throws
+away everything the agent knows and it is a 20px target in a 268px column, so
+one tap reddens it and the next does it.
+
+When the focused agent has subagents they hang under the AGENTS list as a
+collapsible tree — yellow still going, green came back, the same two colours
+the subagent pads use on the glass. Only the **focused** agent's: reading them
+per seat would mean globbing and parsing every agent's transcript on every
+400ms poll.
+
+### No active agent
+
+Pick a worktree nobody is in and the pane says so by name, with **＋ new
+agent**, **close** (stop looking at it) and **close and delete worktree**. It
+is also where you land after closing an agent, which otherwise left you staring
+at whichever seat the Push happened to be on with no sign of what you had just
+emptied. A dirty tree comes back as git's own refusal, with a second key to
+force past it once you have read it.
 
 **Add project** browses the disk; **new agent** does not. The folder picker
 used to live in the new-agent modal, which put the same question — where is
@@ -327,6 +369,14 @@ this repo — in front of you every single time you started one. Adding the
 project answers it once, and new agent picks from what has been answered. The
 path field is still there and still editable, because a path you can type is
 never a dead end, which is what the first run needs.
+
+Walking and choosing are two gestures now: a row's name walks into the folder,
+**select** takes it, and selecting folds the list to one line with **remove**
+on it — the folder list was holding 190px open for a question already answered.
+Where the folder is already a repo, both the add-project and new-worktree
+sheets offer its branches: adding a project can check one out on the way in,
+and a worktree can be made from a branch that already exists rather than only
+from a new name.
 
 ## Chains
 

@@ -6,6 +6,15 @@ import { ANSWER_HEX, C, S, hexFor, mono } from './theme';
 
 const TEST_HEX = { pass: '#3cd05a', fail: '#e03c3c', run: '#f0c828', '': C.edge };
 
+// The scope stripe, borrowed from the pad palette so the panel reads as one
+// thing whichever tab it is on.
+const SCOPE_HEX = {
+  project: hexFor(21),   // green -- this repo's own
+  local: hexFor(33),     // cyan -- this repo, not committed
+  user: hexFor(45),      // blue -- yours, everywhere
+  plugin: hexFor(53),    // violet -- somebody else's
+};
+
 // The right rail is always the same question answered: what are the pads right
 // now? On the Push that answer is the grid itself changing job. Here it is a
 // list, because a list can say what a lit square cannot.
@@ -15,6 +24,9 @@ export default function Pads({
   opts,
   macros,
   labels,
+  panel,
+  onPanel,
+  catalog,
   sel,
   editing,
   onPress,
@@ -128,12 +140,33 @@ export default function Pads({
     );
   }
 
-  // focus, prs, usage: the macros.
+  // focus, prs, usage: the macros -- and, on the same shelf, the two other
+  // things an agent works from. Prompts are what you send it; skills and hooks
+  // are what it already has. Same column, three tabs, because they answer the
+  // same question at three removes and only one of them fits at a time.
   const filled = macros.filter(Boolean).length;
+  const skills = catalog?.skills || [];
+  const hooks = catalog?.hooks || [];
+  const counts = { prompts: filled, skills: skills.length, hooks: hooks.length };
+  const at = panel || 'prompts';
+  const placeholder =
+    at === 'prompts' ? 'search prompts' : at === 'skills' ? 'search skills' : 'search hooks';
+
   return (
     <View style={styles.rail}>
       <View style={styles.headCol}>
-        <Text style={styles.label}>Prompts · {filled}</Text>
+        <View style={styles.tabs}>
+          {['prompts', 'skills', 'hooks'].map((k) => (
+            <Text
+              key={k}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: at === k }}
+              onPress={() => onPanel && onPanel(k, true)}
+              style={[styles.tab, at === k && styles.tabOn]}>
+              {k} · {counts[k]}
+            </Text>
+          ))}
+        </View>
         <TextInput
           value={q}
           onChangeText={setQ}
@@ -141,21 +174,114 @@ export default function Pads({
           autoCorrect={false}
           clearButtonMode="while-editing"
           style={styles.find}
-          placeholder="search prompts"
+          placeholder={placeholder}
           placeholderTextColor={C.faint}
         />
       </View>
 
-      <Library
-        macros={macros}
-        labels={labels}
-        q={q}
-        sel={sel}
-        onPress={onPress}
-        onExecute={onExecute}
-        onEdit={onEdit}
-      />
+      {at === 'prompts' && (
+        <Library
+          macros={macros}
+          labels={labels}
+          q={q}
+          sel={sel}
+          onPress={onPress}
+          onExecute={onExecute}
+          onEdit={onEdit}
+        />
+      )}
+      {at === 'skills' && <Scoped rows={skills} q={q} kind="skills" />}
+      {at === 'hooks' && <Scoped rows={hooks} q={q} kind="hooks" />}
     </View>
+  );
+}
+
+// Where a thing came from is the first fact about it: a hook in the repo is
+// the team's, one in ~/.claude is yours, and telling them apart is most of
+// what you open this panel to do. So scope is the grouping, not a tag.
+const SCOPE_NAME = {
+  project: 'project',
+  local: 'project · local',
+  user: 'global',
+  plugin: 'plugins',
+};
+const SCOPE_ORDER = ['project', 'local', 'user', 'plugin'];
+
+function Scoped({ rows, q, kind }) {
+  // Which scope is showing. 131 plugin skills over 38 of your own is not a
+  // list you scroll looking for one of the 38 -- so scope is a tab, not a
+  // heading you pass on the way down.
+  const [scope, setScope] = useState(null);
+  const find = q.trim().toLowerCase();
+  const hit = (r) =>
+    !find ||
+    `${r.name || ''} ${r.description || ''} ${r.event || ''} ${r.matcher || ''} ${r.command || ''}`
+      .toLowerCase()
+      .includes(find);
+  const shown = rows.filter(hit);
+  const groups = SCOPE_ORDER.map((scope) => ({
+    scope,
+    items: shown.filter((r) => r.scope === scope),
+  })).filter((g) => g.items.length);
+  // anything the server labelled with a scope this list has never heard of
+  // still belongs on screen -- silently dropping a row is worse than a
+  // heading nobody planned
+  const rest = shown.filter((r) => !SCOPE_ORDER.includes(r.scope));
+  if (rest.length) groups.push({ scope: 'other', items: rest });
+
+  // A search that empties the tab you were on would otherwise read as "no
+  // hooks at all" -- fall through to the first that has something instead.
+  const at = groups.find((g) => g.scope === scope) || groups[0] || null;
+  // One scope is not a choice, so it is not drawn as one.
+  const bar = groups.length > 1;
+
+  return (
+    <>
+      {bar && (
+        <View style={styles.subTabs}>
+          {groups.map((g) => (
+            <Text
+              key={g.scope}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: at?.scope === g.scope }}
+              onPress={() => setScope(g.scope)}
+              style={[styles.subTab, at?.scope === g.scope && styles.subTabOn]}>
+              {SCOPE_NAME[g.scope] || g.scope}
+              <Text style={styles.subTabN}> {g.items.length}</Text>
+            </Text>
+          ))}
+        </View>
+      )}
+      <ScrollView contentContainerStyle={styles.list}>
+        {!shown.length && (
+          <Text style={styles.none}>
+            {find ? `nothing matches “${q.trim()}”` : `no ${kind}`}
+          </Text>
+        )}
+        {!!at && (
+        <View key={at.scope} style={styles.group}>
+          {at.items.map((r, i) => (
+            <View key={i} style={styles.item}>
+              <View style={styles.pick}>
+                <View style={[styles.bar, { backgroundColor: SCOPE_HEX[at.scope] || C.edge }]} />
+                <View style={styles.rowBody}>
+                  <Text style={styles.rowName} numberOfLines={1}>
+                    {kind === 'skills' ? r.name : r.event}
+                    {kind === 'hooks' && !!r.matcher && (
+                      <Text style={styles.rowSub}> {r.matcher}</Text>
+                    )}
+                  </Text>
+                  <Text style={[styles.rowSub, kind === 'hooks' && mono]} numberOfLines={2}>
+                    {kind === 'skills' ? r.description : r.command}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          ))}
+        </View>
+        )}
+      </ScrollView>
+    </>
   );
 }
 
@@ -277,6 +403,20 @@ const styles = StyleSheet.create({
   titleNote: { color: C.edge, fontWeight: '400' },
   spacer: { flex: 1 },
   key: { height: 32, minHeight: 32, minWidth: 70 },
+  tabs: { flexDirection: 'row', gap: 14, paddingBottom: 2 },
+  subTabs: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 2,
+  },
+  subTab: { color: C.faint, fontSize: 11 },
+  subTabOn: { color: C.accentText },
+  subTabN: { color: C.edge, fontSize: 10 },
+  tab: { color: C.faint, fontSize: 11, letterSpacing: 0.4 },
+  tabOn: { color: C.text, fontWeight: '600' },
   find: {
     height: 32,
     color: C.text,

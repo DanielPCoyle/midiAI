@@ -10,11 +10,21 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+
+// The three answers to "what should the right-hand column hold". The key in
+// the title row names whichever is showing; the menu behind it names them all.
+const PANELS = [
+  ['prompts', 'prompts'],
+  ['skills', 'skills'],
+  ['hooks', 'hooks'],
+];
+const PANEL_NAME = Object.fromEntries(PANELS);
 import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
 import { pasteImage, promptAgent, startRecording, stopRecording } from './api';
+import { Menu, MenuButton } from './Menu';
 import PushButton from './PushButton';
-import { ANSWER_HEX, BREAK, C, S, SEAT_HEX, seatHue, seatWord, mono } from './theme';
+import { ANSWER_HEX, BREAK, C, KEY, S, SEAT_HEX, seatHue, seatWord, mono } from './theme';
 
 // Below BREAK.mid the app is one scrollable column (App.js's own doing),
 // so a pane built to fill a flex:1 slot -- transcript included -- would
@@ -80,6 +90,10 @@ export default function Pane({
   padsOpen,
   padsCount,
   onTogglePads,
+  panel,
+  onPanel,
+  counts,
+  place,
 }) {
   const kind = (data || {}).kind;
   // A question takes the glass only where the glass was already about this
@@ -100,6 +114,10 @@ export default function Pane({
         padsOpen={padsOpen}
         padsCount={padsCount}
         onTogglePads={onTogglePads}
+        panel={panel}
+        onPanel={onPanel}
+        counts={counts}
+        place={place}
       />
     );
   if (kind === 'sessions') return <Sessions cols={cols} current={current} />;
@@ -154,7 +172,22 @@ function Question({ opts, onAnswer }) {
   );
 }
 
-function Focus({ info, sub, base, onSent, onComposerFocus, padsOpen, padsCount, onTogglePads }) {
+function Focus({
+  info,
+  sub,
+  base,
+  onSent,
+  onComposerFocus,
+  padsOpen,
+  padsCount,
+  onTogglePads,
+  panel,
+  onPanel,
+  counts,
+  place,
+}) {
+  // { anchor } | null -- the panel picker, drawn by Menu.js against the key
+  const [pick, setPick] = useState(null);
   const narrow = useNarrow();
   const railHidden = useRailHidden();
   if (!info) return <Empty what="no agent selected" />;
@@ -188,16 +221,55 @@ function Focus({ info, sub, base, onSent, onComposerFocus, padsOpen, padsCount, 
             toggles a panel of canned text, not a dispatch of it, and living in
             the title row says so -- it governs the view, it doesn't compete
             with what fires into the pty. */}
+        {/* One key, three panels. It was a plain toggle while `prompts` was
+            the only thing the column could hold; skills and hooks are two more
+            answers to the same question, and a third and fourth key across a
+            title row is how a title row stops being readable. */}
         {!!onTogglePads && (
-          <PushButton
-            label={`prompts · ${padsCount ?? 0}`}
-            colour={C.accentText}
-            lit={padsOpen}
-            onPress={onTogglePads}
-            style={styles.titleBtn}
+          <MenuButton
+            label={`${padsOpen ? PANEL_NAME[panel] || 'prompts' : 'panel'} · ${
+              padsOpen ? counts?.[panel] ?? 0 : '⋯'
+            }`}
+            accessibilityLabel="choose the side panel"
+            onOpen={(anchor) => setPick({ anchor })}
+            style={[styles.titleBtn, styles.panelKey, padsOpen && styles.panelKeyOn]}
+            glyphStyle={styles.panelKeyText}
           />
         )}
       </View>
+
+      {/* which checkout you are actually typing into. Two agents in one repo
+          is the normal case here, and on different branches is the reason this
+          line exists rather than the repo name alone. */}
+      {!!place && (
+        <View style={styles.place}>
+          <Text style={styles.placeRepo} numberOfLines={1}>
+            {place.repo}
+          </Text>
+          {!!place.branch && (
+            <Text style={styles.placeBranch} numberOfLines={1}>
+              ↳ {place.branch}
+            </Text>
+          )}
+        </View>
+      )}
+
+      {pick && (
+        <Menu
+          anchor={pick.anchor}
+          head="side panel"
+          onClose={() => setPick(null)}
+          items={[
+            ...PANELS.map(([key, name]) => ({
+              label: `${name} · ${counts?.[key] ?? 0}`,
+              onPress: () => onPanel(key, true),
+            })),
+            ...(padsOpen
+              ? [{ label: 'hide the panel', onPress: () => onPanel(panel, false) }]
+              : []),
+          ]}
+        />
+      )}
 
       {/* Composer stays reachable at every width, so the transcript is what
           gives -- below 820 it stops being a bounded scroll box of its own
@@ -269,9 +341,6 @@ function Focus({ info, sub, base, onSent, onComposerFocus, padsOpen, padsCount, 
         base={base}
         onSent={onSent}
         onComposerFocus={onComposerFocus}
-        padsOpen={padsOpen}
-        padsCount={padsCount}
-        onTogglePads={onTogglePads}
       />
     </View>
   );
@@ -319,7 +388,7 @@ function Rich({ line }) {
 // box started mirroring the pane's own input line: staging now writes text
 // the composer immediately reads back, so the button that did it looked like
 // it had done nothing.
-function Composer({ info, base, onSent, onComposerFocus, padsOpen, padsCount, onTogglePads }) {
+function Composer({ info, base, onSent, onComposerFocus }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState('');
@@ -904,6 +973,18 @@ const styles = StyleSheet.create({
   // The row it sits in aligns on text baseline, which a S.hit-tall button has
   // none of -- centred against that row instead, sized to its own label
   // rather than sharing the row's flex the way the composer's row does.
+  panelKey: {
+    borderWidth: 1,
+    borderColor: KEY.edge,
+    backgroundColor: KEY.face,
+    borderRadius: 6,
+    justifyContent: 'center',
+  },
+  panelKeyOn: { borderColor: C.accentText },
+  panelKeyText: { color: C.accentText, fontSize: 12, fontWeight: '500' },
+  place: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 2 },
+  placeRepo: { color: C.faint, fontSize: 11 },
+  placeBranch: { color: C.dim, fontSize: 11, flexShrink: 1 },
   titleBtn: { alignSelf: 'center', paddingHorizontal: 14 },
   subTag: {
     color: C.accentText,

@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { forgetProject, listProjects, openWorktree } from './api';
+import { closeAgent, forgetProject, listProjects, openWorktree, removeWorktree } from './api';
+import { Menu, MenuButton } from './Menu';
 import SessionSheet from './SessionSheet';
 import { C, seatHue } from './theme';
+
+// Is `cwd` this worktree, or under it. Exported because App asks the same
+// question of the picked worktree that the rail asks of every row, and one
+// definition beats two that can drift.
+export const inside = (cwd, path) =>
+  !!cwd && !!path && (cwd === path || cwd.startsWith(path.replace(/\/$/, '') + '/'));
 
 // The rail's upper half: the repos, and under each one its worktrees.
 //
@@ -22,7 +29,24 @@ import { C, seatHue } from './theme';
 //                            worktree operation; a change refetches
 //   onSeat     (i) => void -- focus a seat, for a worktree that already has one
 //   onChanged  () => void  -- fired after opening a worktree spawns an agent
-export default function Projects({ cols, base, beat, onSeat, onChanged }) {
+//   onPick     (pick|null) => void -- a worktree with nobody in it was chosen;
+//                            { project, path, label }. The pane draws the
+//                            "no active agent" panel from this, so the buttons
+//                            for it are where you are looking rather than
+//                            behind the ⋮ you have just closed.
+// One worktree's name: the branch, or a short sha when it is detached.
+const labelOf = (row) =>
+  row.detached ? (row.head || '').slice(0, 7) : row.branch || '(no branch)';
+
+// What the pane needs to draw its "no active agent" panel and act on it.
+const pickOf = (project, row) => ({
+  project: project.path,
+  path: row.path,
+  label: labelOf(row),
+  main: !!row.main,
+});
+
+export default function Projects({ cols, base, beat, onSeat, onChanged, onPick }) {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(false);
   const [shut, setShut] = useState({});   // project path -> collapsed
@@ -31,6 +55,9 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
   // { mode: 'project'|'branch', cwd } | null -- SessionSheet does the picking
   // and the call; this only says which errand and re-reads the list after.
   const [sheet, setSheet] = useState(null);
+  // { at: 'project'|'worktree', key, anchor, ...row } | null -- Menu.js draws
+  // it and places it against the ⋮ that opened it.
+  const [menu, setMenu] = useState(null);
 
   const seats = cols.map((c, i) => ({ col: c, i })).filter((s) => s.col && s.col.cwd);
   // Sorted and joined so the effect fires on a real change of repo set, not on
@@ -53,8 +80,6 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
 
   const refresh = () => listProjects(base).then(setProjects).catch(() => {});
 
-  const inside = (cwd, path) =>
-    cwd === path || cwd.startsWith(path.replace(/\/$/, '') + '/');
 
   // Worktree path -> the seats living in it. A seat is placed in its LONGEST
   // matching worktree, so a worktree nested inside the main checkout is not
@@ -88,15 +113,57 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
     }
   }
 
-  function tap(project, row, here) {
-    // already open -- go to it. More than one agent in a worktree and this
-    // takes the first; the AGENTS group below is where you pick between them.
-    if (here.length) return onSeat(here[0].i);
-    if (!row.exists) return;
+  // Every agent living in this worktree, ended. The seats hold the terminal
+  // id, which is the handle /agents/close takes.
+  async function closeHere(project, row, here) {
+    for (const s of here) await closeAgent(base, s.col.tid);
+    onChanged && onChanged();
+    // "if an agent is removed" -- the pane would otherwise fall back to
+    // whichever seat the Push happens to be on, or to nothing, with no sign of
+    // what you just emptied. Selecting it says so, and offers the buttons.
+    onPick && onPick(pickOf(project, row));
+  }
+
+  function closeAndRemove(project, row, here) {
+    run(row.path, async () => {
+      await closeHere(project, row, here);
+      // The pane is killed at once, but the claude inside it takes a moment
+      // to actually go, and the server refuses to remove a worktree while an
+      // agent is still living there -- by design, since removal deletes the
+      // directory. So the first attempt can lose a race the second one wins.
+      // Only that one refusal is retried: a dirty tree is not a race and must
+      // stay a refusal you read.
+      try {
+        await removeWorktree(base, project.path, row.path, false);
+      } catch (e) {
+        if (!String(e.message || e).includes('is running in')) throw e;
+        await new Promise((r) => setTimeout(r, 1500));
+        await removeWorktree(base, project.path, row.path, false);
+      }
+      await refresh();
+      onChanged && onChanged();
+      onPick && onPick(null);   // it is gone; nothing to be looking at
+    });
+  }
+
+  function open(project, row) {
     run(row.path, async () => {
       await openWorktree(base, project.path, row.path);
       onChanged && onChanged();
     });
+  }
+
+  function tap(project, row, here) {
+    // already open -- go to it. More than one agent in a worktree and this
+    // takes the first; the AGENTS group below is where you pick between them.
+    if (here.length) {
+      onPick && onPick(null);
+      return onSeat(here[0].i);
+    }
+    // Empty: select it rather than starting something. Tapping used to spawn
+    // a claude on the spot, which is a lot to happen from one tap on a list --
+    // now the pane says there is nobody here and offers the buttons for it.
+    onPick && onPick(row.exists ? pickOf(project, row) : null);
   }
 
   return (
@@ -126,22 +193,32 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
                 </Text>
                 <Text style={styles.count}>{p.worktrees.length}</Text>
               </Pressable>
-              {/* forgetting is the list's own memory and nothing else -- no
-                  confirmation, because there is nothing on disk to lose and an
-                  agent running there puts it straight back. Not offered while
-                  one is, which would be a button that undoes itself. */}
+              {/* the parent row's one action is making another worktree, so
+                  it is a ＋ rather than a menu with a single item in it. What
+                  the ⋮ used to hold besides that was forgetting the project,
+                  which goes back to the × it had: nothing on disk is lost, and
+                  an agent running there puts it straight back, so it needs no
+                  confirmation and no menu to sit in. */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`new worktree in ${p.name}`}
+                hitSlop={6}
+                onPress={() => setSheet({ mode: 'worktree', cwd: p.path })}
+                style={styles.dots}>
+                <Text style={styles.plus}>＋</Text>
+              </Pressable>
               {!held && (
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`forget ${p.name}`}
-                  hitSlop={8}
+                  hitSlop={6}
                   onPress={() =>
                     run(p.path, async () => {
                       await forgetProject(base, p.path);
                       await refresh();
                     })
                   }
-                  style={styles.forget}>
+                  style={styles.dots}>
                   <Text style={styles.forgetX}>×</Text>
                 </Pressable>
               )}
@@ -151,9 +228,7 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
               p.worktrees.map((row) => {
                 const here = at[row.path] || [];
                 const seat = here[0] || null;
-                const label = row.detached
-                  ? (row.head || '').slice(0, 7)
-                  : row.branch || '(no branch)';
+                const label = labelOf(row);
                 return (
                   <View key={row.path} style={styles.wtSlot}>
                   <Pressable
@@ -172,6 +247,12 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
                         !seat && styles.dotOff,
                       ]}
                     />
+                    {/* which rows are worktrees, said once and in the same
+                        column every time: a linked worktree branches off the
+                        checkout above it, the checkout itself gets the blank.
+                        The `main` tag stays -- it names the row, this marks
+                        the kind. */}
+                    <Text style={styles.kind}>{row.main ? '' : '↳'}</Text>
                     <Text
                       style={[
                         styles.branch,
@@ -190,16 +271,14 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
                     {/* a sibling, not a child: a button inside a button is not
                         valid HTML, which the rail's own ⋯ already learned */}
                   </Pressable>
-                  {row.exists && (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`switch the branch in ${label}`}
-                      hitSlop={6}
-                      onPress={() => setSheet({ mode: 'branch', cwd: row.path })}
-                      style={styles.swap}>
-                      <Text style={styles.swapGlyph}>⇄</Text>
-                    </Pressable>
-                  )}
+                  <MenuButton
+                    accessibilityLabel={`more actions for ${label}`}
+                    onOpen={(anchor) =>
+                      setMenu({ key: row.path, anchor, p, row, here })
+                    }
+                    style={styles.dots}
+                    glyphStyle={styles.dotsGlyph}
+                  />
                   </View>
                 );
               })}
@@ -216,6 +295,40 @@ export default function Projects({ cols, base, beat, onSeat, onChanged }) {
       </Pressable>
 
       {!!err && <Text style={styles.err}>{err}</Text>}
+
+      {menu && (
+        <Menu
+          // remounted per open: Menu measures its own height, and a stale one
+          // from the last menu would misplace this one for a frame
+          key={menu.key}
+          anchor={menu.anchor}
+          head={labelOf(menu.row)}
+          onClose={() => setMenu(null)}
+          items={[
+                  ...(menu.here.length
+                    ? []
+                    : [{ label: '＋ new agent here', onPress: () => open(menu.p, menu.row) }]),
+                  { label: 'switch branch', onPress: () => setSheet({ mode: 'branch', cwd: menu.row.path }) },
+                  ...(menu.here.length
+                    ? [{
+                        label: menu.here.length > 1 ? `close ${menu.here.length} agents` : 'close agent',
+                        danger: true,
+                        onPress: () =>
+                          run(menu.row.path, () => closeHere(menu.p, menu.row, menu.here)),
+                      }]
+                    : []),
+                  // the main checkout cannot be removed -- the server answers
+                  // 409 every time, so it is not offered
+                  ...(menu.row.main
+                    ? []
+                    : [{
+                        label: 'close + delete worktree',
+                        danger: true,
+                        onPress: () => closeAndRemove(menu.p, menu.row, menu.here),
+                      }]),
+          ]}
+        />
+      )}
 
       {sheet && (
         <SessionSheet
@@ -254,8 +367,15 @@ const styles = StyleSheet.create({
   caret: { color: C.dim, fontSize: 12, width: 12 },
   projectName: { color: C.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
   count: { color: C.edge, fontSize: 11, marginLeft: 'auto' },
-  forget: { paddingHorizontal: 6, paddingVertical: 2 },
-  forgetX: { color: C.edge, fontSize: 15 },
+  dots: { paddingHorizontal: 6, paddingVertical: 2 },
+  // smaller and quieter than the agent cards' own ⋮: these rows are 28px and
+  // there are one of these per worktree, so at the card's weight they became
+  // the loudest thing in the group
+  dotsGlyph: { color: C.edge, fontSize: 13 },
+  // a fixed column so the branch names line up whether or not the row has one
+  kind: { color: C.edge, fontSize: 11, width: 9 },
+  plus: { color: C.faint, fontSize: 13 },
+  forgetX: { color: C.edge, fontSize: 14 },
   wt: {
     flex: 1,
     flexDirection: 'row',
@@ -268,8 +388,6 @@ const styles = StyleSheet.create({
   },
   wtSlot: { flexDirection: 'row', alignItems: 'center' },
   wtOn: { backgroundColor: C.raised },
-  swap: { paddingHorizontal: 5, paddingVertical: 2 },
-  swapGlyph: { color: C.edge, fontSize: 12 },
   dot: { width: 6, height: 6, borderRadius: 3 },
   // a worktree nobody is in still gets the dot's width, so the branch names
   // line up whether or not an agent is living there

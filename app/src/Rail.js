@@ -1,18 +1,15 @@
 import { useRef, useState } from 'react';
-import {
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { promptAgent } from './api';
 import Projects from './Projects';
 import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
-import Worktrees from './Worktrees';
 import { C, S, seatHue, seatWord } from './theme';
+
+// The same two colours the subagent pads use on the glass: yellow is still
+// going, green came back.
+const SUB_RUN = '#f0c828';
+const SUB_DONE = '#3cd05a';
 
 // The left rail, in two groups: the repos with their worktrees, and the agents.
 //
@@ -31,16 +28,18 @@ import { C, S, seatHue, seatWord } from './theme';
 //   onSeat     (i) => void              -- unchanged: tap a card to focus it
 //   base       string                   -- api base url, threaded straight through to SessionSheet,
 //                                           which does the actual create/rename/close/worktree calls
+//   onPick     (pick|null) => void      -- passed straight to Projects: a worktree with nobody in
+//                                          it was picked, and the pane draws the panel for it
+//   subs       array                    -- the focused agent's subagents, `[{label, type, running}]`,
+//                                          straight off surface.views_data.sessions[0].rows. The wire
+//                                          only carries the FOCUSED agent's: reading them per seat
+//                                          means globbing and parsing every agent's transcript on
+//                                          every 400ms poll, so the tree hangs under the lit card.
 //   onChanged  () => void               -- fired after any of the four operations succeeds, so the
 //                                           coordinator knows to refetch /agents and refresh `cols`
-export default function Rail({ cols, current, onSeat, base, onChanged }) {
+export default function Rail({ cols, current, onSeat, base, onChanged, onPick, subs = [] }) {
   // { mode: 'new'|'rename'|'close'|'worktree', seatIndex: number|null } | null
   const [sheet, setSheet] = useState(null);
-  // Worktrees is its own component, not another SessionSheet mode -- it lists
-  // rather than errands, so it gets its own bit of state rather than being
-  // squeezed into `sheet`'s shape. Just the seat index; the modal reads
-  // cols[wtSeat].cwd itself.
-  const [wtSeat, setWtSeat] = useState(null);
   // Projects reads git, not the surface poll, so nothing tells it a worktree
   // was made or removed -- removing one nobody was sitting in does not even
   // change the set of cwds it keys off. Every operation here bumps this.
@@ -51,61 +50,39 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
   };
   const free = 8 - cols.filter(Boolean).length;
 
-  // PushButton doesn't forward onLongPress (it wraps children in its own
-  // Pressable and only wires onPress), so the secondary action is a small
-  // "⋯" control inside the card rather than a long press.
+  // The card's corner used to be one ⋮ over a menu. It is four keys now: the
+  // three things you actually do to a running agent are one tap each rather
+  // than a tap, a read and a tap.
   //
-  // It draws its own menu rather than calling Alert.alert, which looked like
-  // the cheaper answer and is a no-op on web: react-native-web ships
-  // `class Alert { static alert() {} }`. On the browser build the menu did
-  // nothing at all, silently -- rename, close and worktrees were simply
-  // unreachable, and nothing said so. A menu the app draws works on both.
-  const [menu, setMenu] = useState(null);   // seat index, or null
-  const menuCol = menu != null ? cols[menu] : null;
-  const act = (fn) => {
-    setMenu(null);
-    fn();
+  // compact and clear are typed, not called -- /compact and /clear are Claude
+  // Code's own commands and there is no API behind them, so this sends the
+  // words down the same pty a pad fires into.
+  const say = (col, text) => promptAgent(base, text, true, col.tid).catch(() => {});
+  // clear throws away everything the agent knows, and it is a 20px target in a
+  // 268px column. So it arms first: one tap reddens it, the next does it, and
+  // three seconds of not meaning it puts it back.
+  const [armed, setArmed] = useState(null);   // tid, or null
+  const armTimer = useRef(null);
+  const arm = (col) => {
+    if (armed === col.tid) {
+      clearTimeout(armTimer.current);
+      setArmed(null);
+      say(col, '/clear');
+      return;
+    }
+    setArmed(col.tid);
+    clearTimeout(armTimer.current);
+    armTimer.current = setTimeout(() => setArmed(null), 3000);
   };
 
-  // Where the menu draws: RN's Modal renders its content `position: fixed`
-  // over the whole viewport (react-native-web/exports/Modal/ModalContent),
-  // so it used to just centre itself there -- nothing tied it to the "⋯"
-  // that opened it, and a menu that floats over the transcript acts on
-  // whichever agent you *think* you tapped, not the one you did. Measuring
-  // the trigger in window coordinates and placing the menu against it fixes
-  // that; `position: fixed`'s coordinates are viewport-relative same as
-  // `measureInWindow`'s, so this holds after the page has scrolled too.
-  const menuBtnRefs = useRef({});
-  const [menuAnchor, setMenuAnchor] = useState(null); // {x,y,width,height} of the "⋯", in window coords
-  const [menuH, setMenuH] = useState(0); // real height of the drawn menu, filled in by its own onLayout
-  const { width: winW, height: winH } = useWindowDimensions();
-  const MENU_W = 240;
-  const MENU_GAP = 8;
-  const MENU_FALLBACK_H = 214; // header + four rows -- close enough to pick a side before onLayout reports back
-  const openMenu = (i) => {
-    const el = menuBtnRefs.current[i];
-    const finish = (pos) => {
-      setMenuAnchor(pos);
-      setMenuH(0); // the last menu's height would misplace this one for a frame otherwise
-      setMenu(i);
-    };
-    if (el && el.measureInWindow) el.measureInWindow((x, y, width, height) => finish({ x, y, width, height }));
-    else finish(null);
-  };
-  const menuPlace = () => {
-    if (!menuAnchor) return null;
-    const h = menuH || MENU_FALLBACK_H;
-    let left = menuAnchor.x + menuAnchor.width - MENU_W; // right-align under the dots, not centred on the screen
-    left = Math.max(MENU_GAP, Math.min(left, winW - MENU_W - MENU_GAP));
-    let top = menuAnchor.y + menuAnchor.height + MENU_GAP;
-    if (top + h > winH - MENU_GAP) top = menuAnchor.y - h - MENU_GAP; // no room below -- hang it above instead
-    top = Math.max(MENU_GAP, top);
-    return { left, top };
-  };
+  // The subagent tree under the lit card. Collapsed is not the resting state:
+  // they are only listed while one is running, and something running is worth
+  // seeing without a click.
+  const [treeShut, setTreeShut] = useState(false);
+  const live = subs.filter((x) => x.running).length;
 
   const seatFor = (i) => (i != null ? cols[i] : null);
   const activeSeat = sheet && sheet.mode !== 'new' ? seatFor(sheet.seatIndex) : seatFor(current);
-  const menuPos = menuPlace();
 
   return (
     <View style={styles.rail}>
@@ -115,6 +92,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
           base={base}
           beat={beat}
           onSeat={onSeat}
+          onPick={onPick}
           onChanged={changed}
         />
         <Text style={styles.head}>AGENTS</Text>
@@ -125,7 +103,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
             const hue = seatHue(col);
             const on = i === current;
             return (
-              /* The ⋯ used to sit inside the card. Both are buttons, and a
+              /* The ⋮ used to sit inside the card. Both are buttons, and a
                  button inside a button is not valid HTML -- React says so and
                  refuses to hydrate it. It was only a div until it was given a
                  name, so naming it is what surfaced this. Sibling now, laid
@@ -141,7 +119,10 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                 onPress={() => onSeat(i)}
                 style={[styles.card, on && { borderColor: hue }]}>
                 <View style={styles.cardBody}>
-                  <View style={styles.row}>
+                  {/* the keys sit over this row's right end, so it keeps their
+                      width clear -- always, not only while they are shown, or
+                      the name would jump every time one appeared */}
+                  <View style={[styles.row, styles.topRow]}>
                     <Text
                       style={[styles.name, !on && styles.nameOff]}
                       numberOfLines={1}>
@@ -169,20 +150,71 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
                   </View>
                 </View>
               </PushButton>
-              <Pressable
-                ref={(el) => {
-                  menuBtnRefs.current[i] = el;
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`more actions for ${col.name}`}
-                onPress={() => openMenu(i)}
-                hitSlop={8}
-                style={styles.menuBtn}>
-                <Text style={styles.menuDots}>⋯</Text>
-              </Pressable>
+              <View style={styles.keys}>
+                {[
+                  // U+FE0E, or Chrome hands ✎ to the emoji font and one key in
+                  // four comes out in colour beside three flat glyphs
+                  ['✎\uFE0E', `rename ${col.name}`, () => setSheet({ mode: 'rename', seatIndex: i })],
+                  ['⊟', `compact ${col.name}'s context`, () => say(col, '/compact')],
+                  [
+                    '⊘',
+                    armed === col.tid
+                      ? `clear ${col.name}'s context — tap again to confirm`
+                      : `clear ${col.name}'s context`,
+                    () => arm(col),
+                    armed === col.tid,
+                  ],
+                  ['×', `close ${col.name}`, () => setSheet({ mode: 'close', seatIndex: i }), true],
+                ].map(([glyph, label, fn, hot]) => (
+                  <Pressable
+                    key={glyph}
+                    accessibilityRole="button"
+                    accessibilityLabel={label}
+                    hitSlop={4}
+                    onPress={fn}
+                    style={styles.keyBtn}>
+                    <Text style={[styles.keyGlyph, hot && styles.keyBad]}>{glyph}</Text>
+                  </Pressable>
+                ))}
+              </View>
               </View>
             );
           })}
+          {/* Hung under the AGENTS list rather than inside the lit card: the
+              card is a PushButton, and a collapsing tree inside a button is
+              the same nested-interactive problem the ⋮ already taught us. */}
+          {subs.length > 0 && (
+            <View style={styles.tree}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${treeShut ? 'show' : 'hide'} subagents`}
+                onPress={() => setTreeShut((v) => !v)}
+                style={styles.treeHead}>
+                <Text style={styles.caret}>{treeShut ? '▸' : '▾'}</Text>
+                <Text style={styles.treeName}>subagents</Text>
+                <Text style={styles.treeN}>
+                  {live ? `${live} running` : subs.length}
+                </Text>
+              </Pressable>
+              {!treeShut &&
+                subs.map((x, k) => (
+                  <View key={k} style={styles.treeRow}>
+                    <View
+                      style={[
+                        styles.subDot,
+                        { backgroundColor: x.running ? SUB_RUN : SUB_DONE },
+                      ]}
+                    />
+                    <Text style={styles.subName} numberOfLines={1}>
+                      {x.label}
+                    </Text>
+                    <Text style={styles.subType} numberOfLines={1}>
+                      {x.type}
+                    </Text>
+                  </View>
+                ))}
+            </View>
+          )}
           {free > 0 && (
             <PushButton
               colour="transparent"
@@ -194,38 +226,6 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
           )}
         </View>
       </ScrollView>
-
-      <Modal
-        visible={menu != null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setMenu(null)}>
-        <Pressable style={styles.backdrop} onPress={() => setMenu(null)}>
-          <View
-            style={[styles.menu, menuPos && { position: 'absolute', ...menuPos }]}
-            onLayout={(e) => setMenuH(e.nativeEvent.layout.height)}>
-            <Text style={styles.menuHead} numberOfLines={1}>
-              {menuCol?.name || ''}
-            </Text>
-            {[
-              ['rename', () => setSheet({ mode: 'rename', seatIndex: menu })],
-              ['new worktree', () => setSheet({ mode: 'worktree', seatIndex: menu })],
-              ['worktrees…', () => setWtSeat(menu)],
-            ].map(([label, fn]) => (
-              <Pressable key={label} style={styles.menuRow} onPress={() => act(fn)}>
-                <Text style={styles.menuText}>{label}</Text>
-              </Pressable>
-            ))}
-            {/* close kills something that is running, so it sits apart and
-                reads in the colour everything else dangerous does */}
-            <Pressable
-              style={[styles.menuRow, styles.menuLast]}
-              onPress={() => act(() => setSheet({ mode: 'close', seatIndex: menu }))}>
-              <Text style={[styles.menuText, styles.menuBad]}>close</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
 
       {sheet && (
         <SessionSheet
@@ -240,15 +240,6 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
             setSheet(null);
             changed();
           }}
-        />
-      )}
-      {wtSeat != null && (
-        <Worktrees
-          visible
-          base={base}
-          cwd={seatFor(wtSeat)?.cwd}
-          onClose={() => setWtSeat(null)}
-          onChanged={changed}
         />
       )}
     </View>
@@ -281,6 +272,7 @@ const styles = StyleSheet.create({
   },
   cardBody: { gap: 5, width: '100%' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  topRow: { paddingRight: 82 },
   name: { color: C.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
   nameOff: { color: C.dim },
   dot: { width: 8, height: 8, borderRadius: 4 },
@@ -288,8 +280,25 @@ const styles = StyleSheet.create({
   meta: { color: C.faint, fontSize: 11, flexShrink: 1 },
   metaId: { color: C.edge, fontSize: 11, flexShrink: 1 },
   slot: { position: 'relative' },
-  menuBtn: { position: 'absolute', top: 6, right: 6, paddingHorizontal: 4, paddingVertical: 2 },
-  menuDots: { color: C.faint, fontSize: 16, fontWeight: '700' },
+  keys: { position: 'absolute', top: 4, right: 4, flexDirection: 'row' },
+  keyBtn: { paddingHorizontal: 4, paddingVertical: 2 },
+  keyGlyph: { color: C.edge, fontSize: 13 },
+  keyBad: { color: C.bad },
+  tree: { paddingLeft: 6, paddingTop: 4 },
+  treeHead: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 26 },
+  caret: { color: C.dim, fontSize: 11, width: 11 },
+  treeName: { color: C.faint, fontSize: 11, letterSpacing: 0.6 },
+  treeN: { color: C.edge, fontSize: 11, marginLeft: 'auto', paddingRight: 4 },
+  treeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    minHeight: 24,
+    paddingLeft: 17,
+  },
+  subDot: { width: 6, height: 6, borderRadius: 3 },
+  subName: { color: C.dim, fontSize: 12, flexShrink: 1 },
+  subType: { color: C.edge, fontSize: 10, marginLeft: 'auto', paddingRight: 4 },
   free: {
     minHeight: 44,
     borderWidth: 1,
@@ -303,28 +312,4 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
   },
   freeText: { color: C.edge, fontSize: 11 },
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  menu: {
-    width: 240,
-    backgroundColor: C.panel,
-    borderRadius: S.radius,
-    borderWidth: 1,
-    borderColor: C.line,
-    paddingVertical: 6,
-  },
-  menuHead: {
-    color: C.faint,
-    fontSize: 11,
-    paddingHorizontal: 14,
-    paddingBottom: 6,
-  },
-  menuRow: { minHeight: S.hit, justifyContent: 'center', paddingHorizontal: 14 },
-  menuLast: { borderTopWidth: 1, borderTopColor: C.line, marginTop: 4 },
-  menuText: { color: C.text, fontSize: 14 },
-  menuBad: { color: C.bad },
 });

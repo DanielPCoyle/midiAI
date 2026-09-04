@@ -13,9 +13,11 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
-import { baseFor, defaultHost, getJSON, PORT, post } from './src/api';
+import { baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+import NoAgent from './src/NoAgent';
 import Pads from './src/Pads';
 import Pane from './src/Pane';
+import { inside } from './src/Projects';
 import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
 import Rail from './src/Rail';
@@ -64,6 +66,21 @@ export default function App() {
   const [railOpen, setRailOpen] = useState(false);
   // reconnect, the mirror and the host field, behind one ⋮ -- see the header.
   const [menu, setMenu] = useState(false);
+  // { project, path, label, main } | null -- a worktree picked in the rail
+  // that has nobody living in it. The pane draws NoAgent for it instead of a
+  // transcript there is none of.
+  const [pick, setPick] = useState(null);
+  // Which panel the right-hand column is showing: the prompt library, the
+  // skills this agent can reach, or its hooks. One key in the pane's title row
+  // opens the menu that picks between them.
+  const [panel, setPanel] = useState('prompts');
+  const [catalog, setCatalog] = useState({ skills: [], hooks: [] });
+  // The repos, for the one line under the focus title that says which checkout
+  // and which branch you are typing into. Projects.js reads the same route for
+  // the rail; it is fetched twice rather than lifted because the rail lives in
+  // a Modal below `wide` and is simply not mounted there, so a list held only
+  // by the rail would be missing exactly when the title line still is not.
+  const [projects, setProjects] = useState([]);
   const base = baseFor(host);
   const noteAt = useRef(null);
   // Idle detection for the surface poll (MIDI-016): the last stamp seen and
@@ -100,6 +117,33 @@ export default function App() {
   // 409 "no session selected on the Push". A panel whose every button is a
   // guaranteed error is not worth the width.
   const anyAgent = cols.some(Boolean);
+  // The focused agent's subagents. Both of `sessions`' modes carry the same
+  // rows; mode 0 is the one that exists whatever the hardware is sitting on.
+  const subs = surface.views_data?.sessions?.[0]?.rows || [];
+  const here = cols[surface.current] || null;
+  // Which worktree the focused agent is sitting in, and therefore which repo
+  // and which branch. Longest match, same rule Projects uses for its own rows.
+  const place = (() => {
+    if (!here?.cwd) return null;
+    let best = null;
+    for (const p of projects)
+      for (const w of p.worktrees || []) {
+        if (!inside(here.cwd, w.path)) continue;
+        if (!best || w.path.length > best.w.path.length) best = { p, w };
+      }
+    if (!best) return null;
+    const { p, w } = best;
+    return {
+      repo: p.name,
+      branch: w.detached ? (w.head || '').slice(0, 7) : w.branch || '',
+    };
+  })();
+  // A pick only stands while it is still empty: the moment an agent turns up
+  // in that worktree the transcript is the better thing to be looking at, and
+  // it clears itself rather than needing an effect to notice.
+  const picked =
+    pick && !cols.some((c) => c && inside(c.cwd, pick.path)) ? pick : null;
+
 
   const viewIdx = localView;
   const viewName = views[viewIdx] || '';
@@ -202,6 +246,24 @@ export default function App() {
   useEffect(() => {
     loadMacros();
   }, [loadMacros]);
+
+  // Skills and hooks are files on disk, not surface state -- they change when
+  // somebody edits a settings file, which is not something worth polling for.
+  // Read once per agent you land on, and again whenever a rail operation says
+  // something changed.
+  const hereCwd = here?.cwd || '';
+  useEffect(() => {
+    let live = true;
+    listCatalog(base, hereCwd)
+      .then((d) => live && setCatalog({ skills: d.skills || [], hooks: d.hooks || [] }))
+      .catch(() => live && setCatalog({ skills: [], hooks: [] }));
+    listProjects(base)
+      .then((rows) => live && setProjects(rows))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [base, hereCwd]);
 
   // A flat 400ms whether or not anyone was looking used to mean 666 polls in
   // under 5 minutes of testing, same rate hidden, idle, or watched. This is
@@ -440,6 +502,26 @@ export default function App() {
   // it triggers, so it triggers as soon as the row can no longer promise it.
   const headerTight = !wide;
 
+  // Built here rather than up with `picked`: `refresh` is a useCallback
+  // declared further down, and reading it above its own declaration is a
+  // temporal-dead-zone throw that takes the whole app blank on first render.
+  // One call for "show me this panel" -- picking one from the menu opens the
+  // column if it was shut, and picking `hide` shuts it without changing which
+  // panel it will come back on.
+  const showPanel = (which, open) => {
+    setPanel(which);
+    setPadsOpen(open);
+  };
+  const panelCounts = {
+    prompts: filled,
+    skills: catalog.skills.length,
+    hooks: catalog.hooks.length,
+  };
+
+  const noAgent = picked ? (
+    <NoAgent pick={picked} base={base} onClose={() => setPick(null)} onChanged={refresh} />
+  ) : null;
+
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar barStyle="light-content" />
@@ -620,6 +702,7 @@ export default function App() {
         // own width behind a sideways scroll scoped to just that block,
         // which is not the page scrolling sideways.
         <ScrollView contentContainerStyle={styles.bodyNarrow}>
+          {noAgent || (
           <Pane
             data={data}
             opts={opts}
@@ -635,8 +718,13 @@ export default function App() {
             padsOpen={padsOpen}
             padsCount={filled}
             onTogglePads={anyAgent ? () => setPadsOpen((o) => !o) : undefined}
+            panel={panel}
+            onPanel={showPanel}
+            counts={panelCounts}
+            place={place}
           />
-          {anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
+          )}
+          {!picked && anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
             (ready ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <Pads
@@ -646,6 +734,9 @@ export default function App() {
                   onAnswer={(k) => press({ answer: k })}
                   macros={macros}
                   labels={labels}
+                  panel={panel}
+                  onPanel={showPanel}
+                  catalog={catalog}
                   sel={sel}
                   editing={editing && sel !== null}
                   onPress={tapPad}
@@ -674,11 +765,14 @@ export default function App() {
               cols={cols}
               current={surface.current}
               onSeat={(i) => press({ seat: i })}
+              onPick={setPick}
+              subs={subs}
               base={base}
               onChanged={refresh}
             />
           )}
           <View style={styles.centre}>
+            {noAgent || (
             <Pane
               data={data}
               opts={opts}
@@ -693,10 +787,15 @@ export default function App() {
               onComposerFocus={() => setPadsOpen(true)}
             padsOpen={padsOpen}
             padsCount={filled}
+            panel={panel}
+            onPanel={showPanel}
+            counts={panelCounts}
+            place={place}
             onTogglePads={anyAgent ? () => setPadsOpen((o) => !o) : undefined}
             />
+            )}
           </View>
-          {anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
+          {!picked && anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
             (ready ? (
               <Pads
                 kind={data.kind}
@@ -705,6 +804,9 @@ export default function App() {
                 onAnswer={(k) => press({ answer: k })}
                 macros={macros}
                 labels={labels}
+                panel={panel}
+                onPanel={showPanel}
+                catalog={catalog}
                 sel={sel}
                 editing={editing && sel !== null}
                 onPress={tapPad}
@@ -745,6 +847,11 @@ export default function App() {
                 press({ seat: i });
                 setRailOpen(false);
               }}
+              onPick={(p) => {
+                setPick(p);
+                if (p) setRailOpen(false);
+              }}
+              subs={subs}
               base={base}
               onChanged={refresh}
             />
