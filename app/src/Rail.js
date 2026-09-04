@@ -8,21 +8,25 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import Projects from './Projects';
 import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
 import Worktrees from './Worktrees';
 import { C, S, seatHue, seatWord } from './theme';
 
-// The agents, as a rail you can read rather than eight anonymous buttons.
-// The Push needs them anonymous -- it has exactly eight physical buttons and no
-// room for a word above each. Nothing here is short of room.
+// The left rail, in two groups: the repos with their worktrees, and the agents.
+//
+// The Push needs the agents anonymous -- it has exactly eight physical buttons
+// and no room for a word above each. Nothing here is short of room, so this is
+// where the tree lives: PROJECTS answers "what could I be working on", AGENTS
+// answers "what is running". Projects.js derives the first from the second's
+// cwds; see its own note for why there is no project list on the wire.
 //
 // props:
 //   cols       array(8)                 -- unchanged: each slot null or
 //                                           { name, status, model, effort, sub, tid, focused, unseen, context, cwd? }.
-//                                           `cwd` is not on the shape yet -- read optionally so the 'new'
-//                                           and 'worktree' sheets default their cwd field the moment a
-//                                           caller starts including it, without another round of edits here.
+//                                           `cwd` is what Projects groups by, and what the 'new' and
+//                                           'worktree' sheets default their cwd field to.
 //   current    number                   -- unchanged: index of the focused seat
 //   onSeat     (i) => void              -- unchanged: tap a card to focus it
 //   base       string                   -- api base url, threaded straight through to SessionSheet,
@@ -37,6 +41,14 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
   // squeezed into `sheet`'s shape. Just the seat index; the modal reads
   // cols[wtSeat].cwd itself.
   const [wtSeat, setWtSeat] = useState(null);
+  // Projects reads git, not the surface poll, so nothing tells it a worktree
+  // was made or removed -- removing one nobody was sitting in does not even
+  // change the set of cwds it keys off. Every operation here bumps this.
+  const [beat, setBeat] = useState(0);
+  const changed = () => {
+    setBeat((b) => b + 1);
+    onChanged && onChanged();
+  };
   const free = 8 - cols.filter(Boolean).length;
 
   // PushButton doesn't forward onLongPress (it wraps children in its own
@@ -97,81 +109,90 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
 
   return (
     <View style={styles.rail}>
-      <Text style={styles.head}>AGENTS</Text>
-      <ScrollView contentContainerStyle={styles.list}>
-        {Array.from({ length: 8 }, (_, i) => {
-          const col = cols[i] || null;
-          if (!col) return null;
-          const hue = seatHue(col);
-          const on = i === current;
-          return (
-            /* The ⋯ used to sit inside the card. Both are buttons, and a
-               button inside a button is not valid HTML -- React says so and
-               refuses to hydrate it. It was only a div until it was given a
-               name, so naming it is what surfaced this. Sibling now, laid
-               over the corner it already occupied. */
-            <View key={i} style={styles.slot}>
-            <PushButton
-              colour={hue}
-              // left to itself this announces as "midiAIidle⋯%0" -- the name,
-              // the status, the menu glyph and the tmux id run together. Same
-              // shape as the tab that answered to "· 0".
-              accessibilityLabel={`${col.name} · ${seatWord(col)}`}
-              lit={on}
-              onPress={() => onSeat(i)}
-              style={[styles.card, on && { borderColor: hue }]}>
-              <View style={styles.cardBody}>
-                <View style={styles.row}>
-                  <Text
-                    style={[styles.name, !on && styles.nameOff]}
-                    numberOfLines={1}>
-                    {col.name}
-                  </Text>
-                  <View style={[styles.dot, { backgroundColor: hue }]} />
-                  <Text style={[styles.status, { color: hue }]}>{seatWord(col)}</Text>
-                </View>
-                <View style={styles.row}>
-                  {[col.model, col.effort]
-                    .filter(Boolean)
-                    .map((bit, k) => (
-                      <Text key={k} style={styles.meta} numberOfLines={1}>
-                        {k ? `· ${bit}` : bit}
-                      </Text>
-                    ))}
-                  {/* the tmux pane id -- real only when hand-editing macros.json,
-                      so it drops back further than model/effort rather than
-                      reading as a fourth equally-important fact about the card */}
-                  {!!col.sub && (
-                    <Text style={styles.metaId} numberOfLines={1}>
-                      {col.model || col.effort ? `· ${col.sub}` : col.sub}
+      <ScrollView contentContainerStyle={styles.scroll}>
+        <Projects
+          cols={cols}
+          base={base}
+          beat={beat}
+          onSeat={onSeat}
+          onChanged={changed}
+        />
+        <Text style={styles.head}>AGENTS</Text>
+        <View style={styles.list}>
+          {Array.from({ length: 8 }, (_, i) => {
+            const col = cols[i] || null;
+            if (!col) return null;
+            const hue = seatHue(col);
+            const on = i === current;
+            return (
+              /* The ⋯ used to sit inside the card. Both are buttons, and a
+                 button inside a button is not valid HTML -- React says so and
+                 refuses to hydrate it. It was only a div until it was given a
+                 name, so naming it is what surfaced this. Sibling now, laid
+                 over the corner it already occupied. */
+              <View key={i} style={styles.slot}>
+              <PushButton
+                colour={hue}
+                // left to itself this announces as "midiAIidle⋯%0" -- the name,
+                // the status, the menu glyph and the tmux id run together. Same
+                // shape as the tab that answered to "· 0".
+                accessibilityLabel={`${col.name} · ${seatWord(col)}`}
+                lit={on}
+                onPress={() => onSeat(i)}
+                style={[styles.card, on && { borderColor: hue }]}>
+                <View style={styles.cardBody}>
+                  <View style={styles.row}>
+                    <Text
+                      style={[styles.name, !on && styles.nameOff]}
+                      numberOfLines={1}>
+                      {col.name}
                     </Text>
-                  )}
+                    <View style={[styles.dot, { backgroundColor: hue }]} />
+                    <Text style={[styles.status, { color: hue }]}>{seatWord(col)}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    {[col.model, col.effort]
+                      .filter(Boolean)
+                      .map((bit, k) => (
+                        <Text key={k} style={styles.meta} numberOfLines={1}>
+                          {k ? `· ${bit}` : bit}
+                        </Text>
+                      ))}
+                    {/* the tmux pane id -- real only when hand-editing macros.json,
+                        so it drops back further than model/effort rather than
+                        reading as a fourth equally-important fact about the card */}
+                    {!!col.sub && (
+                      <Text style={styles.metaId} numberOfLines={1}>
+                        {col.model || col.effort ? `· ${col.sub}` : col.sub}
+                      </Text>
+                    )}
+                  </View>
                 </View>
+              </PushButton>
+              <Pressable
+                ref={(el) => {
+                  menuBtnRefs.current[i] = el;
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`more actions for ${col.name}`}
+                onPress={() => openMenu(i)}
+                hitSlop={8}
+                style={styles.menuBtn}>
+                <Text style={styles.menuDots}>⋯</Text>
+              </Pressable>
               </View>
+            );
+          })}
+          {free > 0 && (
+            <PushButton
+              colour="transparent"
+              accessibilityLabel="new agent"
+              onPress={() => setSheet({ mode: 'new', seatIndex: null })}
+              style={styles.free}>
+              <Text style={styles.freeText}>＋ new agent</Text>
             </PushButton>
-            <Pressable
-              ref={(el) => {
-                menuBtnRefs.current[i] = el;
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={`more actions for ${col.name}`}
-              onPress={() => openMenu(i)}
-              hitSlop={8}
-              style={styles.menuBtn}>
-              <Text style={styles.menuDots}>⋯</Text>
-            </Pressable>
-            </View>
-          );
-        })}
-        {free > 0 && (
-          <PushButton
-            colour="transparent"
-            accessibilityLabel="new agent"
-            onPress={() => setSheet({ mode: 'new', seatIndex: null })}
-            style={styles.free}>
-            <Text style={styles.freeText}>＋ new agent</Text>
-          </PushButton>
-        )}
+          )}
+        </View>
       </ScrollView>
 
       <Modal
@@ -217,7 +238,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
           onClose={() => setSheet(null)}
           onDone={() => {
             setSheet(null);
-            onChanged && onChanged();
+            changed();
           }}
         />
       )}
@@ -227,7 +248,7 @@ export default function Rail({ cols, current, onSeat, base, onChanged }) {
           base={base}
           cwd={seatFor(wtSeat)?.cwd}
           onClose={() => setWtSeat(null)}
-          onChanged={() => onChanged && onChanged()}
+          onChanged={changed}
         />
       )}
     </View>
@@ -242,7 +263,14 @@ const styles = StyleSheet.create({
     paddingVertical: S.pad,
     paddingHorizontal: 12,
   },
-  head: { color: C.faint, fontSize: 10, letterSpacing: 1.2, paddingHorizontal: 4 },
+  head: {
+    color: C.faint,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    paddingHorizontal: 4,
+    paddingTop: 14,
+  },
+  scroll: { paddingBottom: 12 },
   list: { gap: S.gap, paddingTop: 10 },
   card: {
     minHeight: 62,

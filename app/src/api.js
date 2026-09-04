@@ -81,6 +81,19 @@ export const pasteImage = async (base, data) =>
 export const makeWorktree = (base, cwd, branch, name) =>
   post(base, '/worktree', { cwd, branch, ...(name ? { name } : {}) });
 
+// Projects: the repos worth listing, each with its worktrees already attached,
+// which is one call rather than one per repo. The server remembers them --
+// running an agent somewhere adds it, and only `forgetProject` takes one away.
+export const listProjects = async (base) =>
+  (await getJSON(base, '/projects')).projects || [];
+
+// Any path inside the repo will do; the server stores the main checkout.
+export const addProject = (base, path) => post(base, '/projects', { path });
+
+// Forgets the entry. Nothing on disk is touched, and an agent running there
+// puts it straight back.
+export const forgetProject = (base, path) => post(base, '/projects/remove', { path });
+
 // Worktrees. `cwd` says which repo to ask about; the server defaults it to
 // whichever session the Push is pointed at when omitted.
 export const listWorktrees = async (base, cwd) =>
@@ -89,6 +102,18 @@ export const listWorktrees = async (base, cwd) =>
 
 export const openWorktree = (base, cwd, path) =>
   post(base, '/worktrees/open', { cwd, path });
+
+// Every local branch of a repo, each saying which worktree already has it out
+// -- git will not check one out twice, so `at` is the reason a switch would be
+// refused, known before it is offered.
+export const listBranches = async (base, cwd) =>
+  (await getJSON(base, `/branches${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`))
+    .branches || [];
+
+// `path` is the worktree, not the repo. git's own refusals -- a dirty tree, a
+// branch out somewhere else -- come back as the message.
+export const switchBranch = (base, path, branch) =>
+  post(base, '/worktrees/switch', { path, branch });
 
 // force is about uncommitted changes only -- the server refuses either way
 // while an agent is living in it, and that refusal is not overridable.

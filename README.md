@@ -104,34 +104,45 @@ an invented cost is worse than no cost.
 ## The app
 
 The UI is a React Native app (Expo) in `app/`, laid out for an iPad in
-landscape: the Push's own screen across the top with its two button rows where
-they physically sit, and the 64 pads below it across the full width. The pad
-editor is a sheet, not a column — an **edit pad** key appears in the top row
-once you have picked one, and the editor was holding a third of the screen
-open next to a grid that wants every pixel it can get.
+landscape: the rail of projects and agents down the left, the agent you are
+reading in the middle, the prompt library down the right. The Push itself —
+its screen, its two button rows, all 64 pads — is a **tab** you switch to, not
+the shell you live in.
 
-Pads are rearranged by dragging one onto another, which swaps them — the same
-trade the Push's own move mode makes, minus the mode. One `PanResponder` for
-the whole grid rather than sixty-four: the pads are a regular 8×8, so where a
-finger is *is* which pad it is on, and a drag crossing pads never has to be
-handed from one child to the next. Under six pixels of travel it was a tap and
-selects instead; a drag that ends off the grid, or back where it started, is a
-change of mind and does nothing. An empty pad has nothing to give, so dragging
-one would only teleport the pad you aimed at — it is refused.
+The right-hand panel is the **prompt library**: the pads as a searchable list,
+grouped by their colour labels, with **run** and **edit** on whichever one you
+have picked. It used to carry a `Library | Grid` toggle whose second half drew
+an on-screen 8×8 replica. That replica was the Push mirror, worse — a second
+drawing of one grid, which is the thing this codebase refuses to have — so it
+is gone, and with it `PadGrid.js`, the drag-to-swap it hosted (the Push's own
+move mode does that), and the pager it needed. A list can say what a lit
+square cannot, which was always the reason the panel is a list.
 
-Hover a pad, or tap it, and after a moment a card comes up over it: the label,
-the first 200 characters of what it would send, and two keys — **run** and
-**edit**. A pad is a two-word label for a paragraph you wrote days ago, and
-the two ways to find out what it says were to fire it at a live agent or to
-open the editor. The card is the third. It never appears while `tap fires the
-pad` is armed, where a tap has already done the thing the card would ask about.
+The panel does not appear at all when no agent is running, nor does the
+**prompts** key that opens it. Every pad fires into "whichever session the
+Push is pointed at"; with nothing running there is no such session and the
+server answers a fire with `409 no session selected on the Push`. A panel
+whose every button is a guaranteed error is not worth the width.
 
-What puts it away is another pad, an empty one, a tap or a drag — never the
-card noticing you left it. react-native-web builds hover out of events that
-bubble, so crossing onto the card's own title or its keys arrives as *leaving*
-the card, and it closed itself every time you reached for the buttons it
-exists to offer. A thing that cannot be trusted to say when you have gone
-should not be the one asked.
+The pad editor is a sheet, not a column — an **edit pad** key appears once you
+have picked one, and the editor was holding a third of the screen open next to
+the thing you were reading.
+
+The tabs are the views, uppercased so the one row of chrome reads as chrome:
+**FOCUS · TESTS · GIT · USAGE**. `prs` reads GIT because the view is the
+repo's state and PRS was the one label that had to be decoded. `sessions` and
+its subagents split are no longer tabs — the rail's AGENTS group answers "who
+is running" without a click and is on screen the whole time. The view names
+are a wire contract (`VIEWS` in `push_cc.py`, a `views_data` key) and are
+untouched: only the word drawn changed, the tab index a `/press` carries is
+still the view's own index, and the Push still has every view it had.
+
+Top right is a **⋮**, holding reconnect, Push mirror and the host field.
+Those three used to sit in the header row and drop out of it one at a time as
+it narrowed — the host field above 1200 only, the mirror above 820 — so two of
+the three things you reach for when something is wrong were the two the width
+took away. Behind the ⋮ they are there at every width, and the row keeps what
+you read rather than what you press.
 Tapping a view button here presses that button there too, by default: the
 app's own idea of which view and mode it is showing is re-seeded from the
 Push on every poll. **following the Push**, lit by default, is what makes
@@ -260,6 +271,11 @@ rest over HTTP:
 | `POST /agents/rename` | `{terminal_id, name}` |
 | `POST /agents/close` | `{terminal_id}` |
 | `POST /prompt` | `{text, submit?, terminal_id?}` — free text, not a pad |
+| `GET /projects` | every remembered repo, worktrees attached |
+| `POST /projects` | `{path}` — remember a repo; any path inside it will do |
+| `POST /projects/remove` | `{path}` — forget one; nothing on disk is touched |
+| `GET /branches?cwd=` | local branches, each naming the worktree that holds it |
+| `POST /worktrees/switch` | `{path, branch}` — check another branch out in a worktree |
 
 `/prompt` without a `terminal_id` goes to whichever agent the Push is
 pointed at, which is the same target a pad fires into: one place decides what
@@ -271,6 +287,46 @@ rather than the pane title, which claude overwrites with its own.
 
 An agent with no name reads by the basename of its directory, exactly as
 before. Renaming is a convenience, not a requirement.
+
+### The rail, in two groups
+
+The left rail is **PROJECTS** over **AGENTS**. The lower group is the eight
+seats as cards — name, status, model, effort — with rename / new worktree /
+worktrees… / close behind the `⋯`. The upper group is the repos, each opening
+onto its worktrees.
+
+Projects are a **server-side list**, `~/.midiai/projects.json`, and `GET
+/projects` returns each one with its worktrees already attached — one call, not
+one per repo. It was derived in the app at first, from the live agents' `cwd`s,
+and that could only ever show you what you were already doing: a repo with
+nothing running in it did not exist as far as the wire was concerned. Now
+running an agent somewhere adds it, `POST /projects` adds one you are not in
+yet, and only `POST /projects/remove` takes one away. A path anywhere inside a
+repo is stored as the record git lists first — the main checkout — so adding a
+worktree and adding its repo are the same act, and two agents in one repo
+collapse to one entry.
+
+The one rule that stays in the app is which worktree an agent is *in*: a seat
+is placed in its **longest** matching worktree, not its first. This repo keeps
+its own worktrees under `.claude/worktrees/`, inside the main checkout, and a
+first-match rule files every one of them under the checkout instead.
+
+Per row: a worktree with an agent shows that agent's status hue and taps
+through to its seat; one without shows a hollow dot and taps through to
+`POST /worktrees/open`, which starts a claude there. The `⇄` beside it switches
+which branch that worktree has out. `GET /branches` says which branches another
+worktree already holds, because git will not check one out twice — so a branch
+that could only produce that error is drawn as the fact rather than offered as
+a button. There is no dirty check of ours: git refuses a checkout that would
+lose work and carries changes over when it would not, and its own sentence
+comes back as the error.
+
+**Add project** browses the disk; **new agent** does not. The folder picker
+used to live in the new-agent modal, which put the same question — where is
+this repo — in front of you every single time you started one. Adding the
+project answers it once, and new agent picks from what has been answered. The
+path field is still there and still editable, because a path you can type is
+never a dead end, which is what the first run needs.
 
 ## Chains
 

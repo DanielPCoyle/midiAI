@@ -352,6 +352,46 @@ def _worktree_list(args):
     return _ok({"worktrees": worktrees, "type": "worktree_list"})
 
 
+def _worktree_branches(args):
+    """Every local branch of a repo, and which worktree (if any) has it out.
+
+    git will not check the same branch out twice, so "taken" is not advice --
+    it is the reason the switch would be refused, named before you try it."""
+    cwd = _flag(args[2:], "--cwd")
+    if not cwd:
+        return _err("bad_args", "worktree branches needs --cwd")
+    out = _run(["git", "-C", cwd, "for-each-ref", "--format=%(refname:short)",
+                "refs/heads"])
+    if out.returncode != 0:
+        return _err("git_for_each_ref", out.stderr)
+    worktrees, _err_list = _worktree_list_rows(cwd)
+    held = {w["branch"]: w["path"] for w in (worktrees or []) if w.get("branch")}
+    return _ok({"branches": [{"name": b, "at": held.get(b)}
+                             for b in out.stdout.split()],
+                "type": "branch_list"})
+
+
+def _worktree_switch(args):
+    """Check another branch out in a worktree that already exists.
+
+    No dirty check of our own, unlike remove: git refuses a checkout that would
+    lose work and carries changes over when it would not, which is a better
+    rule than any we would write, and nothing here deletes anything. Its
+    refusal is passed back verbatim -- "your local changes would be
+    overwritten" says more than a code of ours would."""
+    rest = list(args[2:])
+    dest = _flag(rest, "--path")
+    branch = _flag(rest, "--branch")
+    if not dest or not branch:
+        return _err("bad_args", "worktree switch needs --path and --branch")
+    if not os.path.isdir(dest):
+        return _err("worktree_missing", f"{dest} is not a directory")
+    out = _run(["git", "-C", dest, "checkout", branch])
+    if out.returncode != 0:
+        return _err("git_checkout", out.stderr.strip() or out.stdout.strip())
+    return _ok({"branch": branch})
+
+
 def _worktree_remove(args):
     rest = list(args[2:])
     raw_cwd = _flag(rest, "--cwd")
@@ -432,6 +472,10 @@ def dispatch(args):
             return _worktree_create(args)
         if head == ("worktree", "list"):
             return _worktree_list(args)
+        if head == ("worktree", "branches"):
+            return _worktree_branches(args)
+        if head == ("worktree", "switch"):
+            return _worktree_switch(args)
         if head == ("worktree", "remove"):
             return _worktree_remove(args)
         if head == ("worktree", "open"):
@@ -545,6 +589,28 @@ if __name__ == "__main__":
             _run = real_run
 
         assert "agent_name_taken" in _err("agent_name_taken", "window x taken")
+
+        # the branch verbs, on this repo -- both take real git, so the checks
+        # are the ones that need no writes: the current branch is in the list
+        # and is marked as held by the checkout it is actually out in, and a
+        # missing flag is refused before git is ever run.
+        here = os.path.dirname(os.path.abspath(__file__))
+        got = json.loads(_worktree_branches(("worktree", "branches", "--cwd", here)))
+        if "result" in got:                    # skip where this is not a repo
+            names = [b["name"] for b in got["result"]["branches"]]
+            cur = _run(["git", "-C", here, "branch", "--show-current"]).stdout.strip()
+            if cur:
+                assert cur in names, (cur, names)
+                held = next(b for b in got["result"]["branches"] if b["name"] == cur)
+                assert held["at"], "a branch that is checked out names its worktree"
+        for bad in (("worktree", "branches"),
+                    ("worktree", "switch", "--path", here),
+                    ("worktree", "switch", "--branch", "main")):
+            r = json.loads(dispatch(bad))
+            assert r.get("error", {}).get("code") == "bad_args", (bad, r)
+        r = json.loads(dispatch(("worktree", "switch", "--path", "/no/such/dir",
+                                 "--branch", "main")))
+        assert r.get("error", {}).get("code") == "worktree_missing", r
 
         print("term.py demo: ok")
 

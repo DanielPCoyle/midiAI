@@ -11,7 +11,18 @@ import {
 } from 'react-native';
 import PushButton from './PushButton';
 import { C, S } from './theme';
-import { createAgent, renameAgent, closeAgent, makeWorktree, listDirs, chooseDir } from './api';
+import {
+  addProject,
+  chooseDir,
+  closeAgent,
+  createAgent,
+  listBranches,
+  listDirs,
+  listProjects,
+  makeWorktree,
+  renameAgent,
+  switchBranch,
+} from './api';
 
 // The same rule mapui.py enforces server-side -- checked here too so a typo
 // is caught before the round trip rather than after a 400 comes back.
@@ -20,6 +31,11 @@ const NAME_HELP = 'lowercase letters, digits, _ or - only, must start with a let
 
 // Folders come from the server, not the tablet: a file picker here would
 // browse the iPad, and the repos are on the machine running the agents.
+//
+// This is the `project` mode's control, and only its. Browsing the whole disk
+// used to be how you started an agent, which put the same question -- where is
+// this repo -- in front of you every single time. Adding the project answers
+// it once; `new` picks from what has been answered.
 //
 // The path field and the list are one control, not two. Typing jumps, tapping
 // walks, and either way the field IS the answer -- there is no separate
@@ -125,11 +141,135 @@ function FolderPick({ base, value, onChange }) {
   );
 }
 
+// Where a new agent goes: one of the worktrees of a project already known.
+// The field stays and stays editable -- a path you can type is never a dead
+// end, which matters on the first run, when there are no projects yet.
+function PlacePick({ base, value, onChange }) {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    listProjects(base)
+      .then((rows) => live && setProjects(rows))
+      .catch((e) => live && setErr(String(e.message || e)))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [base]);
+
+  return (
+    <View style={styles.pick}>
+      <TextInput
+        style={styles.input}
+        value={value}
+        onChangeText={onChange}
+        placeholder="/path/to/project"
+        placeholderTextColor={C.faint}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      <View style={styles.pickHead}>
+        <Text style={styles.hint} numberOfLines={1}>
+          {loading ? 'reading projects…' : `${projects.length} project${projects.length === 1 ? '' : 's'}`}
+        </Text>
+        {loading && <ActivityIndicator size="small" color={C.faint} />}
+      </View>
+      {!!err && <Text style={styles.error}>{err}</Text>}
+      {!loading && !projects.length && (
+        <Text style={styles.hint}>none yet — add one from the rail, or type a path</Text>
+      )}
+      <ScrollView style={styles.pickList} keyboardShouldPersistTaps="handled">
+        {projects.map((p) => (
+          <View key={p.path}>
+            <Text style={styles.pickGroup} numberOfLines={1}>{p.name}</Text>
+            {p.worktrees
+              .filter((w) => w.exists)
+              .map((w) => (
+                <Pressable
+                  key={w.path}
+                  style={[styles.pickRow, value === w.path && styles.pickRowOn]}
+                  onPress={() => onChange(w.path)}>
+                  <Text
+                    style={[styles.pickName, value === w.path && styles.pickRepo]}
+                    numberOfLines={1}>
+                    {w.detached ? (w.head || '').slice(0, 7) : w.branch || w.path}
+                  </Text>
+                  {w.main && <Text style={styles.pickTag}>main</Text>}
+                </Pressable>
+              ))}
+          </View>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+// The branches of the repo this worktree belongs to. One already checked out
+// somewhere else is shown and not offered: git refuses a second checkout of the
+// same branch, so a row that could only ever produce that error is drawn as the
+// fact it is rather than as a button.
+function BranchPick({ base, cwd, value, onChange }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    listBranches(base, cwd)
+      .then((got) => live && setRows(got))
+      .catch((e) => live && setErr(String(e.message || e)))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [base, cwd]);
+
+  const same = (p) => p && cwd && p.replace(/\/$/, '') === cwd.replace(/\/$/, '');
+
+  return (
+    <View style={styles.pick}>
+      {loading && <ActivityIndicator size="small" color={C.faint} />}
+      {!!err && <Text style={styles.error}>{err}</Text>}
+      <ScrollView style={styles.pickList} keyboardShouldPersistTaps="handled">
+        {!loading && !rows.length && <Text style={styles.hint}>no branches</Text>}
+        {rows.map((b) => {
+          const here = same(b.at);
+          const taken = !!b.at && !here;
+          return (
+            <Pressable
+              key={b.name}
+              disabled={taken || here}
+              style={[styles.pickRow, value === b.name && styles.pickRowOn]}
+              onPress={() => onChange(b.name)}>
+              <Text
+                style={[
+                  styles.pickName,
+                  value === b.name && styles.pickRepo,
+                  taken && styles.pickOff,
+                ]}
+                numberOfLines={1}>
+                {b.name}
+              </Text>
+              {here && <Text style={styles.pickTag}>here</Text>}
+              {taken && <Text style={styles.pickTag} numberOfLines={1}>in use</Text>}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
 const TITLE = {
   new: 'new agent',
   rename: 'rename',
   close: 'close agent',
   worktree: 'new worktree',
+  project: 'add project',
+  branch: 'switch branch',
 };
 
 function nameValid(mode, value) {
@@ -143,11 +283,13 @@ function nameValid(mode, value) {
 //
 // props:
 //   visible  bool                              -- modal open/closed
-//   mode     'new' | 'rename' | 'close' | 'worktree'
+//   mode     'new' | 'rename' | 'close' | 'worktree' | 'project' | 'branch'
 //   base     string                            -- api base url, passed straight to api.js
 //   tid      string | null                     -- terminal id; required for rename and close
 //   name     string                            -- current agent name; prefills rename, labels close
-//   cwd      string | undefined                -- default cwd for new/worktree, blank if none passed in
+//   cwd      string | undefined                -- the directory the errand is about: the default cwd
+//                                                  for new/worktree/project, and for `branch` the
+//                                                  worktree whose branch is being switched
 //   onClose  () => void                        -- dismiss without doing anything
 //   onDone   () => void                        -- fired after the api call succeeds; caller should
 //                                                  dismiss (visible=false) and refetch /agents
@@ -171,10 +313,15 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
     setErr('');
   }, [visible, mode, cwd, name]);
 
-  const cwdOk = mode !== 'new' && mode !== 'worktree' ? true : cwdField.trim().length > 0;
+  const needsCwd = mode === 'new' || mode === 'worktree' || mode === 'project';
+  const cwdOk = !needsCwd || cwdField.trim().length > 0;
   const nameOk = nameValid(mode, nameField);
+  // `branch` picks an existing name off a list, so NAME_RE has no business
+  // near it -- real branches carry slashes, and the rule is for names we mint.
   const branchOk =
-    mode === 'worktree' || (mode === 'new' && wt) ? NAME_RE.test(branchField) : true;
+    mode === 'worktree' || (mode === 'new' && wt) ? NAME_RE.test(branchField)
+      : mode === 'branch' ? branchField.length > 0
+      : true;
   const canConfirm = cwdOk && nameOk && branchOk && !busy;
 
   async function confirm() {
@@ -188,6 +335,8 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
       else if (mode === 'rename') await renameAgent(base, tid, nameField.trim());
       else if (mode === 'close') await closeAgent(base, tid);
       else if (mode === 'worktree') await makeWorktree(base, cwdField.trim(), branchField.trim());
+      else if (mode === 'project') await addProject(base, cwdField.trim());
+      else if (mode === 'branch') await switchBranch(base, cwd, branchField);
       onDone();
     } catch (e) {
       setErr(e.message || String(e)); // api.js's post() already reads "<status> <body>" off the server
@@ -203,8 +352,8 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
 
           {mode === 'new' && (
             <>
-              <Text style={styles.label}>folder</Text>
-              <FolderPick base={base} value={cwdField} onChange={setCwdField} />
+              <Text style={styles.label}>where</Text>
+              <PlacePick base={base} value={cwdField} onChange={setCwdField} />
               <Text style={styles.label}>name <Text style={styles.hint}>(optional)</Text></Text>
               <TextInput
                 style={styles.input}
@@ -289,12 +438,31 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
             </>
           )}
 
+          {mode === 'project' && (
+            <>
+              <Text style={styles.label}>folder</Text>
+              <FolderPick base={base} value={cwdField} onChange={setCwdField} />
+              <Text style={styles.hint}>
+                any path inside the repo will do — it is remembered as the main checkout
+              </Text>
+            </>
+          )}
+
+          {mode === 'branch' && (
+            <>
+              <Text style={styles.label} numberOfLines={1}>
+                in {cwd || '?'}
+              </Text>
+              <BranchPick base={base} cwd={cwd} value={branchField} onChange={setBranchField} />
+            </>
+          )}
+
           {!!err && <Text style={styles.error}>{err}</Text>}
 
           <View style={styles.row}>
             <PushButton label="cancel" onPress={onClose} disabled={busy} style={styles.btn} />
             <PushButton
-              label={busy ? '' : mode === 'close' ? 'close' : 'confirm'}
+              label={busy ? '' : mode === 'close' ? 'close' : mode === 'branch' ? 'switch' : 'confirm'}
               colour={mode === 'close' ? C.bad : C.accentText}
               lit
               onPress={confirm}
@@ -358,6 +526,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     minHeight: 34,
   },
+  pickGroup: {
+    color: C.faint,
+    fontSize: 10,
+    letterSpacing: 1,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 2,
+    textTransform: 'uppercase',
+  },
+  pickRowOn: { backgroundColor: C.raised },
+  pickOff: { color: C.edge },
   pickName: { color: C.dim, fontSize: 13, flexShrink: 1 },
   pickRepo: { color: C.text, fontWeight: '600' },
   pickUp: { color: C.faint, fontSize: 13 },

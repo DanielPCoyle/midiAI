@@ -191,6 +191,56 @@ def herdr_error(text):
         return None
 
 
+# The repos worth listing, which is a different question from "where is an
+# agent right now". Nothing on the wire knew a repo existed until something
+# was running in it, so the app's PROJECTS group could only ever show you what
+# you were already doing. This file is the memory: a repo lands in it the
+# first time an agent runs there, or when someone adds it, and stays until it
+# is explicitly forgotten. Beside the pastes rather than in the repo -- it is
+# a fact about this machine, not about any one checkout.
+PROJECTS_FILE = os.path.expanduser("~/.midiai/projects.json")
+
+
+def load_projects():
+    try:
+        with open(PROJECTS_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [p for p in got if isinstance(p, str)] if isinstance(got, list) else []
+
+
+def save_projects(paths):
+    """Best effort. A list that cannot be written is not a reason to fail the
+    GET that was only ever passing through here on its way to an answer."""
+    try:
+        os.makedirs(os.path.dirname(PROJECTS_FILE), exist_ok=True)
+        tmp = PROJECTS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(sorted(set(paths)), f, indent=1)
+        os.replace(tmp, PROJECTS_FILE)
+    except OSError as e:
+        print(f"projects: {e}", file=sys.stderr, flush=True)
+
+
+def repo_worktrees(cwd):
+    """One directory's worktrees, or None if it is not a repo at all.
+
+    git always lists the main checkout first, so rows[0] IS the project -- which
+    is how a path anywhere inside a repo, worktree included, resolves to the one
+    entry that stands for it."""
+    if not cwd or not os.path.isdir(cwd):
+        return None
+    out = push_cc.herdr("worktree", "list", "--cwd", cwd)
+    if herdr_error(out):
+        return None
+    try:
+        rows = json.loads(out).get("result", {}).get("worktrees", [])
+    except json.JSONDecodeError:
+        return None
+    return rows or None
+
+
 class Handler(BaseHTTPRequestHandler):
     # the app runs from Metro or Expo Go, never this origin, so every
     # response needs this or the browser build just can't read it
@@ -255,6 +305,10 @@ class Handler(BaseHTTPRequestHandler):
                       "application/json")
         elif self.path == "/worktrees" or self.path.startswith("/worktrees?"):
             self._worktrees_list()
+        elif self.path == "/projects":
+            self._projects()
+        elif self.path == "/branches" or self.path.startswith("/branches?"):
+            self._branches()
         else:
             self._send(200, API_NOTE, "text/plain")
 
@@ -276,6 +330,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._worktree()
         if self.path == "/worktrees/remove":
             return self._worktrees_remove()
+        if self.path == "/projects":
+            return self._projects_add()
+        if self.path == "/projects/remove":
+            return self._projects_remove()
+        if self.path == "/worktrees/switch":
+            return self._worktrees_switch()
         if self.path == "/worktrees/open":
             return self._worktrees_open()
         if self.path == "/prompt":
@@ -498,6 +558,73 @@ class Handler(BaseHTTPRequestHandler):
                               "text/plain")
         self._send(200, json.dumps({"branch": branch}), "application/json")
 
+    def _projects(self):
+        """Every project: the ones remembered, plus wherever an agent is living
+        right now, each with its worktrees already attached so the app makes one
+        call rather than one per repo.
+
+        Running somewhere new is what adds it -- there is no separate write to
+        forget. Only /projects/remove takes one away: a repo whose `worktree
+        list` fails today (disk not mounted, a clone half-finished) is left out
+        of this answer and kept in the file, because forgetting your repos on
+        one bad morning is the failure that actually costs something here."""
+        live = [a.get("cwd") for a in push_cc.agents()]
+        known = load_projects()
+        keep, seen, out = set(), set(), []
+        for cwd, remembered in ([(c, True) for c in known] +
+                                [(c, False) for c in live if c]):
+            rows = repo_worktrees(cwd)
+            if not rows:
+                if remembered:
+                    keep.add(cwd)   # kept but not resolved -- see the docstring
+                continue
+            main = rows[0]["path"]
+            keep.add(main)          # the file converges on main checkouts
+            if main in seen:
+                continue
+            seen.add(main)
+            out.append({"path": main,
+                        "name": os.path.basename(main.rstrip("/")) or main,
+                        "worktrees": rows})
+        save_projects(keep)
+        out.sort(key=lambda p: p["name"].lower())
+        self._send(200, json.dumps({"projects": out}), "application/json")
+
+    def _projects_add(self):
+        """Remember a repo nobody is working in yet. Any path inside it will
+        do -- it is stored as the main checkout, so adding a worktree and
+        adding its repo are the same act."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            path = json.loads(raw)["path"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not isinstance(path, str) or not path.strip():
+            return self._send(400, "bad request", "text/plain")
+        path = os.path.abspath(os.path.expanduser(path.strip()))
+        if not os.path.isdir(path):
+            return self._send(400, "path is not a directory", "text/plain")
+        rows = repo_worktrees(path)
+        if not rows:
+            return self._send(400, "not a git repo", "text/plain")
+        main = rows[0]["path"]
+        save_projects(set(load_projects()) | {main})
+        self._send(200, json.dumps({"path": main}), "application/json")
+
+    def _projects_remove(self):
+        """Forget a repo. Nothing on disk is touched -- this is the list's own
+        memory and nothing else, which is why it needs no confirmation and no
+        --force. An agent running there puts it straight back."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            path = json.loads(raw)["path"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not isinstance(path, str) or not path:
+            return self._send(400, "bad request", "text/plain")
+        save_projects(set(load_projects()) - {path})
+        self._send(200, "ok", "text/plain")
+
     def _worktrees_list(self):
         """The tidy-up card's data: every worktree of a repo, orphans
         included -- the app needs `exists: False` rows to offer removing."""
@@ -513,6 +640,49 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             result = {"worktrees": [], "type": "worktree_list"}
         self._send(200, json.dumps(result), "application/json")
+
+    def _branches(self):
+        """The branches a worktree could switch to, each saying which worktree
+        already has it out. git refuses to check one branch out twice, so that
+        field is what lets the app grey a row rather than offer a button whose
+        only outcome is an error."""
+        query = urllib.parse.urlsplit(self.path).query
+        cwd = (urllib.parse.parse_qs(query).get("cwd") or [None])[0] or target_cwd()
+        out = push_cc.herdr("worktree", "branches", "--cwd", cwd)
+        err = herdr_error(out)
+        if err:
+            return self._send(500, err.get("message", "branch list failed"),
+                              "text/plain")
+        try:
+            result = json.loads(out).get("result", {})
+        except json.JSONDecodeError:
+            result = {"branches": [], "type": "branch_list"}
+        self._send(200, json.dumps(result), "application/json")
+
+    def _worktrees_switch(self):
+        """Check a different branch out in a worktree.
+
+        Unlike remove, a live agent is not a blocker: this changes the files
+        under it, which is disruptive and recoverable, where remove deletes the
+        directory out from under it. git's own refusals -- dirty tree, a branch
+        already out somewhere else -- come back as the message, because git
+        says it better than a code of ours would."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            path, branch = body["path"], body["branch"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not path or not branch:
+            return self._send(400, "bad request", "text/plain")
+        out = push_cc.herdr("worktree", "switch", "--path", path, "--branch", branch)
+        err = herdr_error(out)
+        if err:
+            code = {"worktree_missing": 404, "git_checkout": 409}.get(
+                err.get("code"), 500)
+            return self._send(code, err.get("message", "switch failed"),
+                              "text/plain")
+        self._send(200, "ok", "text/plain")
 
     def _worktrees_remove(self):
         """Removing a worktree out from under a running agent is the other

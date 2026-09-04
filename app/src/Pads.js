@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Inspector from './Inspector';
-import PadGrid from './PadGrid';
 import PushButton from './PushButton';
 import { ANSWER_HEX, C, S, hexFor, mono } from './theme';
 
@@ -17,16 +16,8 @@ export default function Pads({
   macros,
   labels,
   sel,
-  moving,
-  grid,
-  onGrid,
   editing,
-  page,
-  total,
-  onward,
-  onPage,
   onPress,
-  onDrop,
   onExecute,
   onEdit,
   onSave,
@@ -137,92 +128,33 @@ export default function Pads({
     );
   }
 
-  // focus, prs, usage: the macros. On the Push the grid darkens in prs and
-  // usage -- sixty-four lit pads about something else says nothing. That reason
-  // is about the grid, not about the macros, and it does not survive the trip.
+  // focus, prs, usage: the macros.
   const filled = macros.filter(Boolean).length;
   return (
-    // the grid is 1:1 with the Push, and eight columns of readable label do not
-    // fit a list's width -- so the rail takes the room it needs to be that
-    <View style={[styles.rail, grid && styles.railWide]}>
+    <View style={styles.rail}>
       <View style={styles.headCol}>
-        <View style={styles.head}>
-          <Text style={styles.label}>Prompts · {filled}</Text>
-          <View style={styles.spacer} />
-          <View style={styles.seg}>
-            <Text
-              onPress={() => onGrid(false)}
-              style={[styles.segAt, !grid && styles.segOn]}>
-              Library
-            </Text>
-            <Text
-              onPress={() => onGrid(true)}
-              style={[styles.segAt, grid && styles.segOn]}>
-              Grid
-            </Text>
-          </View>
-        </View>
-        {grid && (
-          <View style={styles.head}>
-            <PushButton
-              label="‹"
-              colour={C.accentText}
-              lit={page > 0}
-              onPress={() => onPage(-1)}
-              style={styles.pageKey}
-            />
-            <Text style={styles.pageAt}>
-              page {page + 1}/{total}
-            </Text>
-            <PushButton
-              label="›"
-              colour={C.accentText}
-              lit={onward}
-              onPress={() => onPage(1)}
-              style={styles.pageKey}
-            />
-          </View>
-        )}
-        {!grid && (
-          <TextInput
-            value={q}
-            onChangeText={setQ}
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-            style={styles.find}
-            placeholder="search prompts"
-            placeholderTextColor={C.faint}
-          />
-        )}
+        <Text style={styles.label}>Prompts · {filled}</Text>
+        <TextInput
+          value={q}
+          onChangeText={setQ}
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+          style={styles.find}
+          placeholder="search prompts"
+          placeholderTextColor={C.faint}
+        />
       </View>
 
-      {grid ? (
-        <View style={styles.gridWrap}>
-          <PadGrid
-            key={page}
-            macros={macros}
-            sel={sel}
-            moving={moving}
-            opts={[]}
-            onPress={onPress}
-            onDrop={onDrop}
-            onExecute={onExecute}
-            onEdit={onEdit}
-            onAnswer={() => {}}
-          />
-        </View>
-      ) : (
-        <Library
-          macros={macros}
-          labels={labels}
-          q={q}
-          sel={sel}
-          onPress={onPress}
-          onExecute={onExecute}
-          onEdit={onEdit}
-        />
-      )}
+      <Library
+        macros={macros}
+        labels={labels}
+        q={q}
+        sel={sel}
+        onPress={onPress}
+        onExecute={onExecute}
+        onEdit={onEdit}
+      />
     </View>
   );
 }
@@ -330,7 +262,6 @@ function Library({ macros, labels, q, sel, onPress, onExecute, onEdit }) {
 
 const styles = StyleSheet.create({
   rail: { width: 344, borderLeftWidth: 1, borderLeftColor: C.line },
-  railWide: { width: 528 },
   headCol: {
     paddingHorizontal: 12,
     paddingTop: S.pad,
@@ -346,10 +277,6 @@ const styles = StyleSheet.create({
   titleNote: { color: C.edge, fontWeight: '400' },
   spacer: { flex: 1 },
   key: { height: 32, minHeight: 32, minWidth: 70 },
-  seg: { flexDirection: 'row', borderWidth: 1, borderColor: C.line, borderRadius: 6, overflow: 'hidden' },
-  segAt: { color: C.faint, fontSize: 11, paddingHorizontal: 11, paddingVertical: 5 },
-  segOn: { color: C.text, backgroundColor: C.line },
-  pageKey: { width: 52, height: 30, minHeight: 30, minWidth: 0 },
   find: {
     height: 32,
     color: C.text,
@@ -360,8 +287,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     fontSize: 13,
   },
-  pageAt: { color: C.dim, fontSize: 11, flex: 1, textAlign: 'center' },
-  gridWrap: { flex: 1, padding: 8 },
   list: { padding: 12, gap: 4 },
   group: { gap: 3, paddingBottom: 8 },
   groupHead: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 6, paddingHorizontal: 4 },

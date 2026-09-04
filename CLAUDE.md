@@ -28,6 +28,25 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root, both created
 lazily by `/domain-modeling` rather than up front.
 See `docs/agents/domain.md`.
 
+## What "this app" means
+
+**Unless the Push 2 is named, the work is the React Native app.** `app/` — its
+UI and UX — is the default subject of any request here: layout, the rail, the
+panes, the prompt library, what a control does and whether it should be on
+screen at all. The hardware is a peer of that app, not the centre of it.
+
+So "the left hand side", "the panel", "the button" means the one in `app/`.
+Only an explicit mention — the Push, the pads, the encoders, the touchstrip,
+the glass, a CC number, `push_cc.py` or `display.py` — moves the subject to
+the controller.
+
+Two consequences worth stating, because both have been got wrong:
+
+- Do not answer a UI request by editing `display.py` or the Push's own layout.
+- Do not build a second on-screen copy of something the Push already is. The
+  mirror tab is the one drawing of the hardware; a panel that redraws the pad
+  grid beside it is two drawings of one thing, and they drift.
+
 ## Before you change the backend
 
 `push_cc.herdr()` is the one function every pane call goes through, and it

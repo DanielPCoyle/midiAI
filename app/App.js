@@ -44,9 +44,7 @@ export default function App() {
   const [labels, setLabels] = useState([]);
   const [ownPage, setOwnPage] = useState(0);
   const [sel, setSel] = useState(null);
-  const [moving, setMoving] = useState(null);
   const [editing, setEditing] = useState(false);
-  const [grid, setGrid] = useState(false);
   const [mirror, setMirror] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
@@ -59,18 +57,13 @@ export default function App() {
   const [followPush, setFollowPush] = useState(true);
   const [localView, setLocalView] = useState(0);
   const [localModes, setLocalModes] = useState({});
-  // subagents has no mode of its own on the wire -- it is the same
-  // `sessions` view's second mode, drawn as a tab of its own. Kept apart
-  // from `localModes` (below) rather than folded into it because that map
-  // is re-seeded from the Push every poll while following, and there is no
-  // press that tells the hardware to sit on mode 1 -- seeding it back would
-  // undo the tab you just picked within half a second.
-  const [sessionsMode, setSessionsMode] = useState(0);
   // The session rail is a fixed 268px the header and pads panel cannot both
   // afford below 1200 -- rather than shrink it into uselessness it moves
   // behind this toggle, since the pane header already names the current
   // session and the rail's only remaining job is picking a different one.
   const [railOpen, setRailOpen] = useState(false);
+  // reconnect, the mirror and the host field, behind one ⋮ -- see the header.
+  const [menu, setMenu] = useState(false);
   const base = baseFor(host);
   const noteAt = useRef(null);
   // Idle detection for the surface poll (MIDI-016): the last stamp seen and
@@ -98,24 +91,23 @@ export default function App() {
   const total = Math.max(surface.pages ?? pages.length, 1);
   const page = Math.min(surface.page ?? ownPage, total - 1);
   const macros = pages[page] || EMPTY;
-  const onward = page + 1 < total || macros.some(Boolean);
   const opts = surface.opts || [];
   const asking = opts.length > 0;
   const views = surface.views || [];
   const cols = surface.cols || [];
+  // Every pad fires into "whichever session the Push is pointed at" -- with no
+  // agent anywhere there is no such session, and the server answers a fire with
+  // 409 "no session selected on the Push". A panel whose every button is a
+  // guaranteed error is not worth the width.
+  const anyAgent = cols.some(Boolean);
 
   const viewIdx = localView;
   const viewName = views[viewIdx] || '';
   // focus's second mode is the macro/prompt grid on the Push strip -- there
-  // is no such thing to switch to here, the right-hand pads panel is always
+  // is no such thing to switch to here, the right-hand prompt panel is always
   // on screen, so this view is pinned to mode 0 regardless of what the
-  // hardware or a stale follow-mirror happens to be sitting on. sessions'
-  // second mode is the opposite case -- a real place worth being (the
-  // subagents tab), just one this app can only ever pick locally.
-  const mode =
-    viewName === 'focus' ? 0
-      : viewName === 'sessions' ? sessionsMode
-      : localModes[viewIdx] ?? 0;
+  // hardware or a stale follow-mirror happens to be sitting on.
+  const mode = viewName === 'focus' ? 0 : localModes[viewIdx] ?? 0;
   // views_data is a parallel change landing on the server; until it does,
   // there is only surface.data -- whatever the hardware itself is showing,
   // which is the fallback rather than the source now.
@@ -125,15 +117,20 @@ export default function App() {
   // The view name is a wire contract (VIEWS in push_cc.py, a views_data key)
   // -- only the word drawn on the tab changes here, never the key anything
   // is looked up by.
-  const TAB_LABEL = { sessions: 'agents' };
-  const sessionsIdx = views.indexOf('sessions');
-  // tests, prs and the subagents split of sessions are the tabs worth a
-  // glance without a click for a single-repo user -- usually zero, and
-  // "zero" is itself the useful fact. focus and usage have no one number
-  // that sums them up, so they stay bare.
+  // The view name is the wire contract; only the word drawn changes here.
+  // `prs` reads GIT because the view is the repo's state, not just its pull
+  // requests, and PRS was the one tab whose name had to be decoded.
+  const TAB_LABEL = { prs: 'git' };
+  // `sessions` and its subagents split are no longer tabs: the rail's AGENTS
+  // group is a better answer to "who is running" than a tab that had to be
+  // clicked to find out, and it is on screen the whole time. The view itself
+  // is untouched on the wire -- the Push still has it.
+  const TAB_HIDE = new Set(['sessions']);
+  // tests and git are the tabs worth a glance without a click for a
+  // single-repo user -- usually zero, and "zero" is itself the useful fact.
+  // focus and usage have no one number that sums them up, so they stay bare.
   const testsCount = (surface.views_data?.tests?.[0]?.items || []).length;
   const prsCount = (surface.views_data?.prs?.[0]?.rows || []).length;
-  const subsCount = (surface.views_data?.sessions?.[1]?.rows || []).length;
   const TAB_COUNT = { tests: testsCount, prs: prsCount };
   const filled = macros.filter(Boolean).length;
 
@@ -387,37 +384,15 @@ export default function App() {
     }
   }, [base, host, loadMacros, say]);
 
-  const dropPad = useCallback(
-    (from, to) => {
-      if (!macros[from]) return say('that pad is empty');
-      const next = macros.slice();
-      [next[from], next[to]] = [next[to], next[from]];
-      putMacros(next, labels);
-      setSel(to);
-    },
-    [labels, macros, putMacros, say]
-  );
-
   // A tap always selects, never fires -- the pad popover's own `run` is the
   // one way to fire from here now. Arming was a global modifier that changed
   // what every tap meant with no way to tell which mode you were in without
   // checking the header; deleting it means a tap can only ever mean one thing.
-  const tapPad = useCallback(
-    (i) => {
-      if (moving !== null) {
-        if (i !== moving) {
-          const next = macros.slice();
-          [next[i], next[moving]] = [next[moving], next[i]];
-          putMacros(next, labels);
-        }
-        setMoving(null);
-        setSel(i);
-        return;
-      }
-      setSel((was) => (was === i ? null : i));
-    },
-    [labels, macros, moving, putMacros]
-  );
+  // The swap branch that used to live here armed from the pad grid's drag,
+  // and nothing ever set it again once the grid went -- `moving` was already
+  // dead state at HEAD, never assigned anything but null. Swapping pads is
+  // the Push's own move mode now.
+  const tapPad = useCallback((i) => setSel((was) => (was === i ? null : i)), []);
 
   const savePad = useCallback(
     (fields) => {
@@ -496,54 +471,28 @@ export default function App() {
                 without a click: usage's modes are their own pressable row
                 inside the pane, and focus's mode is pinned off above. */}
             {views.map((name, i) => {
+              // mapped, not filtered: `i` is the wire index a /press carries,
+              // and a filtered array would renumber it.
+              if (TAB_HIDE.has(name)) return null;
               const rgb = (surface.colours || [])[i];
               const hue = rgb ? `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})` : C.accentText;
-              // sessions carries two tabs now (agents, subagents) sharing
-              // one view index -- this one reads "on" only for its own mode,
-              // so picking the other doesn't light both.
-              const on = i === viewIdx && (name !== 'sessions' || sessionsMode === 0);
               return (
                 <Tab
                   key={name}
                   label={TAB_LABEL[name] || name}
                   count={TAB_COUNT[name]}
                   hue={hue}
-                  on={on}
+                  on={i === viewIdx}
                   onPress={() => {
                     // instant, always -- following or not, the tab you just
                     // hit is the one you see. Following additionally tells
                     // the Push to move there, same as it always did.
                     setLocalView(i);
-                    if (name === 'sessions') setSessionsMode(0);
                     if (effectiveFollow) press({ tab: i });
                   }}
                 />
               );
             })}
-            {/* A synthetic tab: no hardware equivalent, and driving push_cc's
-                own mode-cycle from here would be fragile for a button that
-                only ever needs to land on one specific mode. Following
-                presses the sessions tab either way -- same as the real
-                "agents" tab above -- and the app draws whichever of the two
-                was actually picked, which can drift from the hardware's own
-                mode while following. That's fine; see sessionsMode above. */}
-            {sessionsIdx >= 0 && (
-              <Tab
-                key="subagents"
-                label="subagents"
-                count={subsCount}
-                hue={(() => {
-                  const rgb = (surface.colours || [])[sessionsIdx];
-                  return rgb ? `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})` : C.accentText;
-                })()}
-                on={viewIdx === sessionsIdx && sessionsMode === 1}
-                onPress={() => {
-                  setLocalView(sessionsIdx);
-                  setSessionsMode(1);
-                  if (effectiveFollow) press({ tab: sessionsIdx });
-                }}
-              />
-            )}
           </View>
         )}
 
@@ -580,44 +529,77 @@ export default function App() {
             style={styles.key}
           />
         )}
-        {/* reconnect is the one control that must never be the thing that
-            clips -- it's precisely what you reach for when push_cc has died,
-            so it and the rail toggle above it come before anything optional. */}
+        {/* reconnect, the mirror and the host field used to sit out here and
+            drop out of the row one at a time as it narrowed -- the host field
+            above 1200 only, the mirror above 820 -- so two of the three things
+            you reach for when something is wrong were the two the width took
+            away. Behind one ⋮ they are all there at every width, and the row
+            keeps what you read rather than what you press. */}
         <PushButton
-          label="reconnect"
+          label="⋮"
+          accessibilityLabel="more controls"
           colour={C.accentText}
-          lit={api && !reachable}
-          disabled={busy || !api}
-          onPress={reconnect}
-          style={styles.key}>
-          {busy ? <ActivityIndicator size="small" color={C.accentText} /> : null}
-        </PushButton>
-        {/* Push mirror gives way second, once the row is genuinely narrow --
-            it is optional in a way reconnect is not, but it survives the
-            middle widths the host field already vacated by then. */}
-        {!narrow && (
-          <PushButton
-            label="Push mirror"
-            colour={C.accentText}
-            lit={mirror}
-            onPress={() => setMirror((m) => !m)}
-            style={styles.key}
-          />
-        )}
-        {/* a debug affordance, not a phone's business -- the first thing to
-            give way, well above the width anyone is typing a hostname at */}
-        {wide && (
-          <TextInput
-            value={host}
-            onChangeText={setHost}
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={styles.host}
-            placeholder="host or ip"
-            placeholderTextColor={C.faint}
-          />
-        )}
+          lit={menu || (api && !reachable)}
+          onPress={() => setMenu(true)}
+          style={styles.dots}
+        />
       </View>
+
+      <Modal
+        visible={menu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenu(false)}>
+        <Pressable style={styles.menuBackdrop} onPress={() => setMenu(false)} />
+        {/* pinned to the corner rather than measured against the ⋮: the button
+            is always in that corner, so there is nothing for a measurement to
+            tell us that the corner does not. */}
+        <View style={styles.menu}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={busy || !api}
+            onPress={() => {
+              setMenu(false);
+              reconnect();
+            }}
+            style={styles.menuRow}>
+            <Text
+              style={[
+                styles.menuText,
+                api && !reachable && styles.menuHot,
+                (busy || !api) && styles.menuOff,
+              ]}>
+              reconnect
+            </Text>
+            {busy && <ActivityIndicator size="small" color={C.accentText} />}
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: mirror }}
+            onPress={() => {
+              setMenu(false);
+              setMirror((m) => !m);
+            }}
+            style={styles.menuRow}>
+            <Text style={[styles.menuText, mirror && styles.menuHot]}>Push mirror</Text>
+            {mirror && <Text style={styles.menuTick}>✓</Text>}
+          </Pressable>
+          {/* stays open while you type: this is the one row that is not a
+              press, and closing on every keystroke would be unusable */}
+          <View style={styles.menuField}>
+            <Text style={styles.menuLabel}>host</Text>
+            <TextInput
+              value={host}
+              onChangeText={setHost}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.host}
+              placeholder="host or ip"
+              placeholderTextColor={C.faint}
+            />
+          </View>
+        </View>
+      </Modal>
 
       {mirror ? (
         <View style={styles.mirror}>
@@ -652,9 +634,9 @@ export default function App() {
             onComposerFocus={() => setPadsOpen(true)}
             padsOpen={padsOpen}
             padsCount={filled}
-            onTogglePads={() => setPadsOpen((o) => !o)}
+            onTogglePads={anyAgent ? () => setPadsOpen((o) => !o) : undefined}
           />
-          {!(asking && data.kind === 'focus') && (padsOpen || asking) &&
+          {anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
             (ready ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <Pads
@@ -665,16 +647,8 @@ export default function App() {
                   macros={macros}
                   labels={labels}
                   sel={sel}
-                  moving={moving !== null && moving >= 0 ? moving : null}
-                  grid={grid}
-                  onGrid={setGrid}
                   editing={editing && sel !== null}
-                  page={page}
-                  total={total}
-                  onward={onward}
-                  onPage={(d) => press({ page: d })}
                   onPress={tapPad}
-                  onDrop={dropPad}
                   onExecute={firePad}
                   onEdit={editPad}
                   onSave={savePad}
@@ -719,10 +693,10 @@ export default function App() {
               onComposerFocus={() => setPadsOpen(true)}
             padsOpen={padsOpen}
             padsCount={filled}
-            onTogglePads={() => setPadsOpen((o) => !o)}
+            onTogglePads={anyAgent ? () => setPadsOpen((o) => !o) : undefined}
             />
           </View>
-          {!(asking && data.kind === 'focus') && (padsOpen || asking) &&
+          {anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
             (ready ? (
               <Pads
                 kind={data.kind}
@@ -732,16 +706,8 @@ export default function App() {
                 macros={macros}
                 labels={labels}
                 sel={sel}
-                moving={moving !== null && moving >= 0 ? moving : null}
-                grid={grid}
-                onGrid={setGrid}
                 editing={editing && sel !== null}
-                page={page}
-                total={total}
-                onward={onward}
-                onPage={(d) => press({ page: d })}
                 onPress={tapPad}
-                onDrop={dropPad}
                 onExecute={firePad}
                 onEdit={editPad}
                 onSave={savePad}
@@ -795,9 +761,9 @@ export default function App() {
   );
 }
 
-// One tab, drawn the same whether it comes straight off `views` or is the
-// synthetic subagents split of `sessions` -- the caller decides the label,
-// the count and what "on" means, this just draws it.
+// One tab. The caller decides the label, the count and what "on" means; this
+// just draws it. Uppercasing is a style on the drawn Text rather than on the
+// string, so the accessible name stays the word as written.
 //
 // The touch target is a Pressable wrapping the Text, not the Text itself.
 // `styles.tabs` puts 18px of `gap` between tabs for looks, and a bare Text's
@@ -893,6 +859,10 @@ const styles = StyleSheet.create({
   tabHit: { paddingHorizontal: 9, marginHorizontal: -9 },
   tab: {
     fontSize: 13,
+    // uppercase and tracked out: the tabs are the one row of chrome that has
+    // to read as chrome, not as words in the pane below it
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
     borderBottomWidth: 2,
     textAlignVertical: 'center',
     paddingTop: 20,
@@ -909,8 +879,43 @@ const styles = StyleSheet.create({
   tabCount: { color: C.faint, fontSize: 12 },
   spacer: { flex: 1 },
   key: { height: S.control, minHeight: S.control, minWidth: 96 },
+  dots: { height: S.control, minHeight: S.control, minWidth: S.control, paddingHorizontal: 0 },
+  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' },
+  menu: {
+    position: 'absolute',
+    top: 58,
+    right: 12,
+    width: 250,
+    backgroundColor: C.panel,
+    borderRadius: S.radius,
+    borderWidth: 1,
+    borderColor: C.line,
+    paddingVertical: 6,
+  },
+  menuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: S.hit,
+    paddingHorizontal: 14,
+  },
+  menuText: { color: C.text, fontSize: 14, flex: 1 },
+  menuHot: { color: C.accentText },
+  menuOff: { color: C.edge },
+  menuTick: { color: C.accentText, fontSize: 13, fontWeight: '700' },
+  menuField: {
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 4,
+    borderTopWidth: 1,
+    borderTopColor: C.line,
+    marginTop: 4,
+  },
+  menuLabel: { color: C.faint, fontSize: 11 },
   host: {
-    width: 130,
+    // full width of the menu now, not the 130px it took in the header row
+    alignSelf: 'stretch',
     height: S.control,
     color: C.text,
     backgroundColor: KEY.face,
