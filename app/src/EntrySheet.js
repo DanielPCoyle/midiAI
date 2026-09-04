@@ -38,23 +38,51 @@ const SKILL_NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const SKILL_NAME_HELP =
   'lowercase letters, digits and dashes, starting with a letter';
 
-// Claude Code's hook events, with what each one actually fires on. The names
-// alone are a quiz -- Stop and SubagentStop are a guess apart, and PreCompact
-// tells you nothing about when compaction happens. Offered, not enforced: the
-// list grows with the tool, and a field that refuses a name it has not heard
-// of is worse than one that lets you type it.
+// Every Claude Code hook event, in the order they happen rather than in
+// alphabetical order, which would put PostCompact eleven rows from PreCompact.
+// The descriptions are the tool's own -- the names alone are a quiz: Stop and
+// StopFailure and SubagentStop are guesses apart, PostToolUse and
+// PostToolUseFailure and PostToolBatch are three different moments, and
+// PreCompact says nothing about when compaction happens.
+//
+// Offered, not enforced. This list is a snapshot of a tool that keeps growing
+// one, and a field that refuses a name it has not heard of is worse than one
+// that lets you type it.
 const EVENTS = [
-  ['PreToolUse', 'before a tool runs — the one that can block it'],
-  ['PostToolUse', 'after a tool returns, with its result'],
-  ['UserPromptSubmit', 'you pressed enter, before Claude sees the prompt'],
-  ['Notification', 'Claude wants your attention: input needed, or permission'],
-  ['Stop', 'the main agent finished answering'],
-  ['SubagentStop', 'a Task subagent finished — not the main one'],
-  ['PreCompact', 'before the context is compacted, manual or automatic'],
-  ['SessionStart', 'a session begins, or resumes with --continue'],
-  ['SessionEnd', 'a session ends'],
+  ['SessionStart', 'a session begins or resumes'],
+  ['Setup', 'claude --init-only, or --init / --maintenance in -p mode: one-time preparation in CI or scripts'],
+  ['UserPromptSubmit', 'you submit a prompt, before Claude processes it'],
+  ['UserPromptExpansion', 'a typed command expands into a prompt, before it reaches Claude — can block the expansion'],
+  ['PreToolUse', 'before a tool call executes — can block it'],
+  ['PermissionRequest', 'a tool call needs a permission decision'],
+  ['PermissionDenied', 'auto mode denied a tool call. hookSpecificOutput.retry: true tells the model it may retry — ignored when the classifier produced no verdict'],
+  ['PostToolUse', 'after a tool call succeeds'],
+  ['PostToolUseFailure', 'after a tool call fails'],
+  ['PostToolBatch', 'after a batch of parallel tool calls resolves, before the next model call'],
+  ['Notification', 'Claude Code sends a notification'],
+  ['MessageDisplay', 'while assistant message text is displayed'],
+  ['SubagentStart', 'a subagent is spawned'],
+  ['SubagentStop', 'a subagent finishes'],
+  ['TaskCreated', 'a task is being created via TaskCreate'],
+  ['TaskCompleted', 'a task is being marked completed'],
+  ['Stop', 'Claude finishes responding'],
+  ['StopFailure', 'the turn ends on an API error'],
+  ['TeammateIdle', 'an agent team teammate is about to go idle'],
+  ['InstructionsLoaded', 'a CLAUDE.md or .claude/rules/*.md is loaded — at session start, and lazily during one'],
+  ['ConfigChange', 'a configuration file changes during a session'],
+  ['CwdChanged', 'the working directory changes, e.g. Claude runs cd — for direnv and the like'],
+  ['DirectoryAdded', 'a directory is added mid-session via /add-dir or register_repo_root'],
+  ['FileChanged', 'a watched file changes on disk — the matcher says which filenames to watch'],
+  ['WorktreeCreate', 'a worktree is being created (--worktree, isolation: worktree, a background session) — replaces default git behaviour'],
+  ['WorktreeRemove', 'a worktree is being removed at session exit, when a subagent finishes, or when a background session is deleted'],
+  ['PreCompact', 'before context compaction'],
+  ['PostCompact', 'after context compaction completes'],
+  ['PreModelSwitch', 'before a requested model switch is applied — can block it'],
+  ['PostModelSwitch', "after the session's model changes, including changes Claude Code makes itself"],
+  ['Elicitation', 'an MCP server requests user input during a tool call'],
+  ['ElicitationResult', 'a user answered an MCP elicitation, before the response goes back to the server'],
+  ['SessionEnd', 'a session terminates'],
 ];
-
 // Only two of the four scopes can be written. `plugin` belongs to something
 // installed -- editing one in place would be undone by its next update without
 // saying so -- and hooks add `local`, which is the same checkout's settings
@@ -310,10 +338,13 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
                 {(() => {
                   const find = event.trim().toLowerCase();
                   const exact = EVENTS.some(([e]) => e.toLowerCase() === find);
-                  const hits = EVENTS.filter(
-                    ([e, what]) =>
-                      !find || e.toLowerCase().includes(find) || what.includes(find)
-                  );
+                  // name first, and only fall through to the descriptions when
+                  // nothing is named that: at 33 events a single letter matches
+                  // most of the prose, which is a list rather than a narrowing
+                  const named = EVENTS.filter(([e]) => e.toLowerCase().includes(find));
+                  const hits = named.length
+                    ? named
+                    : EVENTS.filter(([, what]) => what.toLowerCase().includes(find));
                   if (exact || !hits.length) return null;
                   return (
                     <ScrollView style={styles.events} keyboardShouldPersistTaps="handled">
@@ -445,7 +476,7 @@ const styles = StyleSheet.create({
   },
   chipOn: { color: C.text, borderColor: C.accentText },
   events: {
-    maxHeight: 210,
+    maxHeight: 240,
     borderWidth: 1,
     borderColor: C.line,
     borderRadius: S.radius,

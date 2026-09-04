@@ -156,10 +156,16 @@ JSON is refused rather than rewritten. A row is addressed by `(event, group
 index, entry index)` from the catalog, not by its command text, because
 matching on the text edits the wrong one the moment two of them agree; and the
 matcher belongs to the group, so an existing hook cannot be moved between
-groups by retyping it. The event field is an autocomplete over all nine of
-Claude Code's hook events, each with what it actually fires on: the names alone
-are a quiz — `Stop` and `SubagentStop` are a guess apart, and `PreCompact` says
-nothing about when compaction happens.
+groups by retyping it. The event field is an autocomplete over all
+thirty-three of Claude Code's hook events, in the order they happen rather than
+alphabetically, each with what it actually fires on. The names alone are a
+quiz: `Stop`, `StopFailure` and `SubagentStop` are guesses apart, `PostToolUse`
+/ `PostToolUseFailure` / `PostToolBatch` are three different moments, and
+`PreCompact` says nothing about when compaction happens. It matches on the name
+first and only falls through to the descriptions when nothing is named that —
+at thirty-three events a single letter matches most of the prose, which is a
+list rather than a narrowing. Offered, not enforced: the list is a snapshot of
+a tool that keeps growing one.
 
 The prompts tab is the **prompt library**: the pads as a searchable list,
 grouped by their colour labels, with **run** and **edit** on whichever one you
