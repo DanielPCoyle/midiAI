@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 
 import { baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+import EntrySheet from './src/EntrySheet';
 import NoAgent from './src/NoAgent';
 import Pads from './src/Pads';
 import Pane from './src/Pane';
@@ -81,6 +82,9 @@ export default function App() {
   // a Modal below `wide` and is simply not mounted there, so a list held only
   // by the rail would be missing exactly when the title line still is not.
   const [projects, setProjects] = useState([]);
+  // { kind: 'skills'|'hooks', row } | null -- the skill or hook being edited,
+  // or created when `row` is null.
+  const [entry, setEntry] = useState(null);
   const base = baseFor(host);
   const noteAt = useRef(null);
   // Idle detection for the surface poll (MIDI-016): the last stamp seen and
@@ -512,6 +516,24 @@ export default function App() {
     setPanel(which);
     setPadsOpen(open);
   };
+  // The catalog is files on disk, so nothing tells the app they changed but
+  // the app having changed them.
+  const reloadCatalog = useCallback(() => {
+    listCatalog(base, hereCwd)
+      .then((d) => setCatalog({ skills: d.skills || [], hooks: d.hooks || [] }))
+      .catch(() => {});
+  }, [base, hereCwd]);
+
+  // ＋ prompt: the first empty pad on this page, opened in the editor. There
+  // is no "create" for a pad -- there are sixty-four of them and they are
+  // always there, so making one is filling one in.
+  const newPad = useCallback(() => {
+    const free = macros.findIndex((m) => !m);
+    if (free < 0) return say('every pad on this page is full');
+    setSel(free);
+    setEditing(true);
+  }, [macros, say]);
+
   const panelCounts = {
     prompts: filled,
     skills: catalog.skills.length,
@@ -737,6 +759,8 @@ export default function App() {
                   panel={panel}
                   onPanel={showPanel}
                   catalog={catalog}
+                  onEntry={(kind, row) => setEntry({ kind, row })}
+                  onNewPad={newPad}
                   sel={sel}
                   editing={editing && sel !== null}
                   onPress={tapPad}
@@ -807,6 +831,8 @@ export default function App() {
                 panel={panel}
                 onPanel={showPanel}
                 catalog={catalog}
+                onEntry={(kind, row) => setEntry({ kind, row })}
+                onNewPad={newPad}
                 sel={sel}
                 editing={editing && sel !== null}
                 onPress={tapPad}
@@ -857,6 +883,20 @@ export default function App() {
             />
           </View>
         </Modal>
+      )}
+
+      {entry && (
+        <EntrySheet
+          kind={entry.kind === 'skills' ? 'skill' : 'hook'}
+          row={entry.row}
+          base={base}
+          cwd={hereCwd}
+          onClose={() => setEntry(null)}
+          onSaved={() => {
+            setEntry(null);
+            reloadCatalog();
+          }}
+        />
       )}
 
       {!!note && (

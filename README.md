@@ -119,6 +119,34 @@ is the first fact about it — a hook in the repo is the team's, one in
 `~/.claude` is yours — and 131 plugin skills over 38 of your own is not a list
 you scroll looking for one of the 38.
 
+Every tab has a `＋` in the same place, and every row it lists opens for
+editing. `＋ prompt` fills in the first empty pad on the page; `＋ skill` and
+`＋ hook` open one sheet that does both, because they are the same errand
+twice — pick a scope, fill in two or three fields, save. A plugin's skill is
+not editable and its row says so by not being a button: it belongs to
+something installed, and editing one in place would be undone by its next
+update without saying so.
+
+**The client never names a path.** `POST /skill` takes a scope and a name and
+derives the file itself; the name has to match `[a-z][a-z0-9-]{0,63}`, which
+*is* the containment check — it admits no separator, so there is nothing for a
+`..` to traverse from. A path taken from the caller and then inspected is the
+version of that which keeps being wrong, and this server is one `--lan` away
+from the network. Deleting a skill removes its `SKILL.md` and the directory
+only if that leaves it empty; a skill with scripts or a `references/` beside it
+is a small project, and a button in a side panel is not where anyone means to
+delete one.
+
+Hooks live in files that are not ours — `settings.json` also holds
+permissions, env and whatever else you keep there — so a hook edit reads the
+file, changes the one entry, and writes it back whole, with the previous
+contents to a `.bak` beside it every time. A settings file that is not valid
+JSON is refused rather than rewritten. A row is addressed by `(event, group
+index, entry index)` from the catalog, not by its command text, because
+matching on the text edits the wrong one the moment two of them agree; and the
+matcher belongs to the group, so an existing hook cannot be moved between
+groups by retyping it.
+
 The prompts tab is the **prompt library**: the pads as a searchable list,
 grouped by their colour labels, with **run** and **edit** on whichever one you
 have picked. It used to carry a `Library | Grid` toggle whose second half drew
@@ -291,6 +319,11 @@ rest over HTTP:
 | `GET /branches?cwd=` | local branches, each naming the worktree that holds it |
 | `POST /worktrees/switch` | `{path, branch}` — check another branch out in a worktree |
 | `GET /catalog?cwd=` | the skills and hooks an agent there can reach, each tagged with its scope |
+| `GET /skill?scope=&name=` | one skill's description and instructions, for the editor |
+| `POST /skill` | `{scope, name, description, body, replace?}` — create or replace |
+| `POST /skill/delete` | `{scope, name}` — its SKILL.md, and the directory if that empties it |
+| `POST /hook` | `{scope, event, matcher, command, gi?, hi?}` — append, or replace that row |
+| `POST /hook/delete` | `{scope, event, gi, hi}` |
 
 `/prompt` without a `terminal_id` goes to whichever agent the Push is
 pointed at, which is the same target a pad fires into: one place decides what

@@ -289,6 +289,124 @@ def skill_description(skill_md_path):
     return description[:300]
 
 
+# A skill's own name, and the only shape one may have. It is a directory name
+# on this machine, minted from a string that arrived over HTTP on a server the
+# --lan flag exposes to the network -- so it is checked against this and never
+# against "does it look like a path", which is the check that is always one
+# encoding away from being wrong.
+SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+# The two scopes a skill can be WRITTEN to. `plugin` is somebody else's package
+# and `local` is a settings file, not a skill directory -- neither is editable
+# here, and the way to say so is to have no path for them at all.
+def skill_home(scope, root):
+    if scope == "user":
+        return os.path.expanduser("~/.claude/skills")
+    if scope == "project":
+        return os.path.join(root, ".claude", "skills")
+    return None
+
+
+def skill_path(scope, name, root):
+    """Where a skill of this name in this scope lives -- or None.
+
+    The client never sends a path. It sends a scope, which selects one of two
+    directories this file names itself, and a name, which has to survive
+    SKILL_NAME_RE. That regex IS the containment check and is written to be
+    read as one: it admits no separator, no dot, and no leading dash, so there
+    is nothing for a `..` to traverse from and no encoding of one that reaches
+    os.path.join as anything but a rejected name. A path taken from the caller
+    and then inspected is the version of this that keeps being wrong."""
+    home = skill_home(scope, root)
+    if not home or not SKILL_NAME_RE.match(name or ""):
+        return None
+    return os.path.join(home, name, "SKILL.md")
+
+
+def skill_text(name, description, body):
+    """A SKILL.md, front to back. Claude Code reads the frontmatter and the
+    body is the instructions -- so this writes exactly the two keys it needs
+    and leaves everything else to what the author typed."""
+    desc = " ".join((description or "").split())
+    return f"---\nname: {name}\ndescription: {desc}\n---\n\n{(body or '').strip()}\n"
+
+
+def skill_body(path):
+    """Everything after the frontmatter block. The description is
+    skill_description's job; this is the other half of the same file, so that
+    the editor opens on what is actually there rather than on a rewrite of it."""
+    try:
+        with open(path, "r", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text          # no frontmatter: the whole file is the body
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return "\n".join(lines[i + 1:]).strip("\n")
+    return text              # never closes -- treat it as prose, not as a header
+
+
+# Where a hook of each scope is written. `plugin` has no settings file of ours
+# to edit, which is why it is not here rather than why it is refused.
+def hooks_file(scope, root):
+    if scope == "user":
+        return os.path.expanduser("~/.claude/settings.json")
+    if scope == "project":
+        return os.path.join(root, ".claude", "settings.json")
+    if scope == "local":
+        return os.path.join(root, ".claude", "settings.local.json")
+    return None
+
+
+def edit_settings(path, change):
+    """Read a settings file, hand `change` its dict, write it back.
+
+    Two things make this different from every other write in this file. The
+    file is not ours -- it holds permissions, env, statusLine, whatever else
+    the user keeps in there -- so it is read, mutated in place and written
+    whole, never regenerated from what we know about. And it is the file that
+    decides how their whole tool behaves, so the previous contents go to a
+    `.bak` beside it on every write. A hook editor that eats a settings.json
+    is worse than no hook editor.
+
+    Returns None on success, or a sentence saying what went wrong."""
+    data = {}
+    had = None
+    try:
+        with open(path) as f:
+            had = f.read()
+        data = json.loads(had)
+        if not isinstance(data, dict):
+            return "that settings file is not a JSON object"
+    except FileNotFoundError:
+        pass                       # a scope with no settings file yet is fine
+    except OSError as e:
+        return f"could not read {path}: {e}"
+    except json.JSONDecodeError as e:
+        # refusing beats rewriting: whatever is in there was hand-written, and
+        # replacing it with our idea of it would lose the rest of the file
+        return f"{path} is not valid JSON ({e}) -- fix it by hand first"
+    err = change(data)
+    if err:
+        return err
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if had is not None:
+            with open(path + ".bak", "w") as f:
+                f.write(had)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        return f"could not write {path}: {e}"
+    return None
+
+
 def skill_rows(skill_md_paths, scope):
     """Turn a list of SKILL.md paths into /catalog rows. A thin wrapper, but
     it's the one place that decides a skill's `name` is its directory name
@@ -321,19 +439,24 @@ def hook_rows(settings_path, scope):
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             continue
-        for group in groups:
+        for gi, group in enumerate(groups):
             if not isinstance(group, dict):
                 continue
             matcher = group.get("matcher") or ""
             entries = group.get("hooks")
             if not isinstance(entries, list):
                 continue
-            for entry in entries:
+            for hi, entry in enumerate(entries):
                 command = entry.get("command") if isinstance(entry, dict) else None
                 if not command:
                     continue
+                # `gi`/`hi` are the row's address in the file it came from --
+                # the editor sends them back to say which of several hooks on
+                # the same event it means. Matching on the command text instead
+                # would edit the wrong one the moment two of them agreed.
                 out.append({"event": event, "matcher": matcher,
                             "command": str(command)[:400],
+                            "gi": gi, "hi": hi,
                             "scope": scope, "path": settings_path})
     return out
 
@@ -406,6 +529,8 @@ class Handler(BaseHTTPRequestHandler):
             self._projects()
         elif self.path == "/branches" or self.path.startswith("/branches?"):
             self._branches()
+        elif self.path == "/skill" or self.path.startswith("/skill?"):
+            self._skill_read()
         elif self.path == "/catalog" or self.path.startswith("/catalog?"):
             self._catalog()
         else:
@@ -429,6 +554,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._worktree()
         if self.path == "/worktrees/remove":
             return self._worktrees_remove()
+        if self.path == "/skill":
+            return self._skill_write()
+        if self.path == "/skill/delete":
+            return self._skill_delete()
+        if self.path == "/hook":
+            return self._hook_write()
+        if self.path == "/hook/delete":
+            return self._hook_delete()
         if self.path == "/projects":
             return self._projects_add()
         if self.path == "/projects/remove":
@@ -757,6 +890,214 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             result = {"branches": [], "type": "branch_list"}
         self._send(200, json.dumps(result), "application/json")
+
+    def _skill_root(self, cwd):
+        """The checkout a project-scoped skill belongs to, resolved the same way
+        /catalog resolves it -- so the skill the app is editing is the skill the
+        catalog listed, and not a sibling worktree's copy of it."""
+        rows = repo_worktrees(cwd)
+        return rows[0]["path"] if rows else cwd
+
+    def _skill_read(self):
+        """One skill's frontmatter and body, for the editor to open on.
+
+        /catalog already carries the name and the description -- but not the
+        instructions, which are the part you actually edit and which would make
+        every catalog response many times larger for a field almost nobody is
+        looking at. So the list is cheap and the edit is a second call."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        scope = (q.get("scope") or [""])[0]
+        name = (q.get("name") or [""])[0]
+        cwd = (q.get("cwd") or [None])[0] or target_cwd()
+        path = skill_path(scope, name, self._skill_root(cwd))
+        if not path:
+            return self._send(400, "not an editable scope, or a bad name",
+                              "text/plain")
+        if not os.path.isfile(path):
+            return self._send(404, "no such skill", "text/plain")
+        self._send(200, json.dumps({
+            "name": name, "scope": scope, "path": path,
+            "description": skill_description(path), "body": skill_body(path),
+        }), "application/json")
+
+    def _skill_write(self):
+        """Create or replace a skill, in `user` or `project` scope.
+
+        Create and update are one route because the client has no say in where
+        the file goes: scope and name decide that, so "the one already there"
+        and "a new one" are the same write to the same derived path. What the
+        caller cannot do is name a path, which is the whole reason this is safe
+        to expose on a server --lan puts on the network.
+
+        Plugin skills are not writable and there is deliberately no scope that
+        reaches them: they belong to something installed, and editing one in
+        place would be undone by its next update without saying so."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            scope, name = body["scope"], body["name"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        cwd = body.get("cwd") or target_cwd()
+        path = skill_path(scope, name, self._skill_root(cwd))
+        if not path:
+            return self._send(
+                400, "a skill name is lowercase letters, digits and dashes, "
+                     "starting with a letter -- and only user or project scope "
+                     "can be written", "text/plain")
+        # `replace` is the editor saying "I opened this one and meant to change
+        # it". Without it a create silently overwriting a skill of the same name
+        # is a way to lose work by typing a name someone else already used.
+        if os.path.exists(path) and not body.get("replace"):
+            return self._send(409, f"a {scope} skill called {name} already exists",
+                              "text/plain")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(skill_text(name, body.get("description", ""),
+                                   body.get("body", "")))
+            os.replace(tmp, path)
+        except OSError as e:
+            return self._send(500, f"could not write the skill: {e}", "text/plain")
+        self._send(200, json.dumps({"path": path}), "application/json")
+
+    def _skill_delete(self):
+        """Remove a skill -- its SKILL.md, and its directory if that leaves it
+        empty.
+
+        Never a recursive delete. A skill with references, scripts or a
+        templates/ directory beside its SKILL.md is a small project, and a
+        button in a side panel is not where anyone means to delete one: the
+        SKILL.md goes, the rest stays, and what is left says so."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            scope, name = body["scope"], body["name"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        cwd = body.get("cwd") or target_cwd()
+        path = skill_path(scope, name, self._skill_root(cwd))
+        if not path:
+            return self._send(400, "not an editable scope, or a bad name",
+                              "text/plain")
+        if not os.path.isfile(path):
+            return self._send(404, "no such skill", "text/plain")
+        try:
+            os.remove(path)
+            leftover = os.listdir(os.path.dirname(path))
+            if not leftover:
+                os.rmdir(os.path.dirname(path))
+        except OSError as e:
+            return self._send(500, f"could not remove the skill: {e}", "text/plain")
+        self._send(200, json.dumps({"kept": leftover}), "application/json")
+
+    def _hook_target(self, body):
+        """(path, error) for the scope this request names."""
+        path = hooks_file(body.get("scope"), self._skill_root(
+            body.get("cwd") or target_cwd()))
+        if not path:
+            return None, "hooks are written to user, project or local scope"
+        return path, None
+
+    def _hook_write(self):
+        """Add a hook, or replace one already there.
+
+        `gi`/`hi` say which row: with them this replaces exactly that entry,
+        without them it appends. Appending reuses a group that already carries
+        the same matcher rather than making a second one -- Claude Code reads
+        both the same way, but a settings file that grows a new group per hook
+        stops being a thing anyone can hand-edit afterwards, and it is still
+        their file."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            event = str(body["event"]).strip()
+            command = str(body["command"]).strip()
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return self._send(400, "bad request", "text/plain")
+        if not event or not command:
+            return self._send(400, "a hook needs an event and a command",
+                              "text/plain")
+        path, err = self._hook_target(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        matcher = str(body.get("matcher") or "")
+        gi, hi = body.get("gi"), body.get("hi")
+
+        def change(data):
+            hooks = data.setdefault("hooks", {})
+            if not isinstance(hooks, dict):
+                return "the hooks key in that settings file is not an object"
+            groups = hooks.setdefault(event, [])
+            if not isinstance(groups, list):
+                return f"hooks.{event} in that settings file is not a list"
+            entry = {"type": "command", "command": command}
+            if gi is not None and hi is not None:
+                try:
+                    group = groups[int(gi)]
+                    # the matcher belongs to the group, so editing it here
+                    # would silently retag every other hook sharing it
+                    if str(group.get("matcher") or "") != matcher:
+                        return ("that hook's matcher is shared with the others "
+                                "in its group -- delete it and add it back to "
+                                "move it")
+                    group["hooks"][int(hi)] = entry
+                    return None
+                except (IndexError, KeyError, TypeError, ValueError):
+                    return "that hook is no longer where it was -- reopen the panel"
+            for group in groups:
+                if isinstance(group, dict) and str(group.get("matcher") or "") == matcher:
+                    group.setdefault("hooks", []).append(entry)
+                    return None
+            group = {"hooks": [entry]}
+            if matcher:
+                group["matcher"] = matcher
+            groups.append(group)
+            return None
+
+        bad = edit_settings(path, change)
+        if bad:
+            return self._send(409 if "no longer" in bad or "shared" in bad else 500,
+                              bad, "text/plain")
+        self._send(200, json.dumps({"path": path}), "application/json")
+
+    def _hook_delete(self):
+        """Remove one hook, and any group or event left empty by it -- a
+        settings file that accumulates empty lists is one nobody wants to open
+        afterwards."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            event = str(body["event"])
+            gi, hi = int(body["gi"]), int(body["hi"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return self._send(400, "bad request", "text/plain")
+        path, err = self._hook_target(body)
+        if err:
+            return self._send(400, err, "text/plain")
+
+        def change(data):
+            hooks = data.get("hooks")
+            if not isinstance(hooks, dict) or event not in hooks:
+                return "that hook is no longer where it was -- reopen the panel"
+            groups = hooks[event]
+            try:
+                del groups[gi]["hooks"][hi]
+            except (IndexError, KeyError, TypeError):
+                return "that hook is no longer where it was -- reopen the panel"
+            if not groups[gi]["hooks"]:
+                del groups[gi]
+            if not groups:
+                del hooks[event]
+            if not hooks:
+                del data["hooks"]     # an empty hooks:{} is litter, not state
+            return None
+
+        bad = edit_settings(path, change)
+        if bad:
+            return self._send(409 if "no longer" in bad else 500, bad, "text/plain")
+        self._send(200, "ok", "text/plain")
 
     def _catalog(self):
         """Every skill and hook an agent working in `cwd` can actually see,

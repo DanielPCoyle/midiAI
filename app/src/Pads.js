@@ -27,6 +27,8 @@ export default function Pads({
   panel,
   onPanel,
   catalog,
+  onEntry,
+  onNewPad,
   sel,
   editing,
   onPress,
@@ -179,6 +181,22 @@ export default function Pads({
         />
       </View>
 
+      {/* Every tab gets the same key, in the same place: the panel is one
+          shelf with three things on it, and a ＋ that moves or vanishes
+          between them would read as three panels that happen to share a
+          column. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`new ${at === 'prompts' ? 'prompt' : at.slice(0, -1)}`}
+        onPress={() =>
+          at === 'prompts' ? onNewPad && onNewPad() : onEntry && onEntry(at, null)
+        }
+        style={styles.add}>
+        <Text style={styles.addText}>
+          ＋ {at === 'prompts' ? 'prompt' : at.slice(0, -1)}
+        </Text>
+      </Pressable>
+
       {at === 'prompts' && (
         <Library
           macros={macros}
@@ -190,8 +208,8 @@ export default function Pads({
           onEdit={onEdit}
         />
       )}
-      {at === 'skills' && <Scoped rows={skills} q={q} kind="skills" />}
-      {at === 'hooks' && <Scoped rows={hooks} q={q} kind="hooks" />}
+      {at === 'skills' && <Scoped rows={skills} q={q} kind="skills" onEntry={onEntry} />}
+      {at === 'hooks' && <Scoped rows={hooks} q={q} kind="hooks" onEntry={onEntry} />}
     </View>
   );
 }
@@ -207,7 +225,7 @@ const SCOPE_NAME = {
 };
 const SCOPE_ORDER = ['project', 'local', 'user', 'plugin'];
 
-function Scoped({ rows, q, kind }) {
+function Scoped({ rows, q, kind, onEntry }) {
   // Which scope is showing. 131 plugin skills over 38 of your own is not a
   // list you scroll looking for one of the 38 -- so scope is a tab, not a
   // heading you pass on the way down.
@@ -260,8 +278,23 @@ function Scoped({ rows, q, kind }) {
         )}
         {!!at && (
         <View key={at.scope} style={styles.group}>
-          {at.items.map((r, i) => (
-            <View key={i} style={styles.item}>
+          {at.items.map((r, i) => {
+            // a plugin's skill is somebody else's package: editing one in
+            // place would be undone by its next update without saying so, so
+            // the row is a row rather than a way in
+            const editable = r.scope !== 'plugin';
+            return (
+            <Pressable
+              key={i}
+              accessibilityRole={editable ? 'button' : undefined}
+              accessibilityLabel={
+                editable
+                  ? `edit ${kind === 'skills' ? r.name : `${r.event} hook`}`
+                  : undefined
+              }
+              disabled={!editable}
+              onPress={() => onEntry && onEntry(kind, r)}
+              style={styles.item}>
               <View style={styles.pick}>
                 <View style={[styles.bar, { backgroundColor: SCOPE_HEX[at.scope] || C.edge }]} />
                 <View style={styles.rowBody}>
@@ -276,8 +309,9 @@ function Scoped({ rows, q, kind }) {
                   </Text>
                 </View>
               </View>
-            </View>
-          ))}
+            </Pressable>
+            );
+          })}
         </View>
         )}
       </ScrollView>
@@ -404,6 +438,8 @@ const styles = StyleSheet.create({
   spacer: { flex: 1 },
   key: { height: 32, minHeight: 32, minWidth: 70 },
   tabs: { flexDirection: 'row', gap: 14, paddingBottom: 2 },
+  add: { minHeight: 30, justifyContent: 'center', paddingHorizontal: 12, paddingTop: 8 },
+  addText: { color: C.accentText, fontSize: 12 },
   subTabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',

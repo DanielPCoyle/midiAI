@@ -129,6 +129,30 @@ export const removeWorktree = (base, cwd, path, force) =>
 export const listCatalog = async (base, cwd) =>
   getJSON(base, `/catalog${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`);
 
+// A skill's frontmatter and its instructions. /catalog carries the first two
+// fields for every skill; the body is a second call because shipping every
+// one of them would make that list many times larger.
+export const readSkill = async (base, scope, name, cwd) =>
+  getJSON(
+    base,
+    `/skill?scope=${encodeURIComponent(scope)}&name=${encodeURIComponent(name)}` +
+      (cwd ? `&cwd=${encodeURIComponent(cwd)}` : '')
+  );
+
+// Create or replace. The server derives the path from scope + name -- there is
+// no path in this call, which is what makes it safe on a --lan server.
+export const saveSkill = (base, fields) => post(base, '/skill', fields);
+
+export const deleteSkill = (base, scope, name, cwd) =>
+  post(base, '/skill/delete', { scope, name, cwd });
+
+// `gi`/`hi` are the hook's address in its settings file, straight off the
+// catalog row. Without them this appends a new hook instead.
+export const saveHook = (base, fields) => post(base, '/hook', fields);
+
+export const deleteHook = (base, scope, event, gi, hi, cwd) =>
+  post(base, '/hook/delete', { scope, event, gi, hi, cwd });
+
 // The folders on the machine running the agents. A picker on the tablet would
 // browse the tablet, which is not where the repos are.
 export const listDirs = (base, path) =>
