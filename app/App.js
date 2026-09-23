@@ -719,21 +719,23 @@ export default function App() {
 
         <View style={styles.spacer} />
 
-        {/* USAGE, apart from the tabs: the focused agent's context as phone
-            bars (the fullest agent's when none is focused), on every view.
-            Pressing it still opens the usage view, like the tab it was. */}
+        {/* USAGE, apart from the tabs: the plan's session and weekly limits,
+            each as phone bars and a percentage, on every view. Pressing it
+            still opens the usage view, like the tab it was. */}
         {(() => {
           const ui = views.indexOf('usage');
-          const fill = surface.views_data?.usage?.[0]?.fill || [];
           if (ui < 0) return null;
-          const f = fill.find((x) => here && x.name === here.name)
-            || [...fill].sort((a, b) => b.frac - a.frac)[0];
+          const bars = surface.views_data?.usage?.[0]?.bars || [];
+          const pick = (re) => bars.find((b) => re.test(b.label || ''));
+          const shown = [['session', pick(/session/i)], ['week', pick(/week/i)]]
+            .filter(([, b]) => b);
+          const pct = (b) => Math.round(Math.max(0, Math.min(1, Number(b.used) || 0)) * 100);
           const on = ui === viewIdx;
           return (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={f
-                ? `usage · ${f.name} context ${Math.round(f.frac * 100)}% full`
+              accessibilityLabel={shown.length
+                ? `usage · ${shown.map(([w, b]) => `${w} ${pct(b)}%`).join(', ')}`
                 : 'usage'}
               accessibilityState={{ selected: on }}
               onPress={() => {
@@ -741,15 +743,16 @@ export default function App() {
                 if (effectiveFollow) press({ tab: ui });
               }}
               style={[styles.usageKey, on && styles.usageKeyOn]}>
-              <Text style={[styles.usageWord, on && styles.usageWordOn]}>usage</Text>
-              {!!f && (
-                <>
-                  <SignalBars frac={f.frac} size={14} />
-                  <Text style={[styles.usagePct, { color: fillHue(f.frac) }]}>
-                    {Math.round(f.frac * 100)}%
-                  </Text>
-                </>
+              {!shown.length && (
+                <Text style={[styles.usageWord, on && styles.usageWordOn]}>usage</Text>
               )}
+              {shown.map(([word, b], k) => (
+                <View key={word} style={[styles.usagePart, k > 0 && styles.usagePartNext]}>
+                  <Text style={[styles.usageWord, on && styles.usageWordOn]}>{word}</Text>
+                  <SignalBars frac={pct(b) / 100} size={14} />
+                  <Text style={[styles.usagePct, { color: fillHue(pct(b) / 100) }]}>{pct(b)}%</Text>
+                </View>
+              ))}
             </Pressable>
           );
         })()}
@@ -1218,6 +1221,8 @@ const styles = StyleSheet.create({
   usageWord: { color: C.dim, fontSize: 11, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' },
   usageWordOn: { color: C.text },
   usagePct: { fontSize: 11, fontWeight: '700' },
+  usagePart: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  usagePartNext: { borderLeftWidth: 1, borderLeftColor: C.line, paddingLeft: 8 },
   tab: {
     fontSize: 13,
     // uppercase and tracked out: the tabs are the one row of chrome that has
