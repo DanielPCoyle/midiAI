@@ -2222,7 +2222,6 @@ function Git({ data, base, cwd, place }) {
 // It is first because it is where work is before it is anywhere else, and
 // because the answer to "what am I in the middle of" was previously only
 // available by leaving for a terminal.
-const WORK_HALVES = ['changes', 'tree'];
 
 // git's own word for what happened to a file, in the app's hues. Untracked is
 // deliberately not the green of added: one is a file git is already carrying,
@@ -2272,7 +2271,6 @@ function WorkFile({ row, on, staged, onOpen, onStage, onDiscard }) {
 
 function Work({ base, cwd, tabs }) {
   const narrow = useNarrow();
-  const [half, setHalf] = useState(0);
   const [work, setWork] = useState(null);
   // One pick, two shapes: {file, staged} from the changes half, {sha} from the
   // tree. Both end in the same viewer, because a file's changes and a commit's
@@ -2411,64 +2409,66 @@ function Work({ base, cwd, tabs }) {
         <View style={styles.spacer} />
         {tabs}
       </View>
-      <Segmented names={WORK_HALVES} at={half} onAt={setHalf} />
-      <View style={styles.manageRow}>
-        <PushButton label="fetch" disabled={busy} onPress={() => run('fetch')} style={styles.wkBtn} />
-        <PushButton
-          label={behind ? `pull ${behind}` : 'pull'}
-          lit={behind > 0}
-          disabled={busy}
-          onPress={() => run('pull')}
-          style={styles.wkBtn}
-        />
-        <PushButton
-          label={ahead ? `push ${ahead}` : 'push'}
-          colour="#3cd05a"
-          lit={ahead > 0}
-          disabled={busy}
-          onPress={() => run('push')}
-          style={styles.wkBtn}
-        />
-        <PushButton label="branch…" disabled={busy} onPress={openBranches} style={styles.wkBtn} />
-        <PushButton
-          label="stash"
-          disabled={busy || !(staged.length + dirty.length)}
-          onPress={() => run('stash')}
-          style={styles.wkBtn}
-        />
-        {!!say && <Text numberOfLines={1} style={styles.caption}>{say}</Text>}
-      </View>
-      {!!err && <Text style={styles.err}>{err}</Text>}
-      {!!clashes.length && (
-        <Text style={styles.err}>
-          {clashes.length} file{clashes.length === 1 ? '' : 's'} conflicted — resolve in the
-          editor, then stage: {clashes.map((c) => c.path).join(', ')}
-        </Text>
-      )}
-      {half === 1 ? (
-        <View style={[styles.diffWorkspace, narrow && styles.diffWorkspaceNarrow]}>
-          <View style={[styles.wkTree, narrow && styles.diffFilesNarrow]}>
-            <ScrollView style={narrow ? styles.wkTreeNarrow : undefined} nestedScrollEnabled>
-              {log.map((row, i) => (
-                <Pressable
-                  key={i}
-                  disabled={!row.sha}
-                  onPress={() => setPick({ sha: row.sha })}
-                  style={[styles.wkCommit, pick?.sha && pick.sha === row.sha && styles.diffFileOn]}>
-                  <Text style={styles.wkArt}>{row.art}</Text>
-                  {!!row.sha && <Text style={styles.wkSha}>{row.short}</Text>}
-                  {!!row.refs && <Text numberOfLines={1} style={styles.wkRefs}>{row.refs}</Text>}
-                  <Text numberOfLines={1} style={styles.wkSubject}>{row.subject}</Text>
-                  {!!row.sha && <Text style={styles.wkWhen}>{row.who} · {row.when}</Text>}
-                </Pressable>
-              ))}
-              {!log.length && <Empty what="no commits yet" />}
-            </ScrollView>
-          </View>
-          {viewer}
+      {/* The history is always on the left: pick a commit to read it in the
+          viewer on the right, pick it again to go back to the working tree. It
+          was one half of a switch, so seeing where you are meant leaving what
+          you were about to commit. */}
+      <View style={[styles.wkSplit, narrow && styles.wkSplitNarrow]}>
+        <View style={[styles.wkTree, styles.wkTreeCol, narrow && styles.diffFilesNarrow]}>
+          <Text style={styles.wkGroup}>history · {log.length}{pick?.sha ? ' · showing ' + (log.find((r) => r.sha === pick.sha)?.short || '') : ''}</Text>
+          <ScrollView style={narrow ? styles.wkTreeNarrow : undefined} nestedScrollEnabled>
+            {log.map((row, i) => (
+              <Pressable
+                key={i}
+                disabled={!row.sha}
+                accessibilityRole="button"
+                accessibilityLabel={row.sha ? `commit ${row.short}: ${row.subject}` : undefined}
+                onPress={() => setPick(pick?.sha === row.sha ? null : { sha: row.sha })}
+                style={[styles.wkCommit, pick?.sha && pick.sha === row.sha && styles.diffFileOn]}>
+                <Text style={styles.wkArt}>{row.art}</Text>
+                {!!row.sha && <Text style={styles.wkSha}>{row.short}</Text>}
+                {!!row.refs && <Text numberOfLines={1} style={styles.wkRefs}>{row.refs}</Text>}
+                <Text numberOfLines={1} style={styles.wkSubject}>{row.subject}</Text>
+                {!!row.sha && <Text style={styles.wkWhen}>{row.who} · {row.when}</Text>}
+              </Pressable>
+            ))}
+            {!log.length && <Empty what="no commits yet" />}
+          </ScrollView>
         </View>
-      ) : (
-        <>
+        <View style={styles.wkMain}>
+          <View style={styles.manageRow}>
+            <PushButton label="fetch" disabled={busy} onPress={() => run('fetch')} style={styles.wkBtn} />
+            <PushButton
+              label={behind ? `pull ${behind}` : 'pull'}
+              lit={behind > 0}
+              disabled={busy}
+              onPress={() => run('pull')}
+              style={styles.wkBtn}
+            />
+            <PushButton
+              label={ahead ? `push ${ahead}` : 'push'}
+              colour="#3cd05a"
+              lit={ahead > 0}
+              disabled={busy}
+              onPress={() => run('push')}
+              style={styles.wkBtn}
+            />
+            <PushButton label="branch…" disabled={busy} onPress={openBranches} style={styles.wkBtn} />
+            <PushButton
+              label="stash"
+              disabled={busy || !(staged.length + dirty.length)}
+              onPress={() => run('stash')}
+              style={styles.wkBtn}
+            />
+            {!!say && <Text numberOfLines={1} style={styles.caption}>{say}</Text>}
+          </View>
+          {!!err && <Text style={styles.err}>{err}</Text>}
+          {!!clashes.length && (
+            <Text style={styles.err}>
+              {clashes.length} file{clashes.length === 1 ? '' : 's'} conflicted — resolve in the
+              editor, then stage: {clashes.map((c) => c.path).join(', ')}
+            </Text>
+          )}
           <View style={[styles.diffWorkspace, narrow && styles.diffWorkspaceNarrow]}>
             <View style={[styles.diffFiles, narrow && styles.diffFilesNarrow]}>
               <ScrollView style={narrow ? styles.wkTreeNarrow : undefined} nestedScrollEnabled>
@@ -2587,8 +2587,8 @@ function Work({ base, cwd, tabs }) {
             />
             <Text style={styles.caption}>{staged.length} staged</Text>
           </View>
-        </>
-      )}
+        </View>
+      </View>
       <Modal visible={!!ask} transparent animationType="fade" onRequestClose={() => setAsk(null)}>
         <View style={styles.modalBack}>
           <View style={styles.receipt}>
@@ -3802,7 +3802,7 @@ const styles = StyleSheet.create({
   // a state word, a per-row command, a commit graph -- are new here.
   wkGroup: { color: C.faint, fontSize: 10, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', paddingHorizontal: 10, paddingTop: 10, paddingBottom: 4 },
   wkState: { color: C.faint, fontSize: 10, ...mono },
-  wkKey: { color: C.accentText, fontSize: 10, fontWeight: '600', paddingHorizontal: 7, paddingVertical: 6, borderWidth: 1, borderColor: C.edge, borderRadius: 4, overflow: 'hidden' },
+  wkKey: { color: C.accentText, fontSize: 10, fontWeight: '600', paddingHorizontal: 7, paddingVertical: 6, borderWidth: 1, borderColor: C.edge, borderRadius: 4, overflow: 'hidden', flexShrink: 0 },
   wkKeyOn: { color: C.text, borderColor: C.accent, backgroundColor: C.raised },
   wkDrop: { color: C.bad },
   wkBtn: { minWidth: 84 },
@@ -3810,6 +3810,10 @@ const styles = StyleSheet.create({
   // well as a subject -- and the art is only readable if nothing reflows it.
   wkTree: { width: 460, borderRightWidth: 1, borderRightColor: C.line, backgroundColor: C.panel },
   wkTreeNarrow: { maxHeight: 280 },
+  wkSplit: { flex: 1, minHeight: 0, flexDirection: 'row', gap: 14 },
+  wkSplitNarrow: { flexDirection: 'column' },
+  wkTreeCol: { width: 380, borderWidth: 1, borderColor: C.line, borderRadius: 6, overflow: 'hidden' },
+  wkMain: { flex: 1, minWidth: 0, gap: 14 },
   wkCommit: { minHeight: 30, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10 },
   wkArt: { color: C.accentText, fontSize: 12, lineHeight: 18, ...mono },
   wkSha: { color: C.warn, fontSize: 11, ...mono },
