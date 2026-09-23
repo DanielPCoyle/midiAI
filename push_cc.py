@@ -1043,7 +1043,7 @@ def sub_info(sub, slot=0, scroll=0):
     """A subagent shaped like focus_info, so one renderer draws both."""
     lines = sub_lines(sub["log"])
     said = [l for l in lines if not l.startswith("  ")]
-    return {"slot": slot, "name": sub["label"],
+    return {"slot": slot, "tid": None, "name": sub["label"],
             "model": short_model(sub["model"]),
             # the header's third field. A subagent has no effort of its own to
             # show, and its type is the thing you actually want named there
@@ -2255,6 +2255,9 @@ def sweep_panes(slots, by_id, current):
 def focus_info(slot, agent, summary, scroll=0, suggested=False):
     used, limit = context_for(agent)
     return {"slot": slot,
+            # the app keys drafts, history and the up-next queue on this --
+            # without it every agent shared one draft and history never loaded
+            "tid": agent.get("terminal_id"),
             "name": agent_name(agent),
             "model": model_for(agent),
             "effort": effort_for(agent),

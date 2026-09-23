@@ -230,6 +230,87 @@ def save_guardrails(all_of_them):
     os.replace(tmp, GUARDRAILS_FILE)
 
 
+# Prompts waiting for an agent to finish, per terminal_id, in the order they
+# will go. Ours and not Claude Code's: once text is handed to Claude Code's
+# own queue a pty cannot reach it again, so nothing there can be edited,
+# reordered or pulled. Held here, it can -- and it keeps draining whichever
+# agent the app happens to be looking at, or with the app closed.
+QUEUE_FILE = os.path.expanduser("~/.midiai/queue.json")
+QUEUE_TICK_S = 2
+# herdr reads idle for a moment after a submit, before the agent picks it up;
+# without a gap the whole queue would go in one burst.
+# ponytail: a fixed gap -- a slash command that finishes inside it just waits
+# the rest; key off a busy->idle edge if that ever feels slow.
+QUEUE_GAP_S = 6
+_queue_lock = threading.Lock()
+_queue_last = {}      # tid -> when we last sent into it
+_queue_gone = set()   # ids already delivered, so a stale client list can't
+                      # put one back
+
+
+def load_queue():
+    try:
+        with open(QUEUE_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def save_queue(q):
+    os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
+    tmp = QUEUE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({k: v for k, v in q.items() if v}, f, indent=2)
+    os.replace(tmp, QUEUE_FILE)
+
+
+def clean_queue(items):
+    out = []
+    for item in (items or [])[:100]:
+        if not isinstance(item, dict):
+            continue
+        qid, text = str(item.get("id") or "")[:40], str(item.get("text") or "")[:20000]
+        if qid and text.strip() and qid not in _queue_gone:
+            out.append({"id": qid, "text": text})
+    return out
+
+
+def queue_tick():
+    """Send the head of each queue whose agent is free to take it."""
+    with _queue_lock:
+        heads = {tid: items[0] for tid, items in load_queue().items() if items}
+    if not heads:
+        return
+    live = {a.get("terminal_id"): a for a in push_cc.agents()}
+    for tid, head in heads.items():
+        agent = live.get(tid)
+        if (not agent or agent.get("agent_status") != "idle"
+                or time.time() - _queue_last.get(tid, 0) < QUEUE_GAP_S):
+            continue
+        pane = push_cc.pane_summary(agent)
+        # a question on screen would take the text as its answer, and a half
+        # dictated line would have ours glued onto the end of it
+        if pane.get("opts") or (pane.get("pending") or "").strip():
+            continue
+        push_cc.herdr("agent", "send", tid, head["text"] + "\r")
+        _queue_last[tid] = time.time()
+        with _queue_lock:
+            _queue_gone.add(head["id"])
+            q = load_queue()
+            q[tid] = [i for i in q.get(tid, []) if i.get("id") != head["id"]]
+            save_queue(q)
+
+
+def queue_loop():
+    while True:
+        try:
+            queue_tick()
+        except Exception as e:   # one bad tick must not stop every later one
+            print(f"queue: {e}", file=sys.stderr)
+        time.sleep(QUEUE_TICK_S)
+
+
 # What one checkout's record may contain. Anything else a client sends is
 # dropped rather than stored: this file is read back and rendered, so the
 # shape it can hold is decided here and not by whatever posted last.
@@ -1233,6 +1314,12 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/agents":
             self._send(200, json.dumps({"agents": push_cc.agents()}),
                       "application/json")
+        elif self.path.startswith("/queue?"):
+            query = urllib.parse.urlsplit(self.path).query
+            tid = (urllib.parse.parse_qs(query).get("terminal_id") or [""])[0]
+            with _queue_lock:
+                items = load_queue().get(tid, [])
+            self._send(200, json.dumps({"items": items}), "application/json")
         elif self.path == "/mcp/health" or self.path.startswith("/mcp/health?"):
             return self._mcp_health()
         elif self.path == "/mcps" or self.path.startswith("/mcps?"):
@@ -1309,6 +1396,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._keys()
         if self.path == "/prompt":
             return self._prompt()
+        if self.path in ("/queue", "/queue/add"):
+            return self._queue_post()
         if self.path == "/paste":
             return self._paste()
         if self.path == "/record/start":
@@ -1883,6 +1972,26 @@ class Handler(BaseHTTPRequestHandler):
         if not text.strip():
             return self._send(400, "an empty file governs nothing", "text/plain")
         self._write_repo_file(path, text, root, bool(body.get("replace")))
+
+    def _queue_post(self):
+        """/queue replaces an agent's whole list -- one call covers edit,
+        reorder and remove. /queue/add appends one prompt to the end."""
+        body = self._read_json_body()
+        tid = str((body or {}).get("terminal_id") or "")
+        if not tid:
+            return self._send(400, "bad request", "text/plain")
+        with _queue_lock:
+            q = load_queue()
+            if self.path == "/queue/add":
+                items = q.get(tid, []) + [{"id": os.urandom(6).hex(),
+                                           "text": str(body.get("text") or "")}]
+            else:
+                items = body.get("items")
+                if not isinstance(items, list):
+                    return self._send(400, "bad request", "text/plain")
+            q[tid] = clean_queue(items)
+            save_queue(q)
+        self._send(200, json.dumps({"items": q[tid]}), "application/json")
 
     def _read_json_body(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -3424,4 +3533,5 @@ if __name__ == "__main__":
         print(f"http://localhost:{PORT}")
     # threaded: /choose-dir blocks for as long as the Finder dialog is open,
     # and the app polls /agents and /target the whole time it is up
+    threading.Thread(target=queue_loop, daemon=True).start()
     ThreadingHTTPServer((host, PORT), Handler).serve_forever()

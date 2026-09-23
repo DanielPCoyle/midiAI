@@ -810,8 +810,33 @@ Web only, and on purpose: iOS hands React Native no paste event and no
 clipboard image without another dependency. In Expo Go the composer still
 takes typed paths.
 
+## Up next
+
+Send to a working agent and the prompt goes into its queue rather than into
+Claude Code: the send key turns into *add to queue*. The queue is held by
+`mapui` (`~/.midiai/queue.json`, `/queue`), which sends the top one each time
+the agent goes idle -- whichever agent the app is showing, or with the app
+closed. Until one goes it is still yours: **UP NEXT** under the composer opens
+the list, where a message is edited in place, moved up or down, played next,
+or removed.
+
+It holds back while a question is on screen or something is half-typed on the
+agent's input line, and waits `QUEUE_GAP_S` between sends, because herdr still
+reads idle for a moment after a submit. Claude Code's own queue -- messages
+typed at the keyboard while it was busy -- is a different thing, shown
+read-only: a pty cannot reach back into it. `python3 test_queue.py` is its
+gate.
+
 ## Notes
 
+- `/relaunch` starts `push_cc` with *mapui's* interpreter. Start mapui with
+  `.venv/bin/python`; start it with a bare `python3` and the relaunched
+  `push_cc` dies at `import mido` while mapui keeps answering as if all were
+  well. And its `pkill -f push_cc.py` matches any process whose command line
+  holds that string -- including the shell that asked for the relaunch.
+- The focus info the app gets carries the agent's `tid`. It once did not, and
+  nothing failed loudly: drafts shared one key, `/history` was never asked,
+  and the queue polled `terminal_id=undefined`.
 - A `\r` typed with `send-keys -l` does not submit. Claude Code takes it as a
   newline in the input, so a prompt from the app sat in the agent's box,
   typed and never sent, with nothing reporting an error. `term.py` sends each

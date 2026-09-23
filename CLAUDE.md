@@ -60,7 +60,8 @@ things in there look like bugs and are not:
   what says an agent is present; the session only enriches it.
 
 `python3 push_cc.py --selftest`, `python3 term.py`, `python3 ptybridge.py`,
-`node app/reflow_check.mjs` and `python3 smoke_tmux.py` are the gates.
+`node app/reflow_check.mjs`, `node app/check.js`, `python3 test_queue.py`
+and `python3 smoke_tmux.py` are the gates.
 
 **The last one is destructive.** It opens with `kill-server` because its first
 checks are about a cold machine, so running it closes every agent on the box

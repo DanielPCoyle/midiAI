@@ -160,6 +160,16 @@ export const promptAgent = (base, text, submit, terminal_id, replace) =>
     ...(terminal_id ? { terminal_id } : {}),
   });
 
+// The up-next queue, held by the server so it drains whichever agent you are
+// looking at. setQueue replaces the whole list: edit, reorder and remove are
+// all just a new list.
+export const getQueue = async (base, terminal_id) =>
+  (await getJSON(base, `/queue?terminal_id=${encodeURIComponent(terminal_id)}`)).items || [];
+export const addToQueue = async (base, terminal_id, text) =>
+  JSON.parse(await post(base, '/queue/add', { terminal_id, text })).items || [];
+export const setQueue = async (base, terminal_id, items) =>
+  JSON.parse(await post(base, '/queue', { terminal_id, items })).items || [];
+
 // Hold-to-talk. The mic is the machine running the agents, not the tablet:
 // Expo Go has no speech recognition to call, and the useful mic is the one by
 // the Push. stop returns the words rather than sending them -- editing them

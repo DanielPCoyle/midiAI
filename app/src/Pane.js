@@ -48,6 +48,9 @@ import {
   switchBranch,
   pasteImage,
   promptAgent,
+  getQueue,
+  addToQueue,
+  setQueue,
   reviewPr,
   runTests,
   sendKeys,
@@ -1080,7 +1083,23 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
   // edit in progress survives a scrape that comes back different.
   const [rec, setRec] = useState('');   // '' | 'on' | 'busy'
   const [shot, setShot] = useState(false);
-  const [armed, setArmed] = useState(false);
+  // Up next: prompts the server holds until this agent is free, then sends
+  // one at a time -- editable, reorderable and removable until the moment
+  // each one goes. Polled, because the server drains it on its own.
+  const [queue, setQ] = useState([]);
+  const [queueOpen, setQueueOpen] = useState(false);
+  useEffect(() => {
+    if (!info.tid) return undefined;   // a subagent has no pane to queue into
+    let live = true;
+    const pull = () => getQueue(base, info.tid).then((q) => live && setQ(q)).catch(() => {});
+    pull();
+    const timer = setInterval(pull, 2000);
+    return () => { live = false; clearInterval(timer); };
+  }, [base, info.tid]);
+  function changeQueue(next) {
+    setQ(next);
+    setQueue(base, info.tid, next).then(setQ).catch((e) => setErr(String((e && e.message) || e)));
+  }
   // What attachFile/attach have actually saved so far: the path is what the
   // agent reads (it's what lives in text, below), the url is the whole data
   // URL or local uri -- kept only so the thumbnail has something to draw,
@@ -1111,14 +1130,16 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
   const disabled = empty || sending;
 
   async function send(submit) {
-    setArmed(false);
     setSending(true);
     setErr('');
     try {
       const body = text.trim() ? text : ghost;
       const sent = body.trim();
-      await promptAgent(base, body, submit, info.tid, true);
-      onPromptSent && onPromptSent(sent);
+      if (busy) setQ(await addToQueue(base, info.tid, sent));
+      else {
+        await promptAgent(base, body, submit, info.tid, true);
+        onPromptSent && onPromptSent(sent);
+      }
       setText(''); // only on success -- a failed send keeps what you typed
       setAttachments([]); // their paths just left in that text
       onSent && onSent();
@@ -1129,19 +1150,6 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
     }
   }
 
-  // Sending into a working agent hands the text to Claude Code's own queue,
-  // and from there a pty cannot reach it again -- it is gone, uneditable,
-  // until it runs. So hold it here instead and keep it in the box, where it
-  // is still yours: armed, not sent. Whatever the text says when the agent
-  // goes idle is what goes, which is what "editable" has to mean.
-  useEffect(() => {
-    if (!armed || sending || info.status !== 'idle') return;
-    if (!text.trim()) {          // emptied while waiting: nothing to send
-      setArmed(false);
-      return;
-    }
-    send(true);
-  }, [armed, info.status, sending]);
 
   // An image cannot go down a pty, so what goes into the box is the path it
   // was saved to and the agent reads the file. Sent from a ref-free closure so
@@ -1371,26 +1379,113 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
           />
         </PushButton>
         <PushButton
-          accessibilityLabel={armed ? 'Cancel queue' : busy ? 'Queue' : 'Send'}
-          colour={armed ? '#e0a03c' : C.accent}
-          lit={armed || !disabled}
-          disabled={sending || (!armed && empty)}
-          onPress={() => (armed ? setArmed(false) : busy ? setArmed(true) : send(true))}
+          accessibilityLabel={busy ? 'Add to queue' : 'Send'}
+          colour={busy ? '#e0a03c' : C.accent}
+          lit={!disabled}
+          disabled={disabled}
+          onPress={() => send(true)}
           style={styles.composerBtn}>
           <MaterialIcons
-            name={armed ? 'close' : busy ? 'schedule' : 'send'}
+            name={busy ? 'playlist-add' : 'send'}
             size={20}
-            color={armed || !disabled ? C.text : C.dim}
+            color={!disabled ? C.text : C.dim}
           />
         </PushButton>
       </View>
-      {armed && (
-        <Text style={styles.queued}>
-          Queued here, not handed over — it goes when {info.name || 'the agent'} is
-          idle, and it sends whatever this box says at that moment.
-        </Text>
+      {queue.length > 0 && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`open queue, ${queue.length} waiting`}
+          onPress={() => setQueueOpen(true)}
+          style={styles.upNext}>
+          <MaterialIcons name="queue-music" size={16} color="#e0a03c" />
+          <Text style={styles.queued} numberOfLines={1}>
+            UP NEXT · {queue.length} — {queue[0].text}
+          </Text>
+        </Pressable>
       )}
+      <QueueSheet
+        visible={queueOpen}
+        name={info.name}
+        queue={queue}
+        onChange={changeQueue}
+        onClose={() => setQueueOpen(false)}
+      />
     </View>
+  );
+}
+
+// The queue, Spotify-style: what goes next is on top. Tap a message to edit
+// it in place (saved when you leave the box), arrows to move it, the top
+// arrow to play it next, x to drop it.
+// ponytail: arrows, not drag -- a drag handle needs a gesture library or a
+// PanResponder; add one if reordering long queues gets tedious.
+function QueueSheet({ visible, name, queue, onChange, onClose }) {
+  const [editing, setEditing] = useState({});   // id -> text being typed
+  const move = (i, to) => {
+    const next = [...queue];
+    const [item] = next.splice(i, 1);
+    next.splice(Math.max(0, Math.min(to, next.length)), 0, item);
+    onChange(next);
+  };
+  const commit = (id) => {
+    const text = editing[id];
+    setEditing(({ [id]: _, ...rest }) => rest);
+    if (text === undefined) return;
+    onChange(text.trim()
+      ? queue.map((q) => (q.id === id ? { ...q, text } : q))
+      : queue.filter((q) => q.id !== id));   // emptied is removed
+  };
+  const key = (label, icon, onPress, off) => (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={off}
+      onPress={onPress}
+      style={[styles.queueKey, off && styles.queueKeyOff]}>
+      <MaterialIcons name={icon} size={18} color={C.dim} />
+    </Pressable>
+  );
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalBack} onPress={onClose}>
+        <Pressable style={styles.receipt} onPress={() => {}}>
+          <View style={styles.title}>
+            <Text style={styles.receiptTitle}>Up next for {name || 'this agent'}</Text>
+            <View style={styles.spacer} />
+            {queue.length > 0 && (
+              <Text accessibilityRole="button" onPress={() => onChange([])} style={styles.receiptClose}>clear</Text>
+            )}
+            <Text accessibilityRole="button" onPress={onClose} style={styles.receiptClose}>close</Text>
+          </View>
+          {queue.length === 0 && (
+            <Text style={styles.receiptLine}>Nothing queued — everything has gone.</Text>
+          )}
+          <ScrollView contentContainerStyle={styles.receiptLines} keyboardShouldPersistTaps="handled">
+            {queue.map((q, i) => (
+              <View key={q.id} style={styles.queueRow}>
+                <Text style={styles.queueNum}>{i + 1}</Text>
+                <TextInput
+                  style={styles.queueText}
+                  value={editing[q.id] ?? q.text}
+                  onChangeText={(t) => setEditing((e) => ({ ...e, [q.id]: t }))}
+                  onBlur={() => commit(q.id)}
+                  multiline
+                  accessibilityLabel={`queued message ${i + 1}`}
+                />
+                {key('play next', 'vertical-align-top', () => move(i, 0), i === 0)}
+                {key('move up', 'arrow-upward', () => move(i, i - 1), i === 0)}
+                {key('move down', 'arrow-downward', () => move(i, i + 1), i === queue.length - 1)}
+                {key('remove', 'close', () => onChange(queue.filter((x) => x.id !== q.id)))}
+              </View>
+            ))}
+          </ScrollView>
+          <Text style={styles.queued}>
+            Each goes when the agent is idle, top first — and stays editable until then.
+          </Text>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -4090,6 +4185,12 @@ const styles = StyleSheet.create({
   },
   queued: { color: '#e0a03c', fontSize: 11, lineHeight: 16 },
   queuedLine: { color: '#e0a03c', fontSize: 13, lineHeight: 19 },
+  upNext: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
+  queueRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, borderBottomWidth: 1, borderBottomColor: C.line, paddingVertical: 6 },
+  queueNum: { color: C.faint, fontSize: 12, width: 18, paddingTop: 8 },
+  queueText: { flex: 1, color: C.text, fontSize: 13, lineHeight: 19, padding: 6, borderRadius: S.radius, backgroundColor: C.bg },
+  queueKey: { padding: 6 },
+  queueKeyOff: { opacity: 0.3 },
   composerRow: { flexDirection: 'row', gap: 8 },
   composerBtn: { flex: 1, paddingHorizontal: 16 },
   rows: { gap: 5, paddingBottom: 8 },
