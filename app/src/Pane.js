@@ -402,6 +402,12 @@ function Focus({
   const chatRef = useRef(null);
   const atBottom = useRef(true);
   const askY = useRef({});      // turn index -> y, for the pinned prompt's jump
+  // Which prompt the pin shows: null follows the latest; a number is the
+  // prompt whose part of the conversation is at the top of the scroll --
+  // a sticky section header, set only when that changes, not per frame.
+  const [askAt, setAskAt] = useState(null);
+  // positions are by turn index, so another conversation starts them over
+  useEffect(() => { askY.current = {}; setAskAt(null); }, [info?.tid, info?.parent, info?.sub]);
   const compactingNow = (info?.lines || []).some((l) => /Compacting conversation/.test(l));
   useEffect(() => {
     if (compactingNow) setCompactAsked(false);
@@ -443,7 +449,21 @@ function Focus({
   const chat = all.slice(hidden);
   // what you last asked, pinned above the conversation (index into `all`)
   const lastAskAt = all.map((t) => t.role).lastIndexOf('user');
-  const lastAsk = lastAskAt >= 0 ? { i: lastAskAt, text: all[lastAskAt].text } : null;
+  const pinAt = askAt != null && all[askAt]?.role === 'user' ? askAt : lastAskAt;
+  const lastAsk = pinAt >= 0 ? { i: pinAt, text: all[pinAt].text } : null;
+  // the prompt governing a scroll offset: the last one that starts at or
+  // above the top edge, or the first prompt when you are above all of them
+  const askFor = (top) => {
+    let best = null;
+    for (const [i, y] of Object.entries(askY.current)) {
+      const n = Number(i);
+      if (all[n]?.role !== 'user' || n < hidden) continue;
+      if (y <= top + 12 && (best == null || n > best)) best = n;
+    }
+    if (best != null) return best;
+    const first = all.findIndex((t, n) => n >= hidden && t.role === 'user');
+    return first >= 0 ? first : null;
+  };
   const contextPct = Math.round(Math.max(0, Math.min(1, Number(info.context || 0))) * 100);
   // The rail card and these selectors read the same polled seat record. The
   // focus payload still provides a fallback for subagents and older servers.
@@ -690,6 +710,10 @@ function Focus({
           onScroll={(e) => {
             const { layoutMeasurement: box, contentOffset: at, contentSize: size } = e.nativeEvent;
             atBottom.current = at.y + box.height >= size.height - 48;
+            // following along at the foot: the latest prompt. Scrolled up:
+            // whichever one the top of the view is inside.
+            const next = atBottom.current ? null : askFor(at.y);
+            if (next !== askAt) setAskAt(next);
           }}
           onContentSizeChange={() => atBottom.current && chatRef.current?.scrollToEnd({ animated: false })}>
           {hidden > 0 && (
@@ -1131,8 +1155,9 @@ function Markdown({ text }) {
 // ponytail: memory only -- a reload still loses it; localStorage if that bites
 const drafts = new Map();
 
-// What you last asked, held above the conversation so the answer scrolling
-// past it never loses the question. A short prompt shows as typed; a long
+// The prompt the conversation in view answers -- the latest while you follow
+// along at the foot, whichever one the top of the view is inside once you
+// scroll up -- held above it so the question never scrolls away. A short prompt shows as typed; a long
 // one gets one line from the server (Haiku, cached there and here), and
 // shows its own opening words until that line arrives. Tap to jump to it.
 const askLines = new Map();     // prompt text -> one-line summary
@@ -1146,10 +1171,14 @@ function PinnedPrompt({ base, text, onPress }) {
     if (known) { setLine(known); return undefined; }
     setLine('');
     if (flat.length <= 160) { askLines.set(flat, flat); setLine(flat); return undefined; }
-    summarizePrompt(base, text)
-      .then((got) => { if (!got) return; askLines.set(flat, got); if (live) setLine(got); })
-      .catch(() => {});
-    return () => { live = false; };
+    // scrolling through history passes many prompts: only one that stays
+    // pinned for a moment is worth a model call
+    const wait = setTimeout(() => {
+      summarizePrompt(base, text)
+        .then((got) => { if (!got) return; askLines.set(flat, got); if (live) setLine(got); })
+        .catch(() => {});
+    }, 900);
+    return () => { live = false; clearTimeout(wait); };
   }, [base, flat]);   // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Pressable

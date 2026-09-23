@@ -824,13 +824,16 @@ takes typed paths.
 
 ## What you asked, pinned
 
-The pretty conversation keeps your last prompt pinned above it, **YOU
-ASKED**, so an answer scrolling past never loses its question; tap it to
-jump back to the prompt. Up to 160 characters it shows as typed. Past that
+The pretty conversation keeps a prompt pinned above it, **YOU ASKED**, like
+a sticky section header: at the foot it is your latest prompt, and scrolled
+up it is whichever prompt the top of the view falls inside -- the question
+the answer on screen belongs to. Tap it to jump to that prompt. Up to 160 characters it shows as typed. Past that
 it is one line from Haiku (`/summarize-prompt`, the same isolated `claude
 -p` the memory summaries use), cached by the prompt's text on both sides.
 The first call can take ten seconds or more, so until it lands the pin
-shows the prompt's own opening words. `test_summarize_prompt.py` is its
+shows the prompt's own opening words, and a prompt is only summarised once
+it has stayed pinned for about a second -- scrolling past twenty long
+prompts is not twenty model calls. `test_summarize_prompt.py` is its
 gate.
 
 ## Subagents
