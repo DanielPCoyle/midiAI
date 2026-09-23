@@ -2112,7 +2112,10 @@ def question_above(lines, first):
             continue
         if text.startswith(("⏺", "✻", "❯")):
             break
-        out.append(text)
+        # the widget quotes its question behind a bar: "│ Commit this?"
+        text = text.lstrip("│").strip()
+        if text:
+            out.append(text)
         if len(out) == 6:
             break
     return " ".join(reversed(out))
@@ -3945,8 +3948,9 @@ bugcast: node /x/index.mjs - \u2714 Connected
     assert [o[1] for o in seen["opts"]] == ["Yes", "Hold"], "a real one still reads"
     assert seen["sel"] == 0, "and the caret says where the walk starts"
     assert seen["question"] == "Commit this?", "and what it is asking"
-    asked = ["⏺ Done.", "", " ☐ Commit", "", "Commit the Work view, and add",
-             "commit actions?", "", "❯ 1. Commit as is", "     Enough for now",
+    # the shape of a real AskUserQuestion widget, captured from a pane
+    asked = ["⏺ Done.", "─" * 20, " ☐ Commit", "", "│ Commit the Work view, and add",
+             "│ commit actions?", "", "❯ 1. Commit as is", "     Enough for now",
              "  2. Hold", "────", "  3. Chat about this"]
     seen = read_pane(asked)
     assert seen["question"] == "Commit the Work view, and add commit actions?", \
