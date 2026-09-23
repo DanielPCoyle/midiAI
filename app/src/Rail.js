@@ -413,6 +413,23 @@ export default function Rail({
       {/* Fixed chrome: search, the scope filter and adding a project. Above
           the body scroll, not merely first inside it -- a control that slides
           away the longer the tree gets is a control you stop finding. */}
+      {/* The footer's MCPs row is a toggle, but it sits at the far end of
+          the rail from where you are reading -- an open panel wants its own
+          way out, top right, where a close key is looked for. */}
+      {tab === 'mcps' && (
+        <View style={styles.closeRow}>
+          <Text style={styles.closeTitle}>MCPS</Text>
+          <View style={styles.spacer} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="close the MCPs panel"
+            hitSlop={8}
+            onPress={() => setTab('agents')}
+            style={styles.closeKey}>
+            <Icon name="close" size={16} color={C.dim} />
+          </Pressable>
+        </View>
+      )}
       <View style={styles.headRow}>
         <Pressable
           accessibilityRole="button"
@@ -980,6 +997,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   headRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  closeRow: { flexDirection: 'row', alignItems: 'center' },
+  closeTitle: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
+  closeKey: { padding: 4, borderRadius: 6 },
   spacer: { flex: 1 },
   filter: { color: C.faint, fontSize: 11, paddingHorizontal: 2 },
   filterOn: { color: C.accentText },
