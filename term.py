@@ -12,6 +12,8 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
 
 PANE_FORMAT = ("#{pane_id}\t#{pane_pid}\t#{pane_current_path}\t"
                "#{pane_active}\t#{window_active}\t#{session_attached}\t"
@@ -161,6 +163,26 @@ def _match_agents(rows, by_pid, table=None):
     return agents
 
 
+# `claude agents --json` is a Node CLI: ~0.8s a run. push_cc lists agents
+# every 0.5s and mapui on most requests, so uncached it was never NOT
+# running -- a sample every 0.3s found one live ten times out of ten -- and
+# the machine it loaded is the one serving the app: a page load's requests
+# queued behind it, /projects took 11s. One run serves everyone for
+# CLAUDE_AGENTS_TTL, and callers that arrive mid-run wait for it rather
+# than starting their own.
+CLAUDE_AGENTS_TTL = 1.5
+_claude_agents_cache = {"at": -1e9, "out": "[]"}
+_claude_agents_lock = threading.Lock()
+
+
+def _claude_agents():
+    with _claude_agents_lock:
+        if time.monotonic() - _claude_agents_cache["at"] >= CLAUDE_AGENTS_TTL:
+            out = _run(["claude", "agents", "--json"])
+            _claude_agents_cache.update(at=time.monotonic(), out=out.stdout or "[]")
+        return _claude_agents_cache["out"]
+
+
 def _agent_list():
     panes = _run(["tmux", "list-panes", "-a", "-F", PANE_FORMAT])
     if panes.returncode != 0:
@@ -169,9 +191,8 @@ def _agent_list():
         # Reporting it as an error puts two lines a second into push.log
         # forever, and the surface would read the same either way.
         return _ok({"agents": [], "type": "agent_list"})
-    claude_out = _run(["claude", "agents", "--json"])
     try:
-        claude_agents = json.loads(claude_out.stdout or "[]")
+        claude_agents = json.loads(_claude_agents())
     except json.JSONDecodeError:
         claude_agents = []
     by_pid = {a["pid"]: a for a in claude_agents if "pid" in a}
@@ -693,6 +714,26 @@ if __name__ == "__main__":
         r = json.loads(dispatch(("worktree", "switch", "--path", "/no/such/dir",
                                  "--branch", "main")))
         assert r.get("error", {}).get("code") == "worktree_missing", r
+
+        # `claude agents --json` runs once per CLAUDE_AGENTS_TTL, however many
+        # callers ask inside it -- uncached it never stopped running
+        real_run, runs = _run, []
+
+        def counting_run(cmd, timeout=10):
+            runs.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, '[{"pid": 1}]', "")
+
+        _run = counting_run
+        try:
+            _claude_agents_cache["at"] = -1e9
+            assert _claude_agents() == _claude_agents() == '[{"pid": 1}]'
+            assert len(runs) == 1, runs
+            _claude_agents_cache["at"] = -1e9       # expired: asked again
+            _claude_agents()
+            assert len(runs) == 2, runs
+        finally:
+            _run = real_run
+            _claude_agents_cache["at"] = -1e9
 
         print("term.py demo: ok")
 
