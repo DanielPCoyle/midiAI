@@ -1885,7 +1885,11 @@ function Overview({ base, cwd }) {
         style={styles.find}
       />
       <ScrollView contentContainerStyle={styles.rows} style={narrow ? styles.rowsNarrow : undefined}>
-        {sections.filter((p) => shown.some((it) => it.phase === p.key)).map((p) => (
+        {/* every phase draws, empty ones too, so each has its own ＋ -- a search
+            narrows to the phases with a match, as before */}
+        {sections
+          .filter((p) => (!phase || p.key === phase) && (!needle || shown.some((it) => it.phase === p.key)))
+          .map((p) => (
           <View key={p.key} style={styles.grPhase}>
             <View style={styles.grPhaseHead}>
               <Text style={styles.grPhaseName}>{p.name}</Text>
@@ -1963,46 +1967,51 @@ function Overview({ base, cwd }) {
                 </View>
               );
             })}
+            {/* where a new one is added is where it will live: the form opens
+                under this phase with the phase already chosen, and stays here
+                (form.at) even if you move it to another phase in the form */}
+            {form?.isNew && form.at === p.key ? (
+              <GuardrailForm
+                form={form}
+                onForm={setForm}
+                onSave={commit}
+                onCancel={() => setForm(null)}
+              />
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`add a guardrail to ${p.name}`}
+                onPress={() => setForm({ id: '', phase: p.key, at: p.key, title: '', implemented: '', validate: '', phases, isNew: true })}
+                style={styles.grAdd}>
+                <Text style={styles.grAddText}>＋ add a guardrail to {p.name.toLowerCase()}</Text>
+              </Pressable>
+            )}
           </View>
         ))}
-        {shown.length === 0 && (
-          <Empty what={needle ? `nothing matches "${q.trim()}"` : 'no guardrails here'} />
+        {!!needle && shown.length === 0 && (
+          <Empty what={`nothing matches "${q.trim()}"`} />
         )}
-        {form?.isNew ? (
-          <GuardrailForm
-            form={form}
-            onForm={setForm}
-            onSave={commit}
-            onCancel={() => setForm(null)}
+        <View style={styles.manageRow}>
+          {hidden.size > 0 && (
+            <PushButton
+              label={`restore ${hidden.size} struck out`}
+              onPress={() => put({ ...state, hidden: [] })}
+              style={styles.manageBtn}
+            />
+          )}
+          <PushButton
+            label={tabs ? 'hide phases' : 'phases'}
+            lit={tabs}
+            onPress={() => setTabs((t) => !t)}
+            style={styles.manageBtn}
           />
-        ) : (
-          <View style={styles.manageRow}>
-            <PushButton
-              label="＋ guardrail"
-              onPress={() => setForm({ id: '', phase: phase || phases[0]?.key || 'cross', title: '', implemented: '', validate: '', phases, isNew: true })}
-              style={styles.manageBtn}
-            />
-            {hidden.size > 0 && (
-              <PushButton
-                label={`restore ${hidden.size} struck out`}
-                onPress={() => put({ ...state, hidden: [] })}
-                style={styles.manageBtn}
-              />
-            )}
-            <PushButton
-              label={tabs ? 'hide phases' : 'phases'}
-              lit={tabs}
-              onPress={() => setTabs((t) => !t)}
-              style={styles.manageBtn}
-            />
-            <PushButton
-              label={shelf ? 'hide templates' : 'templates'}
-              lit={!!shelf}
-              onPress={() => (shelf ? setShelf(null) : shelve())}
-              style={styles.manageBtn}
-            />
-          </View>
-        )}
+          <PushButton
+            label={shelf ? 'hide templates' : 'templates'}
+            lit={!!shelf}
+            onPress={() => (shelf ? setShelf(null) : shelve())}
+            style={styles.manageBtn}
+          />
+        </View>
         {tabs && (
           <PhasesPanel
             phases={phases}
@@ -3919,6 +3928,8 @@ const styles = StyleSheet.create({
   grFill: { height: 3, backgroundColor: '#3cd05a' },
   grPhase: { gap: 5, paddingTop: 6 },
   grPhaseHead: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingBottom: 2 },
+  grAdd: { borderWidth: 1, borderStyle: 'dashed', borderColor: C.edge, borderRadius: S.radius, paddingVertical: 9, paddingHorizontal: 12 },
+  grAddText: { color: C.faint, fontSize: 12 },
   grPhaseName: { color: C.text, fontSize: 13, fontWeight: '700', letterSpacing: 0.4 },
   grPhaseWhat: { color: C.faint, fontSize: 11, fontStyle: 'italic' },
   grItem: { borderWidth: 1, borderColor: C.line, borderRadius: S.radius, backgroundColor: C.panel, overflow: 'hidden' },

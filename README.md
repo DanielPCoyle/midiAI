@@ -849,6 +849,11 @@ gate.
   of each in the rail and the seat tabs. `term._match_agents` keeps one per
   pane. Anything else that walks `list-panes -a` and counts what it finds
   has to do the same.
+- `{text && <View/>}` with an empty string renders the `''` itself, and
+  React Native will not have a bare string inside a View. The page looks
+  right; the console fills with `Unexpected text node: . A text node cannot
+  be a child of a <View>` on every render (the `.` is the message's own full
+  stop after nothing). Write `{!!text && ...}`, as the rest of the app does.
 - The view (focus, guardrails, git, usage) is push_cc's, not the page's. A
   test browser that clicks a top tab moves the Push and every other open
   app with it -- so a check that visits GIT should switch back to focus
