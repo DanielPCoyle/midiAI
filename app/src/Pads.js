@@ -49,6 +49,7 @@ export default function Pads({
   queue = [],
   onQueueChange,
   queueErr,
+  queueCtl,
   base,
   cwd,
 }) {
@@ -279,7 +280,7 @@ export default function Pads({
         />
       )}
       {at === 'skills' && <Scoped rows={skills} labels={labels} q={q} kind="skills" masterScope={masterScope} onEntry={onEntry} />}
-      {at === 'queue' && <QueuePanel queue={queue} onChange={onQueueChange} err={queueErr} />}
+      {at === 'queue' && <QueuePanel queue={queue} onChange={onQueueChange} err={queueErr} ctl={queueCtl} />}
       {at === 'hooks' && <Scoped rows={hooks} labels={labels} q={q} kind="hooks" masterScope={masterScope} onEntry={onEntry} />}
       {at === 'memory' && <MemoryPanel base={base} cwd={cwd} />}
     </View>

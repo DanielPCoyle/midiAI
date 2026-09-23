@@ -207,8 +207,14 @@ export const setAgentModel = async (base, type, cwd, model) =>
 // The up-next queue, held by the server so it drains whichever agent you are
 // looking at. setQueue replaces the whole list: edit, reorder and remove are
 // all just a new list.
-export const getQueue = async (base, terminal_id) =>
-  (await getJSON(base, `/queue?terminal_id=${encodeURIComponent(terminal_id)}`)).items || [];
+// { items, playing, next }: paused is the server's default, so a queue holds
+// until play (drain when free) or send next (the head, once)
+export const getQueueState = (base, terminal_id) =>
+  getJSON(base, `/queue?terminal_id=${encodeURIComponent(terminal_id)}`);
+export const playQueue = async (base, terminal_id, playing) =>
+  JSON.parse(await post(base, '/queue/play', { terminal_id, playing }));
+export const sendQueueNext = async (base, terminal_id) =>
+  JSON.parse(await post(base, '/queue/next', { terminal_id }));
 export const addToQueue = async (base, terminal_id, text) =>
   JSON.parse(await post(base, '/queue/add', { terminal_id, text })).items || [];
 export const setQueue = async (base, terminal_id, items) =>

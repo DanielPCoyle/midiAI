@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { getQueue, setQueue } from './api';
+import { getQueueState, playQueue, sendQueueNext, setQueue } from './api';
 import { C, S } from './theme';
 
 // An agent's up-next queue, as the server holds it. Polled, because the
@@ -12,11 +12,17 @@ import { C, S } from './theme';
 export function useQueue(base, tid) {
   const [queue, setQ] = useState([]);
   const [err, setErr] = useState('');
+  const [flow, setFlow] = useState({ playing: false, next: false });
+  const take = (d) => {
+    setQ(d.items || []);
+    setFlow({ playing: !!d.playing, next: !!d.next });
+  };
   useEffect(() => {
     setQ([]);
+    setFlow({ playing: false, next: false });
     if (!base || !tid) return undefined;   // a subagent has no pane to queue into
     let live = true;
-    const pull = () => getQueue(base, tid).then((q) => live && setQ(q)).catch(() => {});
+    const pull = () => getQueueState(base, tid).then((d) => live && take(d)).catch(() => {});
     pull();
     const timer = setInterval(pull, 2000);
     return () => { live = false; clearInterval(timer); };
@@ -26,7 +32,19 @@ export function useQueue(base, tid) {
     setErr('');
     setQueue(base, tid, next).then(setQ).catch((e) => setErr(String((e && e.message) || e)));
   };
-  return [queue, change, setQ, err];
+  // paused by default: nothing leaves until play, or send next for one
+  const ctl = {
+    ...flow,
+    setPlaying: (on) => {
+      setFlow((f) => ({ ...f, playing: on }));
+      playQueue(base, tid, on).then(take).catch((e) => setErr(String((e && e.message) || e)));
+    },
+    sendNext: () => {
+      setFlow((f) => ({ ...f, next: true }));
+      sendQueueNext(base, tid).then(take).catch((e) => setErr(String((e && e.message) || e)));
+    },
+  };
+  return [queue, change, setQ, err, ctl];
 }
 
 // A grip that reports a vertical drag. PanResponder, so no gesture library;
@@ -55,7 +73,7 @@ export function DragHandle({ onStart, onMove, onEnd, label = 'drag to reorder' }
 // The queue, Spotify-style: what goes next is on top. Drag a row by its grip
 // to move it, or use the arrows (the top one plays it next); tap a message
 // to edit it in place (saved when you leave the box); x drops it.
-export function QueuePanel({ queue, onChange, err }) {
+export function QueuePanel({ queue, onChange, err, ctl }) {
   const [editing, setEditing] = useState({});   // id -> text being typed
   const [draft, setDraft] = useState('');
   // ponytail: the id is made here and the whole list is sent, like every other
@@ -123,10 +141,36 @@ export function QueuePanel({ queue, onChange, err }) {
         </Text>
       ) : (
         <View style={styles.headRow}>
-          <Text style={styles.note}>top goes first, when the agent is idle</Text>
+          <Text style={styles.note}>
+            {!ctl ? 'top goes first, when the agent is idle'
+              : ctl.playing ? 'playing — top goes when the agent is free'
+              : ctl.next ? 'sending the top one when the agent is free'
+              : 'paused — nothing sends until you play or send next'}
+          </Text>
           <Text accessibilityRole="button" onPress={() => onChange([])} style={styles.clear}>
             clear
           </Text>
+        </View>
+      )}
+      {!!ctl && queue.length > 0 && (
+        <View style={styles.flowRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={ctl.playing ? 'pause the queue' : 'play the queue'}
+            onPress={() => ctl.setPlaying(!ctl.playing)}
+            style={[styles.flowBtn, ctl.playing && styles.flowBtnOn]}>
+            <MaterialIcons name={ctl.playing ? 'pause' : 'play-arrow'} size={16} color={C.accentText} />
+            <Text style={styles.flowText}>{ctl.playing ? 'pause' : 'play'}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="send the next queued message"
+            disabled={ctl.playing || ctl.next}
+            onPress={ctl.sendNext}
+            style={[styles.flowBtn, (ctl.playing || ctl.next) && styles.keyOff]}>
+            <MaterialIcons name="skip-next" size={16} color={C.accentText} />
+            <Text style={styles.flowText}>send next</Text>
+          </Pressable>
         </View>
       )}
       {!!err && <Text style={styles.err}>{err}</Text>}
@@ -220,6 +264,10 @@ const styles = StyleSheet.create({
   key: { padding: 4 },
   keyOff: { opacity: 0.3 },
   addRow: { gap: 6, marginTop: 4 },
+  flowRow: { flexDirection: 'row', gap: 8 },
+  flowBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 5, paddingHorizontal: 10, borderRadius: S.radius, borderWidth: 1, borderColor: C.line },
+  flowBtnOn: { borderColor: C.accentText },
+  flowText: { color: C.accentText, fontSize: 12 },
   addInput: { borderWidth: 1, borderColor: C.line, minHeight: 38 },
   addBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 7, borderRadius: S.radius, borderWidth: 1, borderColor: C.accentText },
   addLabel: { color: C.accentText, fontSize: 12, fontWeight: '600' },

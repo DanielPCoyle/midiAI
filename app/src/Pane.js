@@ -1493,7 +1493,7 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue, 
   // Up next: prompts the server holds until this agent is free, then sends
   // one at a time -- editable, reorderable and removable until the moment
   // each one goes. Polled, because the server drains it on its own.
-  const [queue, , setQ] = useQueue(base, info.tid);
+  const [queue, , setQ, , queueCtl] = useQueue(base, info.tid);
   // The / menu: open while the box holds a slash and a command name being
   // typed, shut by Esc until the text changes.
   const allSlash = useMemo(() => slashCommands(skills), [skills]);
@@ -1832,7 +1832,7 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue, 
           style={styles.upNext}>
           <MaterialIcons name="queue-music" size={16} color="#e0a03c" />
           <Text style={styles.queued} numberOfLines={1}>
-            UP NEXT · {queue.length} — {queue[0].text}
+            UP NEXT · {queue.length}{queueCtl && !queueCtl.playing ? ' · paused' : ''} — {queue[0].text}
           </Text>
         </Pressable>
       )}

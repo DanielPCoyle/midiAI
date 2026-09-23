@@ -341,7 +341,7 @@ export default function App() {
   // something changed.
   const hereCwd = here?.cwd || '';
   // the current agent's up-next queue, for the right-hand column's queue tab
-  const [queue, changeQueue, , queueErr] = useQueue(base, here?.tid);
+  const [queue, changeQueue, , queueErr, queueCtl] = useQueue(base, here?.tid);
   useEffect(() => {
     let live = true;
     listCatalog(base, hereCwd)
@@ -901,6 +901,7 @@ export default function App() {
                 queue={queue}
                 onQueueChange={changeQueue}
                 queueErr={queueErr}
+                queueCtl={queueCtl}
               />
               </ScrollView>
             ) : (
@@ -994,6 +995,7 @@ export default function App() {
                 queue={queue}
                 onQueueChange={changeQueue}
                 queueErr={queueErr}
+                queueCtl={queueCtl}
               />
             ) : (
               <View style={styles.strip}>

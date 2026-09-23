@@ -1026,6 +1026,15 @@ edited in place, played next, or removed (the arrows do the same moves
 without a drag). A sidebar and not a modal, so the conversation stays
 readable while you rearrange what comes after it.
 
+A queue is **paused** until you say otherwise. Nothing leaves it until
+**play** (drain the top one each time the agent is free) or **send next**
+(release just the top one, once, when the agent is next free). Clear,
+compact and a saved prompt's **run** all add to it rather than typing into
+the agent, so none of them lands mid-turn or goes out unread. Play is held in
+mapui's memory: a restart pauses every queue again, which is the safe
+direction. Emptying a queue cancels a pending send next, so the next thing
+you add is never sent unseen.
+
 It holds back while a question is on screen or something is half-typed on the
 agent's input line, and waits `QUEUE_GAP_S` between sends, because herdr still
 reads idle for a moment after a submit. Claude Code's own queue -- messages

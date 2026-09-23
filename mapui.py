@@ -247,6 +247,12 @@ QUEUE_TICK_S = 2
 QUEUE_GAP_S = 6
 _queue_lock = threading.Lock()
 _queue_last = {}      # tid -> when we last sent into it
+# Paused is the default: a queue holds everything until you press play (drain
+# whenever the agent is free) or send next (release just the head, once).
+# ponytail: memory-only, so a restart pauses every queue again -- the safe
+# direction, and the app shows it; persist it if that ever surprises anyone.
+_queue_playing = set()   # tids whose queue drains on its own
+_queue_once = set()      # tids allowed to send their head one time
 _queue_gone = set()   # ids already delivered, so a stale client list can't
                       # put one back
 
@@ -279,6 +285,10 @@ def clean_queue(items):
     return out
 
 
+def queue_state(tid, items):
+    return {"items": items, "playing": tid in _queue_playing, "next": tid in _queue_once}
+
+
 def queue_tick():
     """Send the head of each queue whose agent is free to take it."""
     with _queue_lock:
@@ -287,6 +297,8 @@ def queue_tick():
         return
     live = {a.get("terminal_id"): a for a in push_cc.agents()}
     for tid, head in heads.items():
+        if tid not in _queue_playing and tid not in _queue_once:
+            continue          # paused: it waits for play or send next
         agent = live.get(tid)
         if (not agent or agent.get("agent_status") != "idle"
                 or time.time() - _queue_last.get(tid, 0) < QUEUE_GAP_S):
@@ -298,6 +310,7 @@ def queue_tick():
             continue
         push_cc.herdr("agent", "send", tid, head["text"] + "\r")
         _queue_last[tid] = time.time()
+        _queue_once.discard(tid)
         with _queue_lock:
             _queue_gone.add(head["id"])
             q = load_queue()
@@ -1693,7 +1706,7 @@ class Handler(BaseHTTPRequestHandler):
             tid = (urllib.parse.parse_qs(query).get("terminal_id") or [""])[0]
             with _queue_lock:
                 items = load_queue().get(tid, [])
-            self._send(200, json.dumps({"items": items}), "application/json")
+            self._send(200, json.dumps(queue_state(tid, items)), "application/json")
         elif self.path == "/mcp/health" or self.path.startswith("/mcp/health?"):
             return self._mcp_health()
         elif self.path == "/mcps" or self.path.startswith("/mcps?"):
@@ -1770,6 +1783,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._keys()
         if self.path == "/prompt":
             return self._prompt()
+        if self.path in ("/queue/play", "/queue/next"):
+            return self._queue_control()
         if self.path in ("/queue", "/queue/add"):
             return self._queue_post()
         if self.path == "/summarize-prompt":
@@ -2525,7 +2540,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, "bad request", "text/plain")
             q[tid] = clean_queue(items)
             save_queue(q)
+        if not q[tid]:
+            # a "send next" for a queue since emptied must not fire whatever
+            # is added later -- that would be sending something unseen
+            _queue_once.discard(tid)
         self._send(200, json.dumps({"items": q[tid]}), "application/json")
+
+    def _queue_control(self):
+        """/queue/play {terminal_id, playing} turns draining on or off;
+        /queue/next {terminal_id} lets the head go once, when the agent is
+        next free -- the same checks as playing, just for one item."""
+        body = self._read_json_body()
+        tid = str((body or {}).get("terminal_id") or "")
+        if not tid:
+            return self._send(400, "bad request", "text/plain")
+        if self.path == "/queue/play":
+            (_queue_playing.add if body.get("playing") else _queue_playing.discard)(tid)
+        else:
+            _queue_once.add(tid)
+        with _queue_lock:
+            items = load_queue().get(tid, [])
+        self._send(200, json.dumps(queue_state(tid, items)), "application/json")
 
     def _read_json_body(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))

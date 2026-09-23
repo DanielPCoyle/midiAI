@@ -15,6 +15,25 @@ mapui.save_queue({"t1": mapui.clean_queue([{"id": "a", "text": "one"},
                                            {"id": "b", "text": "two"},
                                            {"id": "c", "text": "  "}])})
 assert [i["id"] for i in mapui.load_queue()["t1"]] == ["a", "b"], "blank dropped"
+status["s"] = "idle"
+mapui.queue_tick()
+assert sent == [], "paused by default: an idle agent still gets nothing"
+mapui._queue_once.add("t1")
+status["s"] = "working"
+mapui.queue_tick()
+assert sent == [] and "t1" in mapui._queue_once, "send next waits for a free agent"
+status["s"] = "idle"
+mapui.queue_tick()
+assert sent == ["one\r"] and "t1" not in mapui._queue_once, "send next releases one"
+mapui._queue_last["t1"] = 0
+mapui.queue_tick()
+assert sent == ["one\r"], "and only one"
+sent.clear()
+mapui._queue_gone.discard("a")
+mapui.save_queue({"t1": mapui.clean_queue([{"id": "a", "text": "one"},
+                                           {"id": "b", "text": "two"}])})
+mapui._queue_playing.add("t1")
+status["s"] = "working"
 mapui.queue_tick()
 assert sent == [], "a busy agent gets nothing"
 status["s"] = "idle"
