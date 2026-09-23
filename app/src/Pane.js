@@ -33,6 +33,7 @@ import {
   getTests,
   getWork,
   getWorkDiff,
+  getHistory,
   getWorkflow,
   listBranches,
   listGoverns,
@@ -339,6 +340,42 @@ function Focus({
   // Tapped compact, and the pane has not said "Compacting" yet. Bridges the
   // second or two before the scrape shows it; the timeout is only a backstop.
   const [compactAsked, setCompactAsked] = useState(false);
+  // The whole conversation, from the transcript. The scrape is one screen --
+  // Claude Code draws on the alternate screen, so there is no scrollback to
+  // ask for -- and the pretty view used to forget whatever had scrolled off.
+  // Append-only, like the log it comes from; a new session starts it over.
+  const [hist, setHist] = useState({ tid: null, session: '', turns: [] });
+  const [shown, setShown] = useState(HISTORY_PAGE);
+  const histRef = useRef(hist);
+  histRef.current = hist;
+  useEffect(() => {
+    const tid = info?.tid;
+    setShown(HISTORY_PAGE);
+    if (!base || !tid || tab !== 'pretty') return undefined;
+    let live = true;
+    const pull = () => {
+      const have = histRef.current.tid === tid ? histRef.current : { turns: [], session: '' };
+      getHistory(base, tid, have.turns.length)
+        .then((res) => {
+          if (!live || !res) return;
+          const fresh = res.session !== have.session || res.total < have.turns.length;
+          if (!fresh && !res.turns.length) return;
+          setHist({
+            tid,
+            session: res.session,
+            turns: fresh ? res.turns : [...have.turns, ...res.turns],
+          });
+          if (fresh && have.turns.length) pull();   // since was for the old log
+        })
+        .catch(() => {});
+    };
+    pull();
+    const timer = setInterval(pull, 2000);
+    return () => { live = false; clearInterval(timer); };
+  }, [base, info?.tid, tab]);
+  // Pinned to the newest turn unless you have scrolled up to read.
+  const chatRef = useRef(null);
+  const atBottom = useRef(true);
   const compactingNow = (info?.lines || []).some((l) => /Compacting conversation/.test(l));
   useEffect(() => {
     if (compactingNow) setCompactAsked(false);
@@ -364,7 +401,19 @@ function Focus({
   // the previous render".
   if (!info) return <Empty what="no agent selected" />;
   const lines = info.lines || [];
-  const { turns: chat, doing } = chatFromTerminal(lines, info.tldr || [], sentPrompts);
+  const scraped = chatFromTerminal(lines, info.tldr || [], sentPrompts);
+  const { doing } = scraped;
+  const logged = hist.tid === info.tid ? hist.turns : [];
+  // A prompt you just sent is in the log a moment later; until then it is
+  // shown from here, the way the scrape path always did.
+  const plain = (t) => String(t).split(/\s+/).join(' ').trim();
+  const recent = logged.slice(-12).filter((t) => t.role === 'user').map((t) => plain(t.text));
+  const unlogged = sentPrompts
+    .filter((text) => !recent.includes(plain(text)))
+    .map((text) => ({ role: 'user', text, work: [] }));
+  const all = logged.length ? [...logged, ...unlogged] : scraped.turns;
+  const hidden = Math.max(0, all.length - shown);
+  const chat = all.slice(hidden);
   const contextPct = Math.round(Math.max(0, Math.min(1, Number(info.context || 0))) * 100);
   // The rail card and these selectors read the same polled seat record. The
   // focus payload still provides a fallback for subagents and older servers.
@@ -583,9 +632,32 @@ function Focus({
           lines into the page, which is one long scroll by then anyway. */}
       {tab === 'pretty' && (
       <View style={[styles.transcript, styles.pretty, narrow && styles.transcriptNarrow]}>
-        <ScrollView contentContainerStyle={styles.chat}>
-          {chat.map((turn, i) => (
-            <View key={`${turn.role}-${i}`} style={turn.role === 'user' ? styles.userTurn : styles.agentTurn}>
+        <ScrollView
+          ref={chatRef}
+          contentContainerStyle={styles.chat}
+          scrollEventThrottle={100}
+          onScroll={(e) => {
+            const { layoutMeasurement: box, contentOffset: at, contentSize: size } = e.nativeEvent;
+            atBottom.current = at.y + box.height >= size.height - 48;
+          }}
+          onContentSizeChange={() => atBottom.current && chatRef.current?.scrollToEnd({ animated: false })}>
+          {hidden > 0 && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                atBottom.current = false;
+                setShown((n) => n + HISTORY_PAGE);
+              }}
+              style={styles.receiptKey}>
+              <Text style={styles.receiptKeyText}>
+                show {Math.min(hidden, HISTORY_PAGE)} earlier · {hidden} not shown
+              </Text>
+            </Pressable>
+          )}
+          {chat.map((turn, i) => turn.role === 'note' ? (
+            <Text key={`note-${hidden + i}`} style={styles.chatNote}>— {turn.text} —</Text>
+          ) : (
+            <View key={`${turn.role}-${hidden + i}`} style={turn.role === 'user' ? styles.userTurn : styles.agentTurn}>
               <Text style={styles.speaker}>{turn.role === 'user' ? 'You' : info.name}</Text>
               <Markdown text={turn.text} />
               {turn.role === 'agent' && (
@@ -807,6 +879,8 @@ const WORK_START = /^(Bash|Read|Write|Edit|Update|Search|Glob|Grep|Task|Web Sear
 // commands" is a collapsed tool group -- indented under a prompt, it was
 // being read as the end of what you typed.
 const CHROME = /^[─━]+$|^\[PONYTAIL\]|^⏵⏵ auto mode|^(esc to interrupt|shift\+tab to cycle|ctrl\+|tokens:|context:)|^⎿\s*Tip:|^(Ran|Read|Searched for|Edited|Wrote|Listed) \d+ [a-z ]+$/i;
+
+const HISTORY_PAGE = 60;
 
 function chatFromTerminal(lines, summary, sentPrompts) {
   const turns = [];
@@ -3914,6 +3988,7 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     gap: 5,
   },
+  chatNote: { alignSelf: 'center', color: C.faint, fontSize: 11, letterSpacing: 0.6, paddingVertical: 6 },
   agentTurn: { alignSelf: 'stretch', maxWidth: 760, gap: 9, paddingVertical: 2 },
   speaker: { color: C.faint, fontSize: 10, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' },
   markdown: { gap: 9 },

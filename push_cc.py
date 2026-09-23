@@ -904,8 +904,10 @@ def transcript(agent):
     sid = (agent.get("agent_session") or {}).get("value")
     if not sid:
         return None
-    return os.path.expanduser(
-        f"~/.claude/projects/{agent.get('cwd', '').replace('/', '-')}/{sid}.jsonl")
+    # Claude Code's folder name swaps every non-alphanumeric for "-", not
+    # just "/": an agent in .claude/worktrees/x had no transcript at all
+    slug = re.sub(r"[^A-Za-z0-9]", "-", agent.get("cwd", ""))
+    return os.path.expanduser(f"~/.claude/projects/{slug}/{sid}.jsonl")
 
 
 # ---------------------------------------------------------------- subagents
@@ -2031,6 +2033,91 @@ def sent_texts(agent):
             texts = [t for t in texts if t][-SENT_KEEP:]
             _sent_cache[path] = (off + cut, texts)
     return texts
+
+
+_history_cache = {}   # transcript -> (offset, turns, work since last text)
+# mapui serves this from a threaded server: two requests reading the same new
+# chunk off the same offset would each append it, and every turn shows twice
+_history_lock = threading.Lock()
+
+
+def history(path):
+    with _history_lock:
+        return _history(path)
+
+
+def _history(path):
+    """The whole conversation, from the session's own log.
+
+    The pane cannot give it: Claude Code runs on the alternate screen, so a
+    scrape is one screenful and the focus view forgot everything that had
+    scrolled off. The transcript only ever appends, so this reads from a byte
+    offset like sent_texts and keeps the turns it has already built.
+
+    Turns are pane-shaped for the app: {"role", "text", "work"} -- work being
+    the tool calls made since the previous thing the agent said, which is the
+    same grouping the pane's ⏺ rows give. A compaction is a "note"."""
+    try:
+        size = os.stat(path).st_size if path else 0
+    except OSError:
+        return []
+    off, turns, work = _history_cache.get(path, (0, [], []))
+    if size < off:                       # truncated or replaced; start over
+        off, turns, work = 0, [], []
+    if size > off:
+        try:
+            with open(path, "rb") as f:
+                f.seek(off)
+                chunk = f.read()
+        except OSError:
+            return turns
+        cut = chunk.rfind(b"\n") + 1     # never parse a half-written line
+        for raw in chunk[:cut].split(b"\n"):
+            if b'"user"' not in raw and b'"assistant"' not in raw:
+                continue                 # attachments, modes, snapshots
+            try:
+                d = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if d.get("isSidechain") or d.get("type") not in ("user", "assistant"):
+                continue
+            content = (d.get("message") or {}).get("content")
+            if d["type"] == "user":
+                if d.get("isCompactSummary"):
+                    turns.append({"role": "note", "text": "context compacted",
+                                  "work": []})
+                    work = []
+                    continue
+                if d.get("isMeta"):
+                    continue
+                if isinstance(content, str):
+                    parts = [content]
+                elif isinstance(content, list):   # tool results are not you
+                    parts = [b.get("text", "") for b in content
+                             if isinstance(b, dict) and b.get("type") == "text"]
+                else:
+                    parts = []
+                text = "\n".join(p for p in parts if p).strip()
+                name = re.search(r"<command-name>(.*?)</command-name>", text)
+                if name:                 # "/compact", not its XML wrapping
+                    text = name.group(1).strip()
+                elif text.startswith("<"):
+                    continue             # command stdout, caveats, reminders
+                if text:
+                    turns.append({"role": "user", "text": text, "work": []})
+                    work = []
+                continue
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    work.append(tool_line(block))
+                elif block.get("type") == "text" and block.get("text", "").strip():
+                    turns.append({"role": "agent", "text": block["text"].strip(),
+                                  "work": work})
+                    work = []
+        _history_cache[path] = (off + cut, turns, work)
+    return turns
 
 
 def queued_blocks(agent, lines):
@@ -3935,6 +4022,33 @@ bugcast: node /x/index.mjs - \u2714 Connected
     assert [int(m) for m in _re.findall(_USAGE_FIELDS["inp"], line)] == [2]
     assert [int(m) for m in _re.findall(_USAGE_FIELDS["cread"], line)] == [199412]
     assert [int(m) for m in _re.findall(_USAGE_FIELDS["out"], line)] == [1017]
+
+    # the conversation from the log: prompts, answers with the work before
+    # them, a compaction as a note, and none of the log's own furniture
+    import tempfile as _tf
+    rows = [{"type": "user", "message": {"content": "hi"}},
+            {"type": "attachment"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}},
+            {"type": "user", "isMeta": True, "message": {"content": "<local-command-caveat>"}},
+            {"type": "user", "message": {"content": "<command-name>/compact</command-name>"}},
+            {"type": "user", "message": {"content": "<local-command-stdout>x</local-command-stdout>"}},
+            {"type": "user", "isCompactSummary": True, "message": {"content": "summary"}},
+            {"type": "assistant", "isSidechain": True,
+             "message": {"content": [{"type": "text", "text": "a subagent"}]}}]
+    with _tf.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        f.write("\n".join(json.dumps(r) for r in rows[:5]) + "\n")
+    assert [(t["role"], t["text"]) for t in history(f.name)] == \
+        [("user", "hi"), ("agent", "done")]
+    assert history(f.name)[1]["work"] == ["Bash(ls)"], "work rides the answer"
+    with open(f.name, "a") as g:        # appended, read from the offset
+        g.write("\n".join(json.dumps(r) for r in rows[5:]) + "\n")
+    assert [(t["role"], t["text"]) for t in history(f.name)] == \
+        [("user", "hi"), ("agent", "done"), ("user", "/compact"),
+         ("note", "context compacted")], history(f.name)
+    os.unlink(f.name)
 
     assert _OPT_RE.match("❯ 1. Yes").groups() == ("❯", "1", "Yes")
     # a numbered list in prose is not a question, however well it matches

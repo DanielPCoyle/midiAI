@@ -816,6 +816,13 @@ takes typed paths.
   newline in the input, so a prompt from the app sat in the agent's box,
   typed and never sent, with nothing reporting an error. `term.py` sends each
   `\r` as tmux's named `Enter` key and keeps the text around it literal.
+- The pretty view's conversation comes from the session transcript
+  (`/history`, built by `push_cc.history`), not the pane. A scrape is one
+  screenful whatever `SCRAPE_LINES` says, so the view used to drop everything
+  that had scrolled off. The pane is still what says what the agent is doing
+  *now* -- the log is written a block at a time. The transcript's folder is the
+  cwd with every non-alphanumeric turned into `-`, dots included; swapping only
+  `/` found no log for any agent in a `.claude/worktrees` checkout.
 - Claude Code's suggested next prompt sits on the input line looking exactly
   like typed text once the styling is gone: `❯\xa0` then the words, dim
   (SGR 2). A plain `capture-pane` drops the dim, so the app adopted every

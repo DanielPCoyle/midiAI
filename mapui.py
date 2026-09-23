@@ -1180,6 +1180,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._raw(200, f.read(), "image/png")
             except OSError:       # push_cc down, or no screen to mirror yet
                 return self._send(404, "no frame", "text/plain")
+        if self.path.startswith("/history"):
+            return self._history()
         if self.path.startswith("/pty/where"):
             return self._pty_where()
         if self.path.startswith("/pty/stream"):
@@ -3076,6 +3078,27 @@ class Handler(BaseHTTPRequestHandler):
                     "agent_name_taken": 409}.get(err.get("code"), 500)
             return self._send(code, err.get("message", "rename failed"), "text/plain")
         self._send(200, "ok", "text/plain")
+
+    def _history(self):
+        """The focused agent's whole conversation, from its transcript -- the
+        pane only ever holds a screenful. `since` is how many turns the app
+        already has, so a poll of a long session sends only what is new."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        tid = (q.get("tid") or [""])[0]
+        try:
+            since = max(0, int((q.get("since") or ["0"])[0]))
+        except ValueError:
+            since = 0
+        agent = next((a for a in push_cc.agents() if a.get("terminal_id") == tid), None)
+        if not agent:
+            return self._send(404, "no such agent", "text/plain")
+        path = push_cc.transcript(agent)
+        turns = push_cc.history(path)
+        # /clear starts a new log under the same pane: the app starts over
+        # when this changes rather than appending one session to another
+        self._send(200, json.dumps({"session": os.path.basename(path or ""),
+                                    "total": len(turns), "turns": turns[since:]}),
+                   "application/json")
 
     def _pty_where(self):
         """The pane the app's terminal is currently looking at.

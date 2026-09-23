@@ -285,6 +285,11 @@ export const chooseDir = async (base, start) =>
 // git would refuse to commit, the stashes, and the commit graph. One call --
 // six git invocations that always get read together are one screen's worth of
 // state, not six polls.
+// The focused agent's whole conversation, from its transcript. The pane only
+// ever holds a screenful; `since` is how many turns the app already has.
+export const getHistory = (base, tid, since = 0) =>
+  getJSON(base, `/history?tid=${encodeURIComponent(tid || '')}&since=${since}`);
+
 export const getWork = (base, cwd) =>
   getJSON(base, `/work?cwd=${encodeURIComponent(cwd || '')}`);
 
