@@ -407,6 +407,9 @@ function Focus({
   // prompt whose part of the conversation is at the top of the scroll --
   // a sticky section header, set only when that changes, not per frame.
   const [askAt, setAskAt] = useState(null);
+  // whether to offer the jump back down: state, unlike atBottom, because it
+  // draws -- set only when it flips, not on every scroll frame
+  const [away, setAway] = useState(false);
   // positions are by turn index, so another conversation starts them over
   useEffect(() => { askY.current = {}; setAskAt(null); }, [info?.tid, info?.parent, info?.sub]);
   const compactingNow = (info?.lines || []).some((l) => /Compacting conversation/.test(l));
@@ -713,6 +716,7 @@ function Focus({
           onScroll={(e) => {
             const { layoutMeasurement: box, contentOffset: at, contentSize: size } = e.nativeEvent;
             atBottom.current = at.y + box.height >= size.height - 48;
+            if (away === atBottom.current) setAway(!atBottom.current);
             // following along at the foot: the latest prompt. Scrolled up:
             // whichever one the top of the view is inside.
             const next = atBottom.current ? null : askFor(at.y);
@@ -768,6 +772,23 @@ function Focus({
           ) : working && <Working act={info.act} doing={doing} name={info.name} />}
           {!chat.length && !working && !compactAsked && !compactingNow && <Empty what="Send a prompt to begin" />}
         </ScrollView>
+        {away && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="jump to the latest message"
+            onPress={() => {
+              atBottom.current = true;
+              setAway(false);
+              setAskAt(null);
+              // not animated: the scroll events an animation fires on the
+              // way down read as "still away" and put the key straight back
+              chatRef.current?.scrollToEnd({ animated: false });
+            }}
+            style={[styles.jumpDown, running > 0 && styles.jumpDownHigh]}>
+            <MaterialIcons name="arrow-downward" size={16} color={C.text} />
+            <Text style={styles.jumpDownText}>latest</Text>
+          </Pressable>
+        )}
         {/* Outside the scroll so it stays put at the foot of the conversation:
             work dispatched elsewhere is invisible from here otherwise. Only
             while one is running -- returned ones are history, and the tab
@@ -4604,6 +4625,9 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  jumpDown: { position: 'absolute', right: 16, bottom: 16, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: C.edge, backgroundColor: C.panel, zIndex: 5 },
+  jumpDownText: { color: C.text, fontSize: 12 },
+  jumpDownHigh: { bottom: 60 },   // clear of the running-subagents banner
   subDone: { opacity: 0.6 },
   subDoneKey: { color: C.faint, fontSize: 12, paddingVertical: 8 },
   fillStrip: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 18, paddingVertical: 10, paddingHorizontal: 2 },
