@@ -148,7 +148,8 @@ export default function Rail({
   const [projLoading, setProjLoading] = useState(false);
   const [shut, setShut] = useState({});      // project path -> collapsed
   const [wbusy, setWbusy] = useState(null);  // path of the row a project errand is running against
-  const [werr, setWerr] = useState('');
+  const [werr, setWerr] = useState('');       // a button in the tree failed
+  const [listErr, setListErr] = useState(''); // the list itself failed to load
   // { mode: 'project'|'branch'|'worktree', cwd } | null -- SessionSheet does the picking and the call
   const [wsheet, setWsheet] = useState(null);
   // { key, anchor, p, row, here } | null -- Menu.js draws it against the ⋮ that opened it
@@ -161,15 +162,23 @@ export default function Rail({
 
   useEffect(() => {
     let live = true;
+    let retry;
     setProjLoading(true);
     listProjects(base)
-      .then((rows) => live && setProjects(rows))
-      .catch((e) => live && setWerr(e.message || String(e)))
+      // a success clears a failure: one dropped request (mapui restarting)
+      // used to leave "Failed to fetch" under the list for good
+      .then((rows) => { if (live) { setProjects(rows); setListErr(''); } })
+      .catch((e) => {
+        if (!live) return;
+        setListErr(`couldn't list projects: ${e.message || e}`);
+        retry = setTimeout(() => setBeat((b) => b + 1), 5000);   // and ask again
+      })
       .finally(() => live && setProjLoading(false));
-    return () => { live = false; };
+    return () => { live = false; clearTimeout(retry); };
   }, [base, projKey, beat]);
 
-  const refreshProjects = () => listProjects(base).then(setProjects).catch(() => {});
+  const refreshProjects = () => listProjects(base)
+    .then((rows) => { setProjects(rows); setListErr(''); }).catch(() => {});
 
   // Worktree path -> the seats living in it. A seat is placed in its LONGEST
   // matching worktree, so a worktree nested inside the main checkout is not
@@ -724,6 +733,7 @@ export default function Rail({
               </Text>
             </Pressable>
           )}
+          {!!listErr && <Text style={styles.err}>{listErr}</Text>}
           {!!werr && <Text style={styles.err}>{werr}</Text>}
         </View>
         ) : (<>
