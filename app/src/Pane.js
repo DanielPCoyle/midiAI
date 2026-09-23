@@ -2989,6 +2989,11 @@ function GraphCell({ row, lanes }) {
   );
 }
 
+// Whether the history column is folded to its graph. Module-level, like the
+// composer's drafts, so it survives leaving GIT and coming back.
+// ponytail: memory only -- a reload unfolds it; localStorage if that bites
+let treeFolded = false;
+
 function Work({ base, cwd, tabs }) {
   const narrow = useNarrow();
   const [work, setWork] = useState(null);
@@ -2997,6 +3002,9 @@ function Work({ base, cwd, tabs }) {
   // changes are the same question asked of different ranges.
   const [pick, setPick] = useState(null);
   const [diff, setDiff] = useState('');
+  // the diff wants the room: folded, the history is just its lanes and dots
+  const [folded, setFoldedState] = useState(treeFolded);
+  const setFolded = (v) => { treeFolded = v; setFoldedState(v); };
   const [tick, setTick] = useState(0);
   const [msg, setMsg] = useState('');
   // the model's draft: '' idle, 'writing' while it thinks, and after it
@@ -3060,6 +3068,8 @@ function Work({ base, cwd, tabs }) {
   const log = work?.log || [];
   // one width for every row's graph, so the messages beside it line up
   const lanes = log.reduce((n, r) => Math.max(n, r.width || 1), 1);
+  // stacked on a narrow screen, the column is full width anyway: no folding
+  const fold = folded && !narrow;
   const files = parseDiff(diff);
   const ahead = work?.ahead || 0;
   const behind = work?.behind || 0;
@@ -3139,8 +3149,37 @@ function Work({ base, cwd, tabs }) {
           was one half of a switch, so seeing where you are meant leaving what
           you were about to commit. */}
       <View style={[styles.wkSplit, narrow && styles.wkSplitNarrow]}>
-        <View style={[styles.wkTree, styles.wkTreeCol, narrow && styles.diffFilesNarrow]}>
-          <Text style={styles.wkGroup}>history · {log.length}{pick?.sha ? ' · showing ' + (log.find((r) => r.sha === pick.sha)?.short || '') : ''}</Text>
+        <View
+          style={[
+            styles.wkTree,
+            styles.wkTreeCol,
+            narrow && styles.diffFilesNarrow,
+            fold && { width: Math.max(52, lanes * LANE + 22) },
+          ]}>
+          {fold ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="show the full history"
+              onPress={() => setFolded(false)}
+              style={styles.treeFoldKey}>
+              <Icon name="chevrons-right" size={16} color={C.dim} />
+            </Pressable>
+          ) : (
+            <View style={styles.treeHead}>
+              <Text style={[styles.wkGroup, styles.spacer]}>
+                history · {log.length}{pick?.sha ? ' · showing ' + (log.find((r) => r.sha === pick.sha)?.short || '') : ''}
+              </Text>
+              {!narrow && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="fold the history to its graph"
+                  onPress={() => setFolded(true)}
+                  style={styles.treeFoldKey}>
+                  <Icon name="chevrons-left" size={16} color={C.dim} />
+                </Pressable>
+              )}
+            </View>
+          )}
           <ScrollView style={narrow ? styles.wkTreeNarrow : undefined} nestedScrollEnabled>
             {log.map((row) => (
               <Pressable
@@ -3148,8 +3187,9 @@ function Work({ base, cwd, tabs }) {
                 accessibilityRole="button"
                 accessibilityLabel={`commit ${row.short}: ${row.subject}`}
                 onPress={() => setPick(pick?.sha === row.sha ? null : { sha: row.sha })}
-                style={[styles.wkCommit, pick?.sha === row.sha && styles.diffFileOn]}>
+                style={[styles.wkCommit, fold && styles.wkCommitFolded, pick?.sha === row.sha && styles.diffFileOn]}>
                 <GraphCell row={row} lanes={lanes} />
+                {!fold && (
                 <View style={styles.wkText}>
                   <View style={styles.wkLine}>
                     {(row.refs || []).map((r) => (
@@ -3171,6 +3211,7 @@ function Work({ base, cwd, tabs }) {
                     <Text style={styles.wkSha}>{row.short}</Text> · {row.who} · {row.when}
                   </Text>
                 </View>
+                )}
               </Pressable>
             ))}
             {!log.length && <Empty what="no commits yet" />}
@@ -4704,6 +4745,9 @@ const styles = StyleSheet.create({
   wkSplit: { flex: 1, minHeight: 0, flexDirection: 'row', gap: 14 },
   wkSplitNarrow: { flexDirection: 'column' },
   wkTreeCol: { width: 380, borderWidth: 1, borderColor: C.line, borderRadius: 6, overflow: 'hidden' },
+  treeHead: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 },
+  treeFoldKey: { height: 34, minWidth: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 6 },
+  wkCommitFolded: { paddingHorizontal: 10 },
   wkMain: { flex: 1, minWidth: 0, gap: 14 },
   wkCommit: { height: ROW_H, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 },
   wkText: { flex: 1, minWidth: 0, gap: 2 },
