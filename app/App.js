@@ -26,6 +26,7 @@ import { inside } from './src/Projects';
 import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
 import Rail from './src/Rail';
+import Settings from './src/Settings';
 import { BREAK, C, KEY, S, SEAT_HEX, mono } from './src/theme';
 
 const SURFACE_MS = 400; // the mirror and the views both; anything slower lags
@@ -71,6 +72,10 @@ export default function App() {
   const [railOpen, setRailOpen] = useState(false);
   // reconnect, the mirror and the host field, behind one ⋮ -- see the header.
   const [menu, setMenu] = useState(false);
+  // null | 'claude' | 'mcps' -- which section of the Settings modal is open,
+  // or closed entirely. The gear opens 'claude'; the rail's footer MCPs row
+  // opens 'mcps' directly via onOpenSettings, same modal either way.
+  const [settings, setSettings] = useState(null);
   // { project, path, label, main } | null -- a worktree picked in the rail
   // that has nobody living in it. The pane draws NoAgent for it instead of a
   // transcript there is none of.
@@ -799,6 +804,17 @@ export default function App() {
             {place.path.replace(HOME_RE, '~')}
           </Text>
         )}
+        {/* Claude access and MCPs, one gear rather than buried in the ⋮ menu --
+            it is a destination (a modal with its own sections), not one more
+            item in a list of one-shot actions. */}
+        <PushButton
+          accessibilityLabel="settings"
+          colour={C.accentText}
+          lit={!!settings}
+          onPress={() => setSettings('claude')}
+          style={styles.dots}>
+          <Icon name="settings" size={16} color={settings ? C.text : C.dim} />
+        </PushButton>
         {/* reconnect, the mirror and the host field behind one key, so the
             three things you reach for when something is wrong are all there at
             every width and the row keeps what you read rather than what you
@@ -965,6 +981,7 @@ export default function App() {
               scopePath={scopePath}
               base={base}
               onChanged={refresh}
+              onOpenSettings={(s) => setSettings(s)}
             />
           )}
           <View style={styles.centre}>
@@ -1093,6 +1110,10 @@ export default function App() {
               scopePath={scopePath}
               base={base}
               onChanged={refresh}
+              onOpenSettings={(s) => {
+                setSettings(s);
+                setRailOpen(false);   // the drawer closes for any other destination too
+              }}
             />
           </View>
         </Modal>
@@ -1114,6 +1135,18 @@ export default function App() {
           }}
         />
       )}
+
+      <Settings
+        visible={!!settings}
+        section={settings}
+        onSection={setSettings}
+        onClose={() => setSettings(null)}
+        base={base}
+        cwd={place?.path}
+        // every running agent's checkout, as the sidebar's MCP list read them:
+        // project- and local-scoped servers only show up for the cwd they are in
+        cwds={[...new Set(cols.filter(Boolean).map((c) => c.cwd).filter(Boolean))]}
+      />
 
       {!!note && (
         <View style={styles.toastWrap}>

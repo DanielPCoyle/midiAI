@@ -415,3 +415,31 @@ export const getMemoryEntry = (base, id) =>
   getJSON(base, `/memory/entry?id=${encodeURIComponent(id)}`);
 
 export const memoryStats = (base) => getJSON(base, '/memory/stats');
+
+// Claude access: how agents midiAI starts authenticate, plus the default
+// model/effort new ones start with. The API key itself lives in the macOS
+// Keychain and is never returned -- `key.hint` is the only trace of it that
+// ever rides this wire.
+export const getClaudeSettings = (base) => getJSON(base, '/settings/claude');
+
+// Any subset of {mode, model, effort, bedrock, vertex} -- the server merges
+// it into what it already has and hands back the same shape getClaudeSettings
+// reads, so a patch and a read look identical to the caller.
+export const setClaudeSettings = async (base, patch) =>
+  JSON.parse(await post(base, '/settings/claude', patch));
+
+// Checked against Anthropic before it is saved to the Keychain. A rejection
+// is a 400 with a plain-text reason, which post()'s ask() already folds into
+// e.message -- there is nothing special to unwrap here on failure.
+export const saveClaudeKey = async (base, key) =>
+  JSON.parse(await post(base, '/settings/claude/key', { key }));
+
+export const deleteClaudeKey = async (base) =>
+  JSON.parse(await post(base, '/settings/claude/key/delete', {}));
+
+// Opens Terminal.app on the Mac running `claude auth login` -- the same "it
+// happens on the Mac" idea as chooseDir's Finder dialog. There is nothing to
+// await past {ok:true}; the result turns up in the next getClaudeSettings
+// read, same as a login elsewhere shows up in the next health check.
+export const claudeLogin = async (base) =>
+  JSON.parse(await post(base, '/settings/claude/login', {}));

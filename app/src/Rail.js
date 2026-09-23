@@ -14,38 +14,17 @@ import {
   chooseDir,
   closeAgent,
   forgetProject,
-  listMcps,
   listProjects,
-  mcpDo,
-  mcpHealth,
   openWorktree,
   addToQueue,
   removeWorktree,
 } from './api';
 import Icon from './Icon';
 import { Menu, MenuButton } from './Menu';
+import { useMcpDown } from './Mcps';
 import { inside } from './Projects';
 import SessionSheet from './SessionSheet';
 import { C, S, SEAT_HEX, seatHue, seatWord } from './theme';
-
-const MCP_SCOPE = {
-  local: 'private to this project',
-  project: 'shared by this project',
-  user: 'available everywhere',
-  plugin: 'provided by a plugin',
-};
-// Four words `claude mcp list` prints, three states worth telling apart, and
-// each has a different next move: up is nothing to do, auth is one press from
-// working, down is a reason to read. Grey is "not asked yet" -- a server we
-// have not checked must not draw as one that failed.
-const MCP_HEX = { up: '#3cd05a', auth: '#e0a02c', down: '#e03c3c' };
-const MCP_SAID = { up: 'connected', auth: 'needs authentication', down: 'offline' };
-
-const MCP_TABS = [
-  ['global', 'global', (mcp) => mcp.scope === 'user' || mcp.scope === 'plugin'],
-  ['project', 'project', (mcp) => mcp.scope === 'project'],
-  ['local', 'project local', (mcp) => mcp.scope === 'local'],
-];
 
 // One worktree's name: the branch, or a short sha when it is detached. The
 // same rule Projects.js uses for its own rows -- not imported, because only
@@ -74,15 +53,15 @@ const summaryHue = (seatsHere) => {
   return C.faint;
 };
 
-// The left rail: a fixed header, one scrolling body that is either the tree
-// or the MCPs, and a fixed footer that switches between them.
+// The left rail: a fixed header, one scrolling body that is the tree, and a
+// fixed footer with the door into MCPs.
 //
-// The tree is repos over their worktrees over the agents living in each --
-// and, until you press the footer's MCPs row, the whole body is it. PROJECTS
-// and AGENTS used to be two capped scrolls stacked in one rail scroll, and the
-// fact that mattered most -- which worktree a given agent is living in -- was
-// not drawn anywhere; you read a card's cwd and matched it against the tree
-// above by eye. Placement is now the tree's own structure.
+// The tree is repos over their worktrees over the agents living in each, and
+// it is the whole body now. PROJECTS and AGENTS used to be two capped scrolls
+// stacked in one rail scroll, and the fact that mattered most -- which
+// worktree a given agent is living in -- was not drawn anywhere; you read a
+// card's cwd and matched it against the tree above by eye. Placement is now
+// the tree's own structure.
 //
 // Placement is longest-match: this repo keeps worktrees under
 // `.claude/worktrees/` INSIDE the main checkout, so a first-match rule would
@@ -91,11 +70,14 @@ const summaryHue = (seatsHere) => {
 // `place` follows the same rule for the same reason -- this file follows it
 // a third time rather than inventing a fourth version that could disagree.
 //
-// MCPS used to be a tab beside AGENTS; the tab pair is gone now that AGENTS
-// is the tree and always on screen. The footer's MCPs row is the only door
-// into it -- pressed once it swaps the body, pressed again it swaps back. Its
-// own content (the scope tabs, the health checking, the add form, every
-// endpoint) is untouched; only how you get to it moved.
+// MCPS used to be a second body here, behind the footer's row swapping the
+// scroll in place. The manager itself (scope tabs, health checking, the add
+// form, every endpoint) moved into Settings.js's MCPs section as McpManager,
+// in app/src/Mcps.js -- unchanged behaviour, a different home. The footer's
+// row is now just a door: press it and `onOpenSettings('mcps')` opens that
+// section there. The row keeps its red down-count because that is worth
+// seeing without opening anything, so it still polls -- through Mcps.js's
+// useMcpDown, the light half of what McpManager itself runs.
 //
 // props:
 //   cols       array(8)                 -- unchanged: each slot null or
@@ -120,6 +102,9 @@ const summaryHue = (seatsHere) => {
 //   onChanged  () => void               -- fired after any create/close/rename/worktree/branch
 //                                           operation succeeds, so the coordinator knows to refetch
 //                                           /agents and refresh `cols`
+//   onOpenSettings (section) => void    -- opens Settings.js at the given section; pressing the
+//                                           footer's MCPs row calls this with 'mcps' instead of
+//                                           flipping a local tab, since the panel lives there now
 export default function Rail({
   cols,
   current,
@@ -129,6 +114,7 @@ export default function Rail({
   onPick,
   subs = [],
   scopePath = '',
+  onOpenSettings,
 }) {
   // { mode: 'new'|'rename'|'close', seatIndex: number|null } | null -- agent errands
   const [sheet, setSheet] = useState(null);
@@ -268,28 +254,10 @@ export default function Rail({
   // you are working in one repo of three. `here` is not a default: hiding
   // agents by default is how you lose one, so you have to ask.
   const [onlyHere, setOnlyHere] = useState(false);
-  // Which body the scroll is showing -- 'agents' is the tree, 'mcps' is the
-  // MCP list. There is no tab pair to click any more; the footer's MCPs row
-  // is the only thing that flips this.
-  const [tab, setTab] = useState('agents');
-  const [mcps, setMcps] = useState([]);
-  const [mcpsBusy, setMcpsBusy] = useState(false);
-  const [health, setHealth] = useState({ rows: {}, checking: false });
-  const [open, setOpen] = useState('');      // the MCP whose actions are showing
-  const [busy, setBusy] = useState('');
-  const [said, setSaid] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ name: '', scope: 'local', transport: 'stdio', target: '' });
-  const [mcpTab, setMcpTab] = useState('global');
-  // One box for both. The tree and a dozen MCPs are two short lists, not two
-  // search problems, and a field that emptied itself every time you looked at
-  // the other body would read as two.
-  // There is no height cap on either body any more. Both used to be capped at
-  // 30% of the window because they shared one scroll and thirty-one worktrees
-  // would push the other off the bottom of the screen. They no longer share
-  // anything -- the footer's MCPs row swaps one for the other -- so whichever
-  // is showing takes the whole body scroll. Capping it now just clipped the
-  // list with the rest of the rail sitting empty beneath it.
+  // The tree's own search. MCPs had one too, but it is Mcps.js's own state
+  // now -- a field that emptied itself every time you looked at the other
+  // body used to read as two search problems sharing one box; two bodies in
+  // two places no longer need to share anything.
   const [q, setQ] = useState('');
   const find = q.trim().toLowerCase();
   const hitAgent = (col) =>
@@ -297,41 +265,15 @@ export default function Rail({
     `${col.name} ${col.model || ''} ${col.effort || ''} ${col.cwd || ''}`
       .toLowerCase()
       .includes(find);
-  const hitMcp = (mcp) =>
-    !find ||
-    `${mcp.name} ${mcp.scope} ${mcp.transport || ''} ${mcp.endpoint || ''}`
-      .toLowerCase()
-      .includes(find);
   const inScope = (col) => !!scopePath && !!col?.cwd && inside(col.cwd, scopePath);
   const hidden = onlyHere ? cols.filter((c) => c && !inScope(c)).length : 0;
+  // Every live agent's cwd, for the footer's down-count -- the same set
+  // McpManager itself would read from, were it mounted here.
   const mcpCwds = [...new Set(cols.filter(Boolean).map((c) => c.cwd).filter(Boolean))];
-  const mcpCwdKey = mcpCwds.join('\u0000');
-
-  // Read whether or not their tab is showing. They used to be fetched only
-  // when it was, which was right until the footer's row started carrying a
-  // count of what is broken -- a number whose whole job is to make you look
-  // cannot wait until you have looked. One file read per live working
-  // directory, and identical user-wide entries collapse.
-  useEffect(() => {
-    const cwds = mcpCwds.length ? mcpCwds : [''];
-    let live = true;
-    setMcpsBusy(true);
-    Promise.all(cwds.map((cwd) => listMcps(base, cwd).then((rows) => ({ cwd, rows }))))
-      .then((sets) => {
-        if (!live) return;
-        const byKey = new Map();
-        for (const { cwd, rows } of sets)
-          for (const row of rows) {
-            const key = `${row.scope}\u0000${row.name}\u0000${row.transport}\u0000${row.endpoint}`;
-            const old = byKey.get(key);
-            byKey.set(key, old ? { ...old, cwds: [...old.cwds, cwd] } : { ...row, cwds: [cwd] });
-          }
-        setMcps([...byKey.values()].sort((a, b) => a.name.localeCompare(b.name)));
-      })
-      .catch(() => live && setMcps([]))
-      .finally(() => live && setMcpsBusy(false));
-    return () => { live = false; };
-  }, [tab, mcpCwdKey, base, beat]);
+  // The one number the footer's row is worth interrupting you for. A zero
+  // stays unshown rather than drawn faint -- a faint "0" and a faint "3" read
+  // the same at a glance, and that exact confusion is MIDI-014.
+  const mcpDown = useMcpDown(base, mcpCwds);
 
   // The card's corner used to be one ⋮ over a menu. It is four keys now: the
   // three things you actually do to a running agent are one tap each rather
@@ -360,48 +302,6 @@ export default function Rail({
 
   const seatFor = (i) => (i != null ? cols[i] : null);
   const activeSeat = sheet && sheet.mode !== 'new' ? seatFor(sheet.seatIndex) : seatFor(current);
-  // The health check is nine seconds and spawns every stdio server, so it is
-  // asked for only while this body is open, and the server caches it for two
-  // minutes behind that. Polling is how the answer arrives, not how often it
-  // is computed.
-  const healthCwd = mcpCwds[0] || '';
-  useEffect(() => {
-    if (!base) return undefined;
-    let live = true;
-    const ask = () =>
-      mcpHealth(base, healthCwd)
-        .then((got) => live && setHealth(got))
-        .catch(() => {});
-    ask();
-    // The server caches for two minutes behind this, so polling is how the
-    // answer arrives and not how often it is computed. Off-body it is only
-    // feeding the footer's count, so it asks a good deal less often.
-    const timer = setInterval(ask, tab === 'mcps' ? 4000 : 30000);
-    return () => { live = false; clearInterval(timer); };
-  }, [tab, base, healthCwd]);
-
-  const act = async (verb, mcp, extra = {}) => {
-    setBusy(`${verb}:${mcp?.name || 'new'}`);
-    setSaid('');
-    try {
-      const answer = await mcpDo(base, verb, {
-        cwd: healthCwd, name: mcp?.name, scope: mcp?.scope, ...extra });
-      setSaid(String(answer || 'done').slice(0, 160));
-      if (verb === 'add') { setAdding(false); setDraft({ ...draft, name: '', target: '' }); }
-      setBeat((b) => b + 1);      // the list effect already reruns on this
-      mcpHealth(base, healthCwd).then(setHealth).catch(() => {});
-    } catch (e) { setSaid(e.message.slice(0, 200)); }
-    finally { setBusy(''); }
-  };
-
-  const mcpGroups = MCP_TABS.map(([key, label, match]) => ({
-    key, label, items: mcps.filter((mcp) => match(mcp) && hitMcp(mcp)),
-  }));
-  const activeMcpGroup = mcpGroups.find((group) => group.key === mcpTab) || mcpGroups[0];
-  // The one number the footer's row is worth interrupting you for. A zero
-  // stays unshown rather than drawn faint -- a faint "0" and a faint "3" read
-  // the same at a glance, and that exact confusion is MIDI-014.
-  const mcpDown = mcps.filter((mcp) => health.rows?.[mcp.name]?.state === 'down').length;
 
   // Search now filters the whole tree, not only the agents in it: a project
   // matching keeps every worktree under it, a worktree matching keeps itself,
@@ -458,41 +358,17 @@ export default function Rail({
       {/* Fixed chrome: search, the scope filter and adding a project. Above
           the body scroll, not merely first inside it -- a control that slides
           away the longer the tree gets is a control you stop finding. */}
-      {/* The footer's MCPs row is a toggle, but it sits at the far end of
-          the rail from where you are reading -- an open panel wants its own
-          way out, top right, where a close key is looked for. */}
-      {tab === 'mcps' && (
-        <View style={styles.closeRow}>
-          <Text style={styles.closeTitle}>MCPS</Text>
-          <View style={styles.spacer} />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="close the MCPs panel"
-            hitSlop={8}
-            onPress={() => setTab('agents')}
-            style={styles.closeKey}>
-            <Icon name="close" size={16} color={C.dim} />
-          </Pressable>
-        </View>
-      )}
       <View style={styles.headRow}>
-        {/* projects are the tree's business; over the MCP list the key
-            would add something you cannot see from there */}
-        {tab !== 'mcps' && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="add a project"
-            onPress={addProjectFolder}
-            style={styles.addRow}>
-            <Text style={styles.addText}>{picking ? 'choosing a folder on the Mac…' : '＋ add project'}</Text>
-          </Pressable>
-        )}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="add a project"
+          onPress={addProjectFolder}
+          style={styles.addRow}>
+          <Text style={styles.addText}>{picking ? 'choosing a folder on the Mac…' : '＋ add project'}</Text>
+        </Pressable>
         <View style={styles.spacer} />
-        {/* MCPs are configuration, not work in progress: scoping them to one
-            worktree is what the three scope tabs below already do, so this
-            would be a second, quieter answer to the same question -- it is
-            offered whenever there is a "here" to mean, whichever body is
-            showing. */}
+        {/* scoping to "here" is a fact about the worktree picked in the tree,
+            offered whenever there is one to mean */}
         {!!scopePath &&
           [
             ['all', false],
@@ -515,15 +391,14 @@ export default function Rail({
         autoCapitalize="none"
         autoCorrect={false}
         clearButtonMode="while-editing"
-        accessibilityLabel={tab === 'agents' ? 'search agents & repos' : 'search MCPs'}
-        placeholder={tab === 'agents' ? 'search agents & repos' : 'search MCPs'}
+        accessibilityLabel="search agents & repos"
+        placeholder="search agents & repos"
         placeholderTextColor={C.faint}
         style={styles.find}
       />
 
       <ScrollView style={styles.bodyScroll} contentContainerStyle={styles.scroll}>
-        {tab === 'agents' ? (
-        /* The tree: repos, their worktrees, and the agents in each. There is
+        {/* The tree: repos, their worktrees, and the agents in each. There is
             no capped inner scroll left inside it -- the whole thing rides
             this one body scroll now. */
         <View style={styles.list}>
@@ -755,214 +630,19 @@ export default function Rail({
           )}
           {!!listErr && <Text style={styles.err}>{listErr}</Text>}
           {!!werr && <Text style={styles.err}>{werr}</Text>}
-        </View>
-        ) : (<>
-        <View style={styles.mcpTabs}>
-          {mcpGroups.map((group) => (
-            <Text
-              key={group.key}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: activeMcpGroup.key === group.key }}
-              onPress={() => setMcpTab(group.key)}
-              style={[styles.mcpTab, activeMcpGroup.key === group.key && styles.mcpTabOn]}>
-              {group.label} · {group.items.length}
-            </Text>
-          ))}
-        </View>
-        <View style={styles.list}>
-          {mcpsBusy && <Text style={styles.empty}>loading MCPs…</Text>}
-          {!mcpsBusy && activeMcpGroup.items.map((mcp) => (
-            <Pressable
-              key={`${mcp.scope}-${mcp.name}-${mcp.endpoint}`}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: open === mcp.name }}
-              onPress={() => { setOpen(open === mcp.name ? '' : mcp.name); setSaid(''); }}
-              style={styles.mcpCard}>
-              <View style={styles.row}>
-                {/* grey is "not asked yet", never "failed" -- the check takes
-                    nine seconds and a pessimistic dot in the meantime would
-                    report an outage that has not happened */}
-                <View
-                  style={[styles.mcpDot, {
-                    backgroundColor: MCP_HEX[health.rows?.[mcp.name]?.state] || 'transparent',
-                    borderWidth: health.rows?.[mcp.name] ? 0 : 1,
-                  }]}
-                />
-                <Text style={styles.name} numberOfLines={1}>{mcp.name}</Text>
-                <Text style={styles.mcpScope}>{mcp.scope}</Text>
-              </View>
-              <Text style={styles.meta} numberOfLines={1}>
-                {mcp.transport}{mcp.endpoint ? ` · ${mcp.endpoint}` : ''}
-              </Text>
-              {health.rows?.[mcp.name] ? (
-                <Text
-                  numberOfLines={2}
-                  style={[styles.mcpWhere, { color: MCP_HEX[health.rows[mcp.name].state] }]}>
-                  {/* what the server itself said, not our word for it:
-                      "CONNECTION_CLOSED" is the thing you can act on */}
-                  {health.rows[mcp.name].state === 'up'
-                    ? MCP_SAID.up
-                    : health.rows[mcp.name].said || MCP_SAID[health.rows[mcp.name].state]}
-                </Text>
-              ) : (
-                <Text style={styles.mcpWhere} numberOfLines={2}>
-                  {health.checking ? 'checking…' : MCP_SCOPE[mcp.scope] || mcp.scope}
-                </Text>
-              )}
-              {open === mcp.name && (
-                <View style={styles.mcpKeys}>
-                  {/* the one that is one press from working comes first, and
-                      only when that is actually the state it is in */}
-                  {health.rows?.[mcp.name]?.state !== 'up' && (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={!!busy}
-                      onPress={() => act('login', mcp)}
-                      style={[styles.mcpKey, styles.mcpKeyOn]}>
-                      <Text style={styles.mcpKeyText}>
-                        {busy === `login:${mcp.name}` ? '…' : 'Authorise'}
-                      </Text>
-                    </Pressable>
-                  )}
-                  {health.rows?.[mcp.name]?.state === 'up' && (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={!!busy}
-                      onPress={() => act('login', mcp)}
-                      style={styles.mcpKey}>
-                      <Text style={styles.mcpKeyText}>Reauth</Text>
-                    </Pressable>
-                  )}
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={!!busy}
-                    onPress={() => act('logout', mcp)}
-                    style={styles.mcpKey}>
-                    <Text style={styles.mcpKeyText}>Sign out</Text>
-                  </Pressable>
-                  {mcp.scope === 'project' && (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={!!busy}
-                      onPress={() => act('disable', mcp)}
-                      style={styles.mcpKey}>
-                      <Text style={styles.mcpKeyText}>Disable</Text>
-                    </Pressable>
-                  )}
-                  {mcp.scope !== 'plugin' && (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={!!busy}
-                      onPress={() => act('remove', mcp)}
-                      style={styles.mcpKey}>
-                      <Text style={[styles.mcpKeyText, { color: C.bad }]}>Uninstall</Text>
-                    </Pressable>
-                  )}
-                  {mcp.scope === 'plugin' && (
-                    <Text style={styles.mcpWhere}>
-                      installed by a plugin — remove it with the plugin
-                    </Text>
-                  )}
-                  {!!said && <Text style={styles.mcpSaid}>{said}</Text>}
-                </View>
-              )}
-            </Pressable>
-          ))}
-          {!mcpsBusy && activeMcpGroup.items.length === 0 && (
-            <Text style={styles.empty}>
-              {find
-                ? `no ${activeMcpGroup.label} MCPs match “${q.trim()}”`
-                : `no ${activeMcpGroup.label} MCPs configured`}
-            </Text>
-          )}
-        </View></>)}
+        </View>}
       </ScrollView>
 
       {/* Fixed footer: the door to MCPS, and the one action that always needs
           to be reachable without scrolling past however many repos there are. */}
       <View style={styles.footer}>
-        {/* Pinned rather than scrolled: installing one is what you came here
-            to do when the list has not got it, so it cannot sit underneath
-            however many servers the list happens to have. It used to be kept
-            above the fold by capping the list's height instead, which clipped
-            the list and left the rest of the rail empty beneath it. */}
-        {tab === 'mcps' && (
-          <>
-            {adding ? (
-              <View style={styles.mcpAdd}>
-                <TextInput
-                  value={draft.name}
-                  onChangeText={(v) => setDraft({ ...draft, name: v })}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder="name"
-                  placeholderTextColor={C.faint}
-                  style={styles.find}
-                />
-                <View style={styles.mcpKeys}>
-                  {['stdio', 'http', 'sse'].map((t) => (
-                    <Pressable
-                      key={t}
-                      onPress={() => setDraft({ ...draft, transport: t })}
-                      style={[styles.mcpKey, draft.transport === t && styles.mcpKeyOn]}>
-                      <Text style={styles.mcpKeyText}>{t}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-                <View style={styles.mcpKeys}>
-                  {['local', 'project', 'user'].map((sc) => (
-                    <Pressable
-                      key={sc}
-                      onPress={() => setDraft({ ...draft, scope: sc })}
-                      style={[styles.mcpKey, draft.scope === sc && styles.mcpKeyOn]}>
-                      <Text style={styles.mcpKeyText}>{sc}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-                <TextInput
-                  value={draft.target}
-                  onChangeText={(v) => setDraft({ ...draft, target: v })}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder={draft.transport === 'stdio' ? 'command' : 'https://…'}
-                  placeholderTextColor={C.faint}
-                  style={styles.find}
-                />
-                <Text style={styles.mcpWhere}>
-                  {MCP_SCOPE[draft.scope]}
-                </Text>
-                <View style={styles.mcpKeys}>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={!draft.name.trim() || !draft.target.trim() || !!busy}
-                    onPress={() => act('add', null, { ...draft, name: draft.name.trim(),
-                                                      target: draft.target.trim() })}
-                    style={[styles.mcpKey, styles.mcpKeyOn]}>
-                    <Text style={styles.mcpKeyText}>{busy ? '…' : 'Install'}</Text>
-                  </Pressable>
-                  <Pressable accessibilityRole="button" onPress={() => setAdding(false)}
-                    style={styles.mcpKey}>
-                    <Text style={styles.mcpKeyText}>Cancel</Text>
-                  </Pressable>
-                </View>
-                {!!said && <Text style={styles.mcpSaid}>{said}</Text>}
-              </View>
-            ) : (
-              <Pressable accessibilityRole="button" onPress={() => { setAdding(true); setSaid(''); }}
-                style={styles.mcpKey}>
-                <Text style={styles.mcpKeyText}>＋ install an MCP</Text>
-              </Pressable>
-            )}
-          </>
-        )}
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ selected: tab === 'mcps' }}
           accessibilityLabel={mcpDown > 0 ? `MCPs — ${mcpDown} down` : 'MCPs'}
-          onPress={() => setTab((t) => (t === 'mcps' ? 'agents' : 'mcps'))}
-          style={[styles.mcpsRow, tab === 'mcps' && styles.mcpsRowOn]}>
+          onPress={() => onOpenSettings && onOpenSettings('mcps')}
+          style={styles.mcpsRow}>
           <Icon name="mcp" size={17} color={C.faint} />
-          <Text style={[styles.mcpsRowText, tab === 'mcps' && styles.mcpsRowTextOn]}>MCPs</Text>
+          <Text style={styles.mcpsRowText}>MCPs</Text>
           <View style={styles.spacer} />
           {/* a zero here is a settled fact, not a warning -- a faint "0" and a
               faint "3" would read the same at a glance (MIDI-014) */}
@@ -1055,10 +735,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   headRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  closeRow: { flexDirection: 'row', alignItems: 'center' },
   addErr: { color: C.bad, fontSize: 11 },
-  closeTitle: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
-  closeKey: { padding: 4, borderRadius: 6 },
   spacer: { flex: 1 },
   filter: { color: C.faint, fontSize: 11, paddingHorizontal: 2 },
   filterOn: { color: C.accentText },
@@ -1147,7 +824,6 @@ const styles = StyleSheet.create({
   name: { color: C.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
   nameOff: { color: C.dim },
   meta: { color: C.faint, fontSize: 11, flexShrink: 1 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   keys: { flexDirection: 'row' },
   keyBtn: { paddingHorizontal: 4, paddingVertical: 2 },
   keyGlyph: { color: C.edge, fontSize: 13 },
@@ -1168,25 +844,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     borderRadius: S.radius,
   },
-  mcpsRowOn: { backgroundColor: C.raised },
   mcpsRowText: { color: C.dim, fontSize: 13, fontWeight: '600' },
-  mcpsRowTextOn: { color: C.text },
   mcpsRowDown: { color: C.bad, fontSize: 11, fontWeight: '600' },
 
   newHere: { paddingVertical: 3, paddingLeft: 22 },
   newHereText: { color: C.faint, fontSize: 11 },
-  mcpCard: { borderWidth: 1, borderColor: C.line, borderRadius: S.radius, padding: 12, gap: 6 },
-  mcpTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, paddingTop: 10, paddingHorizontal: 4 },
-  mcpTab: { color: C.faint, fontSize: 10, paddingBottom: 3 },
-  mcpTabOn: { color: C.text, borderBottomWidth: 1, borderBottomColor: C.accentText },
-  mcpScope: { color: C.faint, fontSize: 10, marginLeft: 'auto', textTransform: 'uppercase' },
-  mcpWhere: { color: C.edge, fontSize: 10 },
-  mcpDot: { width: 8, height: 8, borderRadius: 4, borderColor: C.edge },
-  mcpKeys: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, alignItems: 'center' },
-  mcpKey: { paddingHorizontal: 8, paddingVertical: 5, borderWidth: 1, borderColor: C.edge, borderRadius: 5 },
-  mcpKeyOn: { borderColor: C.accentText },
-  mcpKeyText: { color: C.dim, fontSize: 10, fontWeight: '600' },
-  mcpSaid: { color: C.faint, fontSize: 10, flexBasis: '100%', lineHeight: 15 },
-  mcpAdd: { borderWidth: 1, borderColor: C.accent, borderRadius: S.radius, padding: 10, gap: 7 },
   empty: { color: C.edge, fontSize: 11, paddingHorizontal: 4, paddingVertical: 8 },
 });

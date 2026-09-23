@@ -1048,6 +1048,40 @@ typed at the keyboard while it was busy -- is a different thing, shown
 read-only: a pty cannot reach back into it. `python3 test_queue.py` is its
 gate.
 
+## Settings
+
+The gear beside ⋮ opens **Settings**: **Claude** and **MCPs**.
+
+**Claude** is how the agents midiAI starts reach a model -- the claude.ai
+subscription the CLI is already signed into, an Anthropic **API key**,
+**Bedrock** or **Vertex** -- and the default **model** and **effort** for a
+new agent. `access.py` holds all of it (`~/.midiai/claude-access.json`,
+`/settings/claude*`), and it reaches an agent only as flags on that agent's
+own command line: term.py's `_open_pane` (and the split path) runs every
+bare `claude …` launch through `access.with_access`, which adds
+`--settings '{…}'`, `--model`, `--effort`. Nothing writes
+`~/.claude/settings.json`, so the terminal you use by hand is untouched, and
+an untouched Settings launches exactly as before. Running agents keep what
+they started with. The herdr backend is external and does not see these.
+
+The API key lives in the login **Keychain** (`midiai-anthropic-api-key`)
+and nowhere else. It is shape-checked, then checked against Anthropic
+(`/v1/models`) before it is kept, then stored through `security -i` on stdin
+so it is never on a process list. An agent gets it through `apiKeyHelper`
+-- a command Claude Code runs to fetch it -- so it is never in a file, an
+environment variable or an argv, and the app only ever gets back whether one
+is saved and a hint (`sk-ant-…abcd`). Everything else that ends up on a
+command line (model, region, profile, project) is held to a character class
+before it is saved. **Sign in on the Mac** opens Terminal.app running
+`claude auth login`, the same "it happens on the Mac" as the folder picker.
+
+`python3 access.py` is its gate; it never touches the Keychain or the network.
+
+Found by hitting it: the python.org Python has no CA bundle until its
+"Install Certificates" script is run, so the key check failed with
+CERTIFICATE_VERIFY_FAILED ("couldn't reach Anthropic") while curl worked.
+`access._tls` falls back to macOS's `/etc/ssl/cert.pem`.
+
 ## Notes
 
 - `tmux list-panes -a` lists a pane once per session that can see it, and

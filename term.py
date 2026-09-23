@@ -269,6 +269,18 @@ def _has_server():
     return _run(["tmux", "list-sessions"]).returncode == 0
 
 
+def _with_access(argv):
+    """Settings > Claude: how a new agent reaches a model (subscription, API
+    key, Bedrock, Vertex) and its default model and effort, as flags on its
+    own command line. Lazy, like push_cc's import of this file: a broken
+    access.py must not stop an agent starting."""
+    try:
+        import access
+        return access.with_access(argv)
+    except Exception:
+        return list(argv)
+
+
 def _open_pane(cwd, argv):
     """A pane running argv in cwd -- a new window in the push session, or a
     new session if this is the first pane on the machine.
@@ -279,6 +291,7 @@ def _open_pane(cwd, argv):
     was closed -- tmux's own "no server running" surfacing to the app as a 500.
     The question has one answer now, in one place.
     """
+    argv = _with_access(argv)
     if _has_server():
         return _run(["tmux", "new-window", "-c", cwd,
                      "-P", "-F", "#{pane_id}", "--", *argv])
@@ -309,7 +322,7 @@ def _agent_start(args):
     # It is no longer what every caller passes without meaning it.
     if split:
         out = _run(["tmux", "split-window", "-h" if split == "right" else "-v",
-                    "-c", cwd, "-P", "-F", "#{pane_id}", "--", *argv])
+                    "-c", cwd, "-P", "-F", "#{pane_id}", "--", *_with_access(argv)])
     else:
         out = _open_pane(cwd, argv)
     if out.returncode != 0:

@@ -25,6 +25,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import access
 import guardrails
 import memory
 import ptybridge
@@ -1698,6 +1699,8 @@ class Handler(BaseHTTPRequestHandler):
                                         # opens on the grid you are looking at
                                         "page": live_page()}),
                        "application/json")
+        elif self.path == "/settings/claude":
+            self._send(200, json.dumps(access.state()), "application/json")
         elif self.path == "/agents":
             self._send(200, json.dumps({"agents": push_cc.agents()}),
                       "application/json")
@@ -1783,6 +1786,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._keys()
         if self.path == "/prompt":
             return self._prompt()
+        if self.path.startswith("/settings/claude"):
+            return self._claude_settings()
         if self.path in ("/queue/play", "/queue/next"):
             return self._queue_control()
         if self.path in ("/queue", "/queue/add"):
@@ -2545,6 +2550,31 @@ class Handler(BaseHTTPRequestHandler):
             # is added later -- that would be sending something unseen
             _queue_once.discard(tid)
         self._send(200, json.dumps({"items": q[tid]}), "application/json")
+
+    def _claude_settings(self):
+        """Settings > Claude. access.py holds every rule; this only routes.
+        The key comes in on /settings/claude/key and never goes back out --
+        state() carries whether one is saved and a hint, not the key."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        try:
+            if self.path == "/settings/claude":
+                access.update(body)
+            elif self.path == "/settings/claude/key":
+                access.save_key(str(body.get("key") or ""))
+            elif self.path == "/settings/claude/key/delete":
+                access.delete_key()
+            elif self.path == "/settings/claude/login":
+                access.login()
+                return self._send(200, json.dumps({"ok": True}), "application/json")
+            else:
+                return self._send(404, "not found", "text/plain")
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except Exception as e:
+            return self._send(500, str(e)[:300], "text/plain")
+        self._send(200, json.dumps(access.state()), "application/json")
 
     def _queue_control(self):
         """/queue/play {terminal_id, playing} turns draining on or off;

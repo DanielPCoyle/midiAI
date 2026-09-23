@@ -13,6 +13,7 @@ const GLYPH = {
   project: 'folder',
   worktree: 'corner-down-right',
   mcp: 'zap',
+  settings: 'settings',
   prompts: 'grid',
   skills: 'star',
   hooks: 'link',
