@@ -160,6 +160,14 @@ export const promptAgent = (base, text, submit, terminal_id, replace) =>
     ...(terminal_id ? { terminal_id } : {}),
   });
 
+// A subagent type's definition: which file the next dispatch of it is built
+// from, and the model that file pins. A running subagent's model is fixed;
+// setAgentModel changes the definition, so it applies from the next one.
+export const getAgentDef = (base, type, cwd) =>
+  getJSON(base, `/agent-def?type=${encodeURIComponent(type)}&cwd=${encodeURIComponent(cwd || '')}`);
+export const setAgentModel = async (base, type, cwd, model) =>
+  JSON.parse(await post(base, '/agent-def/model', { type, cwd, model }));
+
 // The up-next queue, held by the server so it drains whichever agent you are
 // looking at. setQueue replaces the whole list: edit, reorder and remove are
 // all just a new list.
@@ -297,8 +305,10 @@ export const chooseDir = async (base, start) =>
 // state, not six polls.
 // The focused agent's whole conversation, from its transcript. The pane only
 // ever holds a screenful; `since` is how many turns the app already has.
-export const getHistory = (base, tid, since = 0) =>
-  getJSON(base, `/history?tid=${encodeURIComponent(tid || '')}&since=${since}`);
+// sub: a subagent of that agent, read from the log beside its parent's.
+export const getHistory = (base, tid, since = 0, sub = '') =>
+  getJSON(base, `/history?tid=${encodeURIComponent(tid || '')}&since=${since}`
+    + (sub ? `&sub=${encodeURIComponent(sub)}` : ''));
 
 export const getWork = (base, cwd) =>
   getJSON(base, `/work?cwd=${encodeURIComponent(cwd || '')}`);

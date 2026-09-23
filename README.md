@@ -820,6 +820,24 @@ Web only, and on purpose: iOS hands React Native no paste event and no
 clipboard image without another dependency. In Expo Go the composer still
 takes typed paths.
 
+## Subagents
+
+The focus view's **subagents** tab lists what the agent in focus has
+dispatched, each with the model it ran on. **view ›** opens one in the
+focus view itself: its own conversation (read from
+`<session>/subagents/agent-<id>.jsonl` through the parent -- every line of
+that log is `isSidechain`, which `history(path, sidechain=True)` reads
+rather than skips), its model and type read-only, and no composer, since a
+subagent takes no input. **‹ back** returns to the parent.
+
+A running subagent's model was fixed when it was dispatched; what can
+change is the next one. **NEXT DISPATCH** sets `model:` in the type's
+definition file (`<repo>/.claude/agents/<type>.md`, else
+`~/.claude/agents/<type>.md`), one frontmatter line, the rest of the file
+untouched. Built-ins have no file and plugin agents would be overwritten by
+their next update, so neither can be set here. `test_agent_def.py` is its
+gate.
+
 ## Memory
 
 midiAI keeps its own memory of every session, in place of the claude-mem

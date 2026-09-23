@@ -2041,12 +2041,15 @@ _history_cache = {}   # transcript -> (offset, turns, work since last text)
 _history_lock = threading.Lock()
 
 
-def history(path):
+def history(path, sidechain=False):
+    """sidechain: the log is a subagent's own, where every line is marked
+    isSidechain -- in a parent's log that mark means "not this conversation",
+    in a subagent's it is the whole conversation."""
     with _history_lock:
-        return _history(path)
+        return _history(path, sidechain)
 
 
-def _history(path):
+def _history(path, sidechain=False):
     """The whole conversation, from the session's own log.
 
     The pane cannot give it: Claude Code runs on the alternate screen, so a
@@ -2079,7 +2082,7 @@ def _history(path):
                 d = json.loads(raw)
             except (json.JSONDecodeError, ValueError):
                 continue
-            if d.get("isSidechain") or d.get("type") not in ("user", "assistant"):
+            if (d.get("isSidechain") and not sidechain) or d.get("type") not in ("user", "assistant"):
                 continue
             content = (d.get("message") or {}).get("content")
             if d["type"] == "user":
@@ -2392,6 +2395,9 @@ def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
                     if subfocus and x["id"] == subfocus[1]), None)
         if hit is not None:
             sinfo = sub_info(subs[hit], hit, scrolls.get(current, 0))
+            # where its conversation lives: the app reads a subagent's history
+            # through its parent, which is the only transcript mapui can find
+            sinfo.update(parent=(cur or {}).get("terminal_id"), sub=subs[hit]["id"])
             data = {"kind": "focus", "info": sinfo, "sub": True}
         else:
             pend = (summary.get("pending") or "").strip()
@@ -2439,6 +2445,7 @@ def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
                      disp_mod.render_plan(b, e, m, USAGE_MODES))
     elif view_name == "sessions" and mode == 1:
         rows = tuple({"label": x["label"], "type": x["type"],
+                      "model": short_model(x["model"]),
                       "running": x["running"],
                       "focused": bool(subfocus)
                       and subfocus[1] == x["id"]} for x in subs)
@@ -2470,6 +2477,7 @@ def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
         # is in, so the app gets them either way
         data = {"kind": "sessions", "repo": agent_name(cur),
                 "rows": [{"label": x["label"], "type": x["type"],
+                          "model": short_model(x["model"]),
                           "running": x["running"],
                           "focused": bool(subfocus)
                           and subfocus[1] == x["id"]}
@@ -4051,6 +4059,17 @@ bugcast: node /x/index.mjs - \u2714 Connected
     assert [(t["role"], t["text"]) for t in history(f.name)] == \
         [("user", "hi"), ("agent", "done"), ("user", "/compact"),
          ("note", "context compacted")], history(f.name)
+    os.unlink(f.name)
+
+    # a subagent's own log is all sidechain: skipped as a parent's furniture,
+    # read in full as the subagent's conversation
+    sc = [{**r, "isSidechain": True} for r in rows[:5]]
+    with _tf.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        f.write("\n".join(json.dumps(r) for r in sc) + "\n")
+    assert history(f.name) == [], "a parent's reading of it: nothing"
+    _history_cache.pop(f.name, None)
+    assert [(t["role"], t["text"]) for t in history(f.name, sidechain=True)] == \
+        [("user", "hi"), ("agent", "done")], "a subagent's reading: all of it"
     os.unlink(f.name)
 
     assert _OPT_RE.match("❯ 1. Yes").groups() == ("❯", "1", "Yes")

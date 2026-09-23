@@ -50,6 +50,8 @@ import {
   switchBranch,
   pasteImage,
   promptAgent,
+  getAgentDef,
+  setAgentModel,
   addToQueue,
   reviewPr,
   runTests,
@@ -367,19 +369,23 @@ function Focus({
   const histRef = useRef(hist);
   histRef.current = hist;
   useEffect(() => {
-    const tid = info?.tid;
+    // a subagent has no pane of its own: its history is asked for through
+    // the parent, and keyed apart so switching between them starts over
+    const tid = info?.tid || info?.parent;
+    const subId = info?.tid ? '' : info?.sub || '';
+    const key = subId ? `${tid}/${subId}` : tid;
     setShown(HISTORY_PAGE);
     if (!base || !tid || tab !== 'pretty') return undefined;
     let live = true;
     const pull = () => {
-      const have = histRef.current.tid === tid ? histRef.current : { turns: [], session: '' };
-      getHistory(base, tid, have.turns.length)
+      const have = histRef.current.tid === key ? histRef.current : { turns: [], session: '' };
+      getHistory(base, tid, have.turns.length, subId)
         .then((res) => {
           if (!live || !res) return;
           const fresh = res.session !== have.session || res.total < have.turns.length;
           if (!fresh && !res.turns.length) return;
           setHist({
-            tid,
+            tid: key,
             session: res.session,
             turns: fresh ? res.turns : [...have.turns, ...res.turns],
           });
@@ -390,7 +396,7 @@ function Focus({
     pull();
     const timer = setInterval(pull, 2000);
     return () => { live = false; clearInterval(timer); };
-  }, [base, info?.tid, tab]);
+  }, [base, info?.tid, info?.parent, info?.sub, tab]);
   // Pinned to the newest turn unless you have scrolled up to read.
   const chatRef = useRef(null);
   const atBottom = useRef(true);
@@ -421,7 +427,8 @@ function Focus({
   const lines = info.lines || [];
   const scraped = chatFromTerminal(lines, info.tldr || [], sentPrompts);
   const { doing } = scraped;
-  const logged = hist.tid === info.tid ? hist.turns : [];
+  const histKey = info.tid || (info.parent && info.sub ? `${info.parent}/${info.sub}` : null);
+  const logged = hist.tid === histKey ? hist.turns : [];
   // A prompt you just sent is in the log a moment later; until then it is
   // shown from here, the way the scrape path always did.
   const plain = (t) => String(t).split(/\s+/).join(' ').trim();
@@ -563,6 +570,10 @@ function Focus({
             <View style={[styles.contextFill, { width: `${contextPct}%` }]} />
           </View>
           <Text style={styles.contextPct}>{contextPct}%</Text>
+          {/* compact, clear, model and effort all go to a pane -- a
+              subagent has none, and with no tid they would land on its
+              parent. Its model and type are read, not chosen, here. */}
+          {!sub && (<>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="compact context"
@@ -582,7 +593,17 @@ function Focus({
             style={[styles.contextAction, clearArmed && styles.contextActionArmed]}>
             <MaterialIcons name="delete-sweep" size={18} color={clearArmed ? C.bad : C.dim} />
           </Pressable>
+          </>)}
         </View>
+        {sub ? (
+          <View style={styles.contextSettings}>
+            <Text style={styles.contextSettingLabel}>Model</Text>
+            <Text style={styles.contextSelectText}>{info.model || 'unknown'}</Text>
+            <View style={styles.contextSettingRule} />
+            <Text style={styles.contextSettingLabel}>Type</Text>
+            <Text style={styles.contextSelectText}>{info.effort || '?'}</Text>
+          </View>
+        ) : (
         <View style={styles.contextSettings}>
           <Text style={styles.contextSettingLabel}>Model</Text>
           <MenuButton
@@ -602,6 +623,7 @@ function Focus({
             glyphStyle={styles.contextSelectText}
           />
         </View>
+        )}
         </View>
       )}
 
@@ -629,34 +651,12 @@ function Focus({
           <View style={styles.title}>
             <Text style={styles.head}>SUBAGENTS</Text>
           </View>
-          <ScrollView contentContainerStyle={styles.rows}>
-            {subs.map((r, i) => (
-              <Pressable
-                key={i}
-                accessibilityRole="button"
-                accessibilityLabel={`focus subagent ${r.label}`}
-                onPress={() => {
-                  onSub?.(i);
-                  setTab('pretty');
-                }}
-                style={styles.row}>
-                <View
-                  style={[
-                    styles.dot,
-                    { backgroundColor: r.running ? '#f0c828' : '#3cd05a' },
-                  ]}
-                />
-                <View style={styles.rowBody}>
-                  <Text style={styles.rowName}>{r.label}</Text>
-                  <Text style={styles.rowSub}>
-                    {r.type} · {r.running ? 'running' : 'returned'}
-                  </Text>
-                </View>
-                {!!r.focused && <Text style={styles.tag}>focused</Text>}
-              </Pressable>
-            ))}
-            {!subs.length && <Empty what="no subagents spawned yet" />}
-          </ScrollView>
+          <SubagentList
+            subs={subs}
+            base={base}
+            cwd={place?.path || ''}
+            onFocus={(i) => { onSub?.(i); setTab('pretty'); }}
+          />
         </View>
       )}
 
@@ -879,7 +879,13 @@ function Focus({
           its own idea of what Enter means, so a second box underneath that
           also sends to the same pane is two prompts for one cursor. It comes
           back with the pretty view, which is the one that needs it. */}
-      {tab !== 'terminal' && (
+      {tab !== 'terminal' && sub && (
+        <Text style={styles.subNote}>
+          a subagent takes no input — its parent dispatched it and reads what it
+          returns. ‹ back to talk to the parent.
+        </Text>
+      )}
+      {tab !== 'terminal' && !sub && (
         <Composer
           info={info}
           base={base}
@@ -1104,6 +1110,106 @@ function Markdown({ text }) {
 // one agent's half-written prompt never lands in another's box.
 // ponytail: memory only -- a reload still loses it; localStorage if that bites
 const drafts = new Map();
+
+// The subagents of the agent in focus. Each row says which model that one
+// ran on; the line under it sets the model the NEXT dispatch of its type
+// gets, because a running subagent's model was fixed when it was spawned.
+// Only types with a definition file of the user's or the repo's can be set --
+// built-ins have none and a plugin's would be undone by its next update.
+const AGENT_MODELS = ['inherit', 'haiku', 'sonnet', 'opus', 'fable'];
+
+function SubagentList({ subs, base, cwd, onFocus }) {
+  const [defs, setDefs] = useState({});      // type -> /agent-def row
+  const [picking, setPicking] = useState(''); // the type whose picker is open
+  const [err, setErr] = useState('');
+  const types = [...new Set(subs.map((r) => r.type).filter(Boolean))];
+  useEffect(() => {
+    let live = true;
+    for (const t of types) {
+      if (defs[t]) continue;
+      getAgentDef(base, t, cwd)
+        .then((row) => live && setDefs((d) => ({ ...d, [t]: row })))
+        .catch(() => {});
+    }
+    return () => { live = false; };
+  }, [base, cwd, types.join(',')]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function choose(type, model) {
+    setErr('');
+    try {
+      const row = await setAgentModel(base, type, cwd, model);
+      setDefs((d) => ({ ...d, [type]: row }));
+      setPicking('');
+    } catch (e) {
+      setErr(String((e && e.message) || e));
+    }
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.rows}>
+      {!!err && <Text style={styles.err}>{err}</Text>}
+      {/* one line per type, not per row: the model a dispatch gets belongs
+          to its type, and four workers of one type are one setting */}
+      {types.length > 0 && (
+        <View style={styles.subTypes}>
+          <Text style={styles.head}>NEXT DISPATCH</Text>
+          {types.map((t) => {
+            const def = defs[t];
+            if (!def) return null;
+            return def.editable ? (
+              <View key={t} style={styles.subNext}>
+                <Text
+                  accessibilityRole="button"
+                  accessibilityLabel={`change the model for the next ${t}`}
+                  onPress={() => setPicking(picking === t ? '' : t)}
+                  style={styles.subNextText}>
+                  {t} runs on <Text style={styles.subNextModel}>{def.model}</Text> ▾
+                </Text>
+                {picking === t && AGENT_MODELS.map((m) => (
+                  <Text
+                    key={m}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: def.model === m }}
+                    onPress={() => choose(t, m)}
+                    style={[styles.subPick, def.model === m && styles.subPickOn]}>
+                    {m}
+                  </Text>
+                ))}
+              </View>
+            ) : (
+              <Text key={t} style={styles.subNextText}>
+                {t} is built-in or a plugin's — its model is chosen per dispatch
+              </Text>
+            );
+          })}
+        </View>
+      )}
+      {subs.map((r, i) => {
+        return (
+          <View key={i} style={styles.subRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`focus subagent ${r.label}`}
+              onPress={() => onFocus(i)}
+              style={styles.row}>
+              <View style={[styles.dot, { backgroundColor: r.running ? '#f0c828' : '#3cd05a' }]} />
+              <View style={styles.rowBody}>
+                <Text style={styles.rowName}>{r.label}</Text>
+                <Text style={styles.rowSub}>
+                  {r.type} · {r.running ? 'running' : 'returned'}
+                </Text>
+              </View>
+              {!!r.model && <Text style={styles.subModel}>{r.model}</Text>}
+              {!!r.focused && <Text style={styles.tag}>focused</Text>}
+              <Text style={styles.subOpen}>view ›</Text>
+            </Pressable>
+          </View>
+        );
+      })}
+      {!subs.length && <Empty what="no subagents spawned yet" />}
+    </ScrollView>
+  );
+}
 
 function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue, skills }) {
   const [text, setTextState] = useState(() => drafts.get(info.tid) || '');
@@ -4316,6 +4422,16 @@ const styles = StyleSheet.create({
   rowBody: { flexShrink: 1, gap: 2 },
   rowName: { color: C.text, fontSize: 14, flexShrink: 1 },
   rowSub: { color: C.faint, fontSize: 12 },
+  subRow: { gap: 2 },
+  subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
+  subOpen: { color: C.faint, fontSize: 11 },
+  subTypes: { gap: 6, paddingBottom: 8 },
+  subNote: { color: C.faint, fontSize: 12, paddingVertical: 10, textAlign: 'center' },
+  subNext: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
+  subNextText: { color: C.faint, fontSize: 11 },
+  subNextModel: { color: C.dim, ...mono },
+  subPick: { color: C.dim, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  subPickOn: { color: C.text, borderColor: C.accentText },
   tag: {
     color: C.dim,
     fontSize: 10,

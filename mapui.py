@@ -803,6 +803,7 @@ TERMINAL_APP = os.environ.get("MIDIAI_TERMINAL", "")
 # reaches the script below, and `%` followed by digits has nothing in it to
 # quote wrong -- which is why the script can be written as text at all.
 PANE_ID_RE = re.compile(r"^%\d+$")
+SUB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def openable(path):
@@ -945,6 +946,77 @@ def skill_rows(skill_md_paths, scope):
         out.append({"name": name, "description": skill_description(path),
                     "scope": scope, "path": path})
     return out
+
+
+# A subagent's model is fixed the moment its parent dispatches it -- nothing
+# outside can reach into a running one. What can change is the definition
+# the NEXT dispatch of that type is built from: its `model:` frontmatter.
+# Project definitions shadow user ones, the same order Claude Code loads
+# them in. Plugin agents are left alone (the next plugin update would undo
+# the edit without saying so) and built-ins like Explore have no file.
+AGENT_MODELS = ("inherit", "haiku", "sonnet", "opus", "fable")
+_FRONT_MODEL = re.compile(r"^model:.*$", re.M)
+
+
+def agent_def(agent_type, cwd):
+    """(path, scope) of the definition file for a subagent type, or
+    (None, None). The type is a path component here, so it has to pass the
+    same name check a skill's directory does before it gets near a join."""
+    if not SKILL_NAME_RE.match(agent_type or ""):
+        return None, None
+    rows = repo_worktrees(cwd) if cwd else []
+    root = rows[0]["path"] if rows else cwd
+    places = ([("project", os.path.join(root, ".claude", "agents"))] if root else []) + \
+        [("user", os.path.expanduser("~/.claude/agents"))]
+    for scope, folder in places:
+        path = os.path.join(folder, agent_type + ".md")
+        if os.path.isfile(path):
+            return path, scope
+    return None, None
+
+
+def agent_model(path):
+    """The `model:` a definition pins, or "inherit" when it pins none."""
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return ""
+    head = text.split("\n---", 1)[0] if text.startswith("---") else ""
+    m = _FRONT_MODEL.search(head)
+    return m.group(0).split(":", 1)[1].strip() if m else "inherit"
+
+
+def set_agent_model(path, model):
+    """Rewrite one line of the frontmatter; everything else in the file is
+    the author's and goes back byte for byte. None on success, else why."""
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError as e:
+        return f"could not read {path}: {e}"
+    if not text.startswith("---\n") or "\n---" not in text[3:]:
+        return f"{path} has no frontmatter to set a model in"
+    end = text.index("\n---", 3)
+    head, rest = text[:end], text[end:]
+    line = f"model: {model}"
+    head = _FRONT_MODEL.sub(line, head, count=1) if _FRONT_MODEL.search(head) \
+        else head + "\n" + line
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write(head + rest)
+        os.replace(tmp, path)
+    except OSError as e:
+        return f"could not write {path}: {e}"
+    return None
+
+
+def agent_def_row(agent_type, cwd):
+    path, scope = agent_def(agent_type, cwd)
+    return {"type": agent_type, "path": path, "scope": scope,
+            "model": agent_model(path) if path else "",
+            "editable": bool(path)}
 
 
 # What a hook entry may contain, per type, straight off Claude Code's own
@@ -1455,6 +1527,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._work_read()
         if self.path == "/work/diff" or self.path.startswith("/work/diff?"):
             return self._work_diff()
+        if self.path.startswith("/agent-def?"):
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            row = agent_def_row((q.get("type") or [""])[0], (q.get("cwd") or [""])[0])
+            return self._send(200, json.dumps(row), "application/json")
         if self.path.startswith("/memory/"):
             return self._memory_get()
         if self.path.startswith("/dirs"):
@@ -1555,6 +1631,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._prompt()
         if self.path in ("/queue", "/queue/add"):
             return self._queue_post()
+        if self.path == "/agent-def/model":
+            return self._agent_model_post()
         if self.path == "/paste":
             return self._paste()
         if self.path == "/record/start":
@@ -2129,6 +2207,22 @@ class Handler(BaseHTTPRequestHandler):
         if not text.strip():
             return self._send(400, "an empty file governs nothing", "text/plain")
         self._write_repo_file(path, text, root, bool(body.get("replace")))
+
+    def _agent_model_post(self):
+        """Set the model the next dispatch of a subagent type runs on."""
+        body = self._read_json_body() or {}
+        model = body.get("model")
+        if model not in AGENT_MODELS:
+            return self._send(400, f"model is one of: {', '.join(AGENT_MODELS)}", "text/plain")
+        path, _ = agent_def(body.get("type"), body.get("cwd") or "")
+        if not path:
+            return self._send(404, "no editable definition for that subagent type "
+                              "(built-in or plugin)", "text/plain")
+        err = set_agent_model(path, model)
+        if err:
+            return self._send(500, err, "text/plain")
+        self._send(200, json.dumps(agent_def_row(body.get("type"), body.get("cwd") or "")),
+                   "application/json")
 
     def _queue_post(self):
         """/queue replaces an agent's whole list -- one call covers edit,
@@ -3365,7 +3459,17 @@ class Handler(BaseHTTPRequestHandler):
         if not agent:
             return self._send(404, "no such agent", "text/plain")
         path = push_cc.transcript(agent)
-        turns = push_cc.history(path)
+        # A subagent's log sits beside its parent's, in the same JSONL shape,
+        # so one reader serves both. The id comes from the client, so it is
+        # checked before it is ever part of a path.
+        sub = (q.get("sub") or [""])[0]
+        if sub:
+            if not SUB_ID_RE.match(sub) or not path:
+                return self._send(400, "bad request", "text/plain")
+            path = os.path.join(path[:-len(".jsonl")], "subagents", f"agent-{sub}.jsonl")
+            if not os.path.isfile(path):
+                return self._send(404, "no such subagent", "text/plain")
+        turns = push_cc.history(path, sidechain=bool(sub))
         # /clear starts a new log under the same pane: the app starts over
         # when this changes rather than appending one session to another
         self._send(200, json.dumps({"session": os.path.basename(path or ""),
