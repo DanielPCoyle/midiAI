@@ -177,9 +177,17 @@ def _agent_read(target, n):
 def _agent_send(target, text):
     if not text:
         return _err("empty_send", "tmux send-keys errors on empty text")
-    out = _run(["tmux", "send-keys", "-l", "-t", target, "--", text])
-    if out.returncode != 0:
-        return _err("tmux_send_keys", out.stderr)
+    # A literal \r typed with -l lands in Claude Code's input as a newline,
+    # not a submit -- every prompt from the app sat in the box unsent. tmux's
+    # named Enter key is what submits, so each \r goes as that and the text
+    # around it stays literal.
+    for part in re.split(r"(\r)", text):
+        if not part:
+            continue
+        keys = ["Enter"] if part == "\r" else ["-l", "--", part]
+        out = _run(["tmux", "send-keys", "-t", target, *keys])
+        if out.returncode != 0:
+            return _err("tmux_send_keys", out.stderr)
     return _ok({})
 
 
@@ -202,25 +210,60 @@ def _name_taken(name):
     return name in taken.stdout.splitlines()
 
 
+def _has_server():
+    """Whether tmux has a server at all.
+
+    The server exits with its last session, so "no server running" is the
+    ordinary state of a machine nobody is working on -- not a fault. It has to
+    be asked because `new-window` and `split-window` both need a session to
+    attach to and neither can create one. Only `new-session` can.
+    """
+    return _run(["tmux", "list-sessions"]).returncode == 0
+
+
+def _open_pane(cwd, argv):
+    """A pane running argv in cwd -- a new window in the push session, or a
+    new session if this is the first pane on the machine.
+
+    Every path that opens one comes through here. _agent_start asked whether
+    the server was up and the worktree verbs did not, so creating or opening
+    a worktree worked all day and then failed the morning after the last agent
+    was closed -- tmux's own "no server running" surfacing to the app as a 500.
+    The question has one answer now, in one place.
+    """
+    if _has_server():
+        return _run(["tmux", "new-window", "-c", cwd,
+                     "-P", "-F", "#{pane_id}", "--", *argv])
+    return _run(["tmux", "new-session", "-d", "-s", "push", "-c", cwd,
+                 "-P", "-F", "#{pane_id}", "--", *argv])
+
+
 def _agent_start(args):
     rest = list(args[2:])
     name = rest[0] if rest else None
     if not name:
         return _err("bad_args", "agent start needs a name")
     cwd = _flag(rest, "--cwd") or os.getcwd()
-    split = _flag(rest, "--split") or "right"
+    split = _flag(rest, "--split") or ""     # empty means a window of its own
     argv = rest[rest.index("--") + 1:] if "--" in rest else []
 
     if _name_taken(name):
         return _err("agent_name_taken", f"agent name {name!r} already in use")
 
-    flag = "-h" if split == "right" else "-v"
-    if _run(["tmux", "list-sessions"]).returncode != 0:
-        out = _run(["tmux", "new-session", "-d", "-s", "push", "-c", cwd,
-                    "-P", "-F", "#{pane_id}", "--", *argv])
+    # A window each, not a split. Two agents sharing a window share its
+    # layout, and tmux keeps layout and zoom on the WINDOW -- every client in
+    # a group sees the same one. So a split makes it impossible for the app to
+    # show one agent while a terminal beside it shows another: zooming for one
+    # zooms for both. Window SELECTION is per session, so a window each is
+    # what lets the two of them look at different agents at once.
+    #
+    # `--split` still splits, for whoever wants a side-by-side on the glass.
+    # It is no longer what every caller passes without meaning it.
+    if split:
+        out = _run(["tmux", "split-window", "-h" if split == "right" else "-v",
+                    "-c", cwd, "-P", "-F", "#{pane_id}", "--", *argv])
     else:
-        out = _run(["tmux", "split-window", flag, "-c", cwd,
-                    "-P", "-F", "#{pane_id}", "--", *argv])
+        out = _open_pane(cwd, argv)
     if out.returncode != 0:
         return _err("tmux_start", out.stderr)
     _run(["tmux", "set-option", "-p", "-t", out.stdout.strip(),
@@ -281,8 +324,9 @@ def _worktree_create(args):
         out = _run(["git", "-C", cwd, "worktree", "add", dest, branch])  # branch exists already
         if out.returncode != 0:
             return _err("git_worktree_add", out.stderr)
-    out = _run(["tmux", "new-window", "-c", dest, "-P", "-F", "#{pane_id}",
-                "--", "claude", "--permission-mode", "auto"])
+    out = _open_pane(dest, ["claude", "--permission-mode", "auto"])
+    if out.returncode != 0:
+        return _err("tmux_new_window", out.stderr)
     if name:
         _run(["tmux", "set-option", "-p", "-t", out.stdout.strip(),
               "@agent_name", name])
@@ -439,8 +483,7 @@ def _worktree_open(args):
         return _err("worktree_missing", f"{dest} is not a directory")
     # creating and opening are different acts -- this is the one you want the
     # morning after, on a worktree that already exists
-    out = _run(["tmux", "new-window", "-c", dest, "--",
-               "claude", "--permission-mode", "auto"])
+    out = _open_pane(dest, ["claude", "--permission-mode", "auto"])
     if out.returncode != 0:
         return _err("tmux_new_window", out.stderr)
     return _ok({})

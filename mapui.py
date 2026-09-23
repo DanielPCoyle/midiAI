@@ -10,6 +10,7 @@ import argparse
 import base64
 import binascii
 import glob
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import ptybridge
 import push_cc
 
 PORT = 8765
@@ -43,6 +45,7 @@ WHISPER_MODEL = os.environ.get("MIDIAI_WHISPER_MODEL") or os.path.expanduser(
 RECORD_MAX_S = 120                 # a stuck button must not fill the disk
 _rec_lock = threading.Lock()
 _rec = None                        # (Popen, wav path) while one is running
+_app_test_runs = {}                # repo root -> push_cc.TestRun
 
 
 # Where pasted images land. Not the repo -- these are scratch, and a stray
@@ -201,6 +204,115 @@ def herdr_error(text):
 # a fact about this machine, not about any one checkout.
 PROJECTS_FILE = os.path.expanduser("~/.midiai/projects.json")
 
+# The guardrail checklist's state, per checkout. Beside projects.json rather
+# than inside the repo, deliberately: the starter list is a framework, and a
+# half-ticked framework committed to somebody's repo reads as a claim about
+# that repo that nobody agreed to. Somewhere in .github is the right home for
+# this the day a team decides it is theirs -- that is a decision to make on
+# purpose, not a default.
+GUARDRAILS_FILE = os.path.expanduser("~/.midiai/guardrails.json")
+
+
+def load_guardrails():
+    try:
+        with open(GUARDRAILS_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def save_guardrails(all_of_them):
+    os.makedirs(os.path.dirname(GUARDRAILS_FILE), exist_ok=True)
+    tmp = GUARDRAILS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(all_of_them, f, indent=2)
+    os.replace(tmp, GUARDRAILS_FILE)
+
+
+# What one checkout's record may contain. Anything else a client sends is
+# dropped rather than stored: this file is read back and rendered, so the
+# shape it can hold is decided here and not by whatever posted last.
+def clean_items(got):
+    """The one definition of a guardrail item's shape. A checklist's own
+    additions and a saved template hold the same thing, so they are cleaned by
+    the same function -- two cleaners is two shapes, and the one that drifts is
+    always the one you are not looking at."""
+    text = lambda v, n: str(v or "")[:n]
+    out = []
+    for item in (got or [])[:400]:
+        if not isinstance(item, dict) or not text(item.get("id"), 80):
+            continue
+        out.append({"id": text(item.get("id"), 80),
+                    "phase": text(item.get("phase"), 40) or "cross",
+                    "title": text(item.get("title"), 200),
+                    "implemented": text(item.get("implemented"), 4000),
+                    "validate": text(item.get("validate"), 4000)})
+    return out
+
+
+def clean_phases(got):
+    """The checklist's own tabs. Empty means "whatever the app ships" -- a
+    team that has never touched them should keep getting new ones as the
+    framework grows, and only taking ownership stops that."""
+    text = lambda v, n: str(v or "")[:n]
+    out, seen = [], set()
+    for phase in (got or [])[:40]:
+        if not isinstance(phase, dict):
+            continue
+        key = text(phase.get("key"), 40)
+        if not key or key in seen:
+            continue          # a duplicate key would shadow a whole tab
+        seen.add(key)
+        out.append({"key": key,
+                    "name": text(phase.get("name"), 60) or key,
+                    "constrains": text(phase.get("constrains"), 60),
+                    "what": text(phase.get("what"), 1000)})
+    return out
+
+
+# Named by a person, so a label rather than an identifier -- but it is a key in
+# a file this server writes, so it is stripped and capped rather than trusted.
+def clean_template_name(name):
+    return " ".join(str(name or "").split())[:60]
+
+
+TEMPLATES_FILE = os.path.expanduser("~/.midiai/guardrail-templates.json")
+
+
+def load_templates():
+    try:
+        with open(TEMPLATES_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def save_templates(all_of_them):
+    os.makedirs(os.path.dirname(TEMPLATES_FILE), exist_ok=True)
+    tmp = TEMPLATES_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(all_of_them, f, indent=2)
+    os.replace(tmp, TEMPLATES_FILE)
+
+
+def clean_guardrails(got):
+    if not isinstance(got, dict):
+        return {"checked": {}, "custom": [], "hidden": []}
+    custom = clean_items(got.get("custom"))
+    return {
+        # only the ticked ones: a key whose value is False is a box someone
+        # un-ticked, which is the same state as never having ticked it and
+        # should not outlive the gesture
+        "checked": {str(k)[:80]: True
+                    for k, v in (got.get("checked") or {}).items()
+                    if v and isinstance(got.get("checked"), dict)},
+        "custom": custom,
+        "hidden": [str(i)[:80] for i in (got.get("hidden") or [])[:500]],
+        "phases": clean_phases(got.get("phases")),
+    }
+
 
 def load_projects():
     try:
@@ -240,6 +352,122 @@ def repo_worktrees(cwd):
     except json.JSONDecodeError:
         return None
     return rows or None
+
+
+def git(root, *argv, timeout=30):
+    """The one call every /work route makes into git -- argv stays a list, so
+    a path or message with spaces or shell metacharacters in it can never be
+    reinterpreted, the same guarantee _repo_request and _pr_read already
+    lean on."""
+    return subprocess.run(["git", "-C", root, *argv],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+STATUS_WORD = {"M": "modified", "A": "added", "D": "deleted", "R": "renamed",
+              "C": "copied", "T": "typechange", "U": "conflicted", "?": "untracked"}
+CONFLICTS = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+
+
+def work_status(root):
+    """The working tree, split the three ways the GIT tab draws it: staged,
+    unstaged, and conflicted. `-z` NUL-terminates every part instead of
+    newline-separating them, which is what lets a path containing a newline
+    round-trip correctly; `-b` puts the `## ...` header in front as its own
+    part rather than a separate stream. A renamed or copied path carries its
+    old name as the NEXT part rather than on the same line, so that part has
+    to be consumed even when the entry turns out to be a conflict."""
+    out = git(root, "status", "--porcelain=v1", "-b", "-z", "--untracked-files=all")
+    parts = out.stdout.split("\0")
+    head_line = parts[0] if parts else ""
+    staged, unstaged, conflicts = [], [], []
+    i = 1
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if not entry:
+            continue
+        x, y, path = entry[0], entry[1], entry[3:]
+        old_path = ""
+        if x in ("R", "C"):
+            old_path = parts[i] if i < len(parts) else ""
+            i += 1
+        if x + y in CONFLICTS:
+            conflicts.append({"path": path, "state": STATUS_WORD["U"], "was": old_path})
+            continue
+        if x not in (" ", "?"):
+            staged.append({"path": path, "state": STATUS_WORD.get(x, x), "was": old_path})
+        if y != " ":
+            # untracked ("??") falls through to here too -- x is "?" so the
+            # staged check above never fires for it, and y is "?" as well, so
+            # STATUS_WORD["?"] gives it "untracked" with no special-casing
+            unstaged.append({"path": path, "state": STATUS_WORD.get(y, y), "was": old_path})
+    return head_line, staged, unstaged, conflicts
+
+
+def work_head(head_line):
+    """The `## ...` header line from `git status -b`, split into the branch
+    facts the GIT tab's header row shows. Four shapes to cover: a plain
+    branch, one tracking an upstream (with or without an ahead/behind
+    bracket), detached HEAD, and a fresh repo that has never committed."""
+    line = head_line[3:] if head_line.startswith("## ") else head_line
+    if line.startswith("HEAD ("):
+        return {"branch": "", "upstream": "", "ahead": 0, "behind": 0, "detached": True}
+    if line.startswith("No commits yet on "):
+        return {"branch": line[len("No commits yet on "):], "upstream": "",
+                "ahead": 0, "behind": 0, "detached": False}
+    branch, sep, rest = line.partition("...")
+    upstream, ahead, behind = "", 0, 0
+    if sep:
+        upstream, _, bracket = rest.partition(" [")
+        m = re.search(r"ahead (\d+)", bracket)
+        ahead = int(m.group(1)) if m else 0
+        m = re.search(r"behind (\d+)", bracket)
+        behind = int(m.group(1)) if m else 0
+    return {"branch": branch, "upstream": upstream, "ahead": ahead,
+            "behind": behind, "detached": False}
+
+
+def work_log(root, limit=120):
+    """The commit graph for the GIT tab's graph pane. `--graph` draws the DAG
+    as the same ASCII art `git log --graph` always has; \\x1f (a byte no
+    commit message will contain) separates the graph art from the per-commit
+    fields on the rest of the line. A pure connector line -- part of the art
+    but no commit attached to it -- has no separator at all, and is kept
+    rather than dropped so the graph the app draws has no gaps. A repo with
+    no commits yet makes git exit non-zero rather than print nothing, so that
+    is treated as "no log" rather than an error."""
+    fmt = "\x1f%H\x1f%h\x1f%an\x1f%ar\x1f%D\x1f%s"
+    out = git(root, "log", "--graph", "--all", "--decorate=short",
+             f"--max-count={limit}", f"--format={fmt}")
+    if out.returncode:
+        return []
+    rows = []
+    for line in out.stdout.split("\n"):
+        art, sep, rest = line.partition("\x1f")
+        if not sep:
+            if line:
+                rows.append({"art": line, "sha": ""})
+            continue
+        sha, short, who, when, refs, subject = rest.split("\x1f", 5)
+        rows.append({"art": art, "sha": sha, "short": short, "who": who,
+                     "when": when, "refs": refs, "subject": subject})
+    return rows
+
+
+def work_stashes(root):
+    """The stash list for the GIT tab's stash panel. An empty list here means
+    either no stashes or git failing outright -- both render the same way in
+    the app, so there is nothing to distinguish."""
+    out = git(root, "stash", "list", "--format=%gd\x1f%s")
+    if out.returncode:
+        return []
+    rows = []
+    for line in out.stdout.split("\n"):
+        if not line:
+            continue
+        ref, sep, text = line.partition("\x1f")
+        rows.append({"ref": ref, "text": text})
+    return rows
 
 
 def skill_description(skill_md_path):
@@ -328,6 +556,17 @@ def skill_path(scope, name, root):
 # this wire that turns into a command. Overridable by whoever starts the
 # server, which is the person whose editor it is.
 EDITOR_CMD = os.environ.get("MIDIAI_EDITOR", "code-insiders")
+
+# Which terminal to hand a pane to. Same bargain as EDITOR_CMD: the caller
+# picks WHAT to open and never WITH WHAT, so there is no argument on this wire
+# that becomes a command. Empty means whatever the OS opens a .command with,
+# which on a Mac is Terminal.
+TERMINAL_APP = os.environ.get("MIDIAI_TERMINAL", "")
+
+# A tmux pane id and nothing else. This is the only thing from the request that
+# reaches the script below, and `%` followed by digits has nothing in it to
+# quote wrong -- which is why the script can be written as text at all.
+PANE_ID_RE = re.compile(r"^%\d+$")
 
 
 def openable(path):
@@ -550,6 +789,54 @@ def hook_summary(entry):
 # making for a note. So the notes live here, beside the pastes and the
 # projects, and settings.json keeps only what Claude Code documents.
 NOTES_FILE = os.path.expanduser("~/.midiai/hook-notes.json")
+SKILL_LABELS_FILE = os.path.expanduser("~/.midiai/skill-labels.json")
+
+
+def skill_label_key(scope, name, root="", path=""):
+    place = path if scope == "plugin" else (root if scope == "project" else "")
+    return "\u0000".join([scope or "", os.path.realpath(place) if place else "", name or ""])
+
+
+def load_skill_labels():
+    try:
+        with open(SKILL_LABELS_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def save_skill_labels(labels):
+    try:
+        os.makedirs(os.path.dirname(SKILL_LABELS_FILE), exist_ok=True)
+        tmp = SKILL_LABELS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(labels, f, indent=1, sort_keys=True)
+        os.replace(tmp, SKILL_LABELS_FILE)
+    except OSError as e:
+        print(f"skill labels: {e}", file=sys.stderr, flush=True)
+
+
+def set_skill_label(scope, name, label, root="", path=""):
+    labels = load_skill_labels()
+    key = skill_label_key(scope, name, root, path)
+    label = " ".join(str(label or "").split())[:80]
+    if label:
+        labels[key] = label
+    else:
+        labels.pop(key, None)
+    save_skill_labels(labels)
+
+
+def parked_key(scope, event, matcher, summary):
+    """The id a parked hook is found again by.
+
+    A hash, not the readable key the notes file uses, because this one travels:
+    the app sends it back to turn the hook on again. note_key joins its parts
+    with NUL, which is fine in a file nobody transports and a nuisance in
+    anything that has to survive a shell, a log line or a grep."""
+    return hashlib.sha1(
+        note_key(scope, event, matcher, summary).encode()).hexdigest()[:16]
 
 
 def note_key(scope, event, matcher, summary):
@@ -568,6 +855,15 @@ def load_notes():
     return got if isinstance(got, dict) else {}
 
 
+def hook_note(notes, key):
+    """Normalize old description-only notes and current metadata records."""
+    value = notes.get(key, "")
+    if isinstance(value, dict):
+        return {"description": str(value.get("description") or ""),
+                "label": str(value.get("label") or "")}
+    return {"description": str(value or ""), "label": ""}
+
+
 def save_notes(notes):
     """Best effort, like the projects list: a note that cannot be written is
     not a reason to fail the hook write it was describing."""
@@ -579,6 +875,215 @@ def save_notes(notes):
         os.replace(tmp, NOTES_FILE)
     except OSError as e:
         print(f"hook notes: {e}", file=sys.stderr, flush=True)
+
+
+# Where a setting is read from, highest precedence first -- Claude Code's own
+# order, minus the two levels above it (managed settings and --settings) which
+# this app has no business writing. First file that names a key wins.
+def settings_chain(root):
+    return [("local", os.path.join(root, ".claude", "settings.local.json")),
+            ("project", os.path.join(root, ".claude", "settings.json")),
+            ("user", os.path.expanduser("~/.claude/settings.json"))]
+
+
+def read_settings(path):
+    try:
+        with open(path) as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def mcp_rows(cwd):
+    """MCP servers visible from ``cwd``, after Claude Code's scope precedence.
+
+    MCP configuration deliberately does not live in settings.json: user and
+    private-per-project entries are in ~/.claude.json, while shared project
+    entries are in the repository's .mcp.json.  Return only display metadata;
+    env and headers can contain secrets and never belong on this wire.
+    """
+    rows = repo_worktrees(cwd)
+    root = rows[0]["path"] if rows else cwd
+    home = read_settings(os.path.expanduser("~/.claude.json"))
+    sources = []
+
+    projects = home.get("projects") if isinstance(home, dict) else None
+    if isinstance(projects, dict):
+        # Claude keys local MCPs by the directory the project was opened in.
+        # Prefer the exact cwd, with the resolved repository root as fallback.
+        for candidate in dict.fromkeys([cwd, root]):
+            rec = projects.get(candidate)
+            servers = rec.get("mcpServers") if isinstance(rec, dict) else None
+            if isinstance(servers, dict):
+                sources.append(("local", servers))
+
+    shared = read_settings(os.path.join(root, ".mcp.json")).get("mcpServers")
+    if isinstance(shared, dict):
+        sources.append(("project", shared))
+    user = home.get("mcpServers") if isinstance(home, dict) else None
+    if isinstance(user, dict):
+        sources.append(("user", user))
+
+    # Enabled plugins may bundle MCPs at their root. They are lower precedence
+    # than all three manually configured scopes and are still useful to see:
+    # for many installs these are most of the MCPs Claude actually starts.
+    try:
+        installed = read_settings(
+            os.path.expanduser("~/.claude/plugins/installed_plugins.json")
+        ).get("plugins", {})
+    except AttributeError:
+        installed = {}
+    if isinstance(installed, dict):
+        for plugin_key, records in installed.items():
+            enabled, _ = resolve_in_map(root, plugin_key, "enabledPlugins")
+            if enabled is False or not isinstance(records, list) or not records:
+                continue
+            record = records[0] if isinstance(records[0], dict) else {}
+            install_path = record.get("installPath")
+            if not isinstance(install_path, str):
+                continue
+            short = plugin_key.split("@")[0]
+            plugin_mcp = read_settings(os.path.join(install_path, ".mcp.json"))
+            # Plugin files exist in both accepted shapes: the standard
+            # {mcpServers:{...}} wrapper and a direct name-to-config map.
+            found = plugin_mcp.get("mcpServers", plugin_mcp)
+            servers = dict(found) if isinstance(found, dict) else {}
+            # ...and a third site this missed entirely: a marketplace entry can
+            # declare mcpServers inline, with no .mcp.json anywhere in the
+            # install. Firebase does, which is how the one server that was
+            # actually failing became the one server the rail could not draw.
+            market = read_settings(os.path.join(install_path, ".claude-plugin",
+                                                "marketplace.json"))
+            for entry in market.get("plugins") or []:
+                if isinstance(entry, dict) and entry.get("name") == short:
+                    inline = entry.get("mcpServers")
+                    if isinstance(inline, dict):
+                        for key, config in inline.items():
+                            servers.setdefault(key, config)
+            if servers:
+                # Preserve the plugin identity because two plugins can use the
+                # same short server name without being the same MCP.
+                sources.append(("plugin", {
+                    f"{short}:{name}": config for name, config in servers.items()
+                }))
+
+    out, seen = [], set()
+    for scope, servers in sources:       # local > project > user
+        for name, config in servers.items():
+            if not isinstance(name, str) or name in seen:
+                continue
+            seen.add(name)
+            config = config if isinstance(config, dict) else {}
+            transport = str(config.get("type") or ("http" if config.get("url") else "stdio"))
+            endpoint = config.get("url") or config.get("command") or ""
+            if config.get("url"):
+                # Query strings and userinfo are common places for credentials.
+                # The rail needs an address, never authentication material.
+                parsed = urllib.parse.urlsplit(str(endpoint))
+                host = parsed.hostname or ""
+                if parsed.port:
+                    host += f":{parsed.port}"
+                endpoint = urllib.parse.urlunsplit(
+                    (parsed.scheme, host, parsed.path, "", "")
+                )
+            out.append({"name": name, "scope": scope, "transport": transport,
+                        "endpoint": str(endpoint)[:300]})
+    return sorted(out, key=lambda row: row["name"].lower())
+
+
+MCP_TTL = 120.0     # a health check spawns every stdio server; do it rarely
+_mcp_health = {}    # cwd -> {at, busy, rows, err}
+
+
+def mcp_health_fetch(cwd, names):
+    """One `claude mcp list`, on its own thread.
+
+    Nine seconds, because it starts every configured stdio server and speaks
+    to every remote one. That is far too long to hold a request open, and far
+    too expensive to repeat per poll -- so it runs behind the list the way
+    pr_fetch runs behind the PR list, and the first answer says `checking`
+    rather than lying `down`."""
+    slot = _mcp_health[cwd]
+    try:
+        out = subprocess.run(["claude", "mcp", "list"], cwd=cwd,
+                             capture_output=True, text=True, timeout=120)
+        rows = push_cc.mcp_health(out.stdout + "\n" + out.stderr, names)
+        slot.update(rows=rows, err="" if rows else (out.stderr.strip()[:120]),
+                    busy=False)
+    except Exception as e:
+        slot.update(rows={}, err=type(e).__name__, busy=False)
+
+
+def mcp_health_for(cwd, names, now):
+    """The cached health for this checkout, refreshing behind you."""
+    slot = _mcp_health.setdefault(cwd, {"at": -MCP_TTL, "rows": {}, "busy": False,
+                                        "err": ""})
+    if not slot["busy"] and now - slot["at"] >= MCP_TTL:
+        slot.update(at=now, busy=True)
+        threading.Thread(target=mcp_health_fetch, args=(cwd, names),
+                         daemon=True).start()
+    return slot
+
+
+def resolve_in_map(root, key, sub):
+    """(value, scope) for `sub[key]` -- the first settings file that names it.
+
+    Reported rather than assumed: a plugin or a skill with no entry anywhere is
+    a real state, and saying "on" about it would be inventing a setting the
+    user never made."""
+    for scope, path in settings_chain(root):
+        got = read_settings(path).get(sub)
+        if isinstance(got, dict) and key in got:
+            return got[key], scope
+    return None, None
+
+
+# The four states a skill can be in, from Claude Code's own reference. Absent
+# means "on" -- so turning one back on deletes the key rather than writing the
+# word, and settings.json stays a list of the decisions actually made.
+SKILL_STATES = ("on", "name-only", "user-invocable-only", "off")
+
+# A hook has no off switch in the schema: the only documented one is
+# disableAllHooks, which takes the status line and @ suggestions with it. So a
+# hook that is off lives here instead, whole, and goes back where it was when
+# it is turned on again. settings.json keeps only what Claude Code documents.
+PARKED_FILE = os.path.expanduser("~/.midiai/hooks-parked.json")
+
+
+def load_parked():
+    try:
+        with open(PARKED_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def save_parked(parked):
+    try:
+        os.makedirs(os.path.dirname(PARKED_FILE), exist_ok=True)
+        tmp = PARKED_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(parked, f, indent=1, sort_keys=True)
+        os.replace(tmp, PARKED_FILE)
+    except OSError as e:
+        print(f"parked hooks: {e}", file=sys.stderr, flush=True)
+
+
+def installed_plugins():
+    """Every plugin on this machine, as `name@marketplace`.
+
+    From the plugin manager's own record rather than by walking the cache
+    directory: the cache holds a directory per version, and a plugin that was
+    updated this morning has two."""
+    try:
+        with open(os.path.expanduser("~/.claude/plugins/installed_plugins.json")) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    plugins = got.get("plugins") if isinstance(got, dict) else None
+    return sorted(plugins) if isinstance(plugins, dict) else []
 
 
 def hook_rows(settings_path, scope):
@@ -618,6 +1123,7 @@ def hook_rows(settings_path, scope):
                 # the editor sends them back to say which of several hooks on
                 # the same event it means. Matching on the summary instead
                 # would edit the wrong one the moment two of them agreed.
+                note = hook_note(notes, note_key(scope, event, matcher, summary))
                 out.append({"event": event, "matcher": matcher,
                             "type": entry.get("type") or "command",
                             "summary": summary[:400],
@@ -628,8 +1134,8 @@ def hook_rows(settings_path, scope):
                             # field rather than rewriting one it cannot see
                             "entry": entry,
                             "name": str(entry.get("statusMessage") or ""),
-                            "description": notes.get(
-                                note_key(scope, event, matcher, summary), ""),
+                            "description": note["description"],
+                            "label": note["label"],
                             "gi": gi, "hi": hi,
                             "scope": scope, "path": settings_path})
     return out
@@ -674,6 +1180,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._raw(200, f.read(), "image/png")
             except OSError:       # push_cc down, or no screen to mirror yet
                 return self._send(404, "no frame", "text/plain")
+        if self.path.startswith("/pty/where"):
+            return self._pty_where()
+        if self.path.startswith("/pty/stream"):
+            return self._pty_stream()
         if self.path == "/surface":
             try:
                 with open(push_cc.SURFACE_FILE) as f:
@@ -683,6 +1193,30 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/target":
             return self._send(200, json.dumps({**read_target(), **push_state()}),
                               "application/json")
+        if self.path == "/pr" or self.path.startswith("/pr?"):
+            return self._pr_read()
+        if self.path == "/prs" or self.path.startswith("/prs?"):
+            return self._prs_read()
+        if self.path == "/guardrail-templates":
+            return self._templates_read()
+        if self.path == "/guardrails" or self.path.startswith("/guardrails?"):
+            return self._guardrails_read()
+        if self.path == "/governs" or self.path.startswith("/governs?"):
+            return self._governs_read()
+        if self.path == "/govern" or self.path.startswith("/govern?"):
+            return self._govern_read()
+        if self.path == "/workflows" or self.path.startswith("/workflows?"):
+            return self._workflows_read()
+        if self.path == "/workflow" or self.path.startswith("/workflow?"):
+            return self._workflow_read()
+        if self.path == "/tests" or self.path.startswith("/tests?"):
+            return self._tests_read()
+        # exact "==" plus a "?"-qualified startswith, never a bare prefix --
+        # otherwise this would also swallow /work/diff
+        if self.path == "/work" or self.path.startswith("/work?"):
+            return self._work_read()
+        if self.path == "/work/diff" or self.path.startswith("/work/diff?"):
+            return self._work_diff()
         if self.path.startswith("/dirs"):
             return self._dirs()
         if self.path.startswith("/choose-dir"):
@@ -697,6 +1231,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/agents":
             self._send(200, json.dumps({"agents": push_cc.agents()}),
                       "application/json")
+        elif self.path == "/mcp/health" or self.path.startswith("/mcp/health?"):
+            return self._mcp_health()
+        elif self.path == "/mcps" or self.path.startswith("/mcps?"):
+            query = urllib.parse.urlsplit(self.path).query
+            cwd = (urllib.parse.parse_qs(query).get("cwd") or [None])[0] or target_cwd()
+            self._send(200, json.dumps({"mcps": mcp_rows(cwd)}),
+                       "application/json")
         elif self.path == "/worktrees" or self.path.startswith("/worktrees?"):
             self._worktrees_list()
         elif self.path == "/projects":
@@ -734,6 +1275,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._skill_delete()
         if self.path == "/skill/move":
             return self._skill_move()
+        if self.path == "/skill/state":
+            return self._skill_state()
+        if self.path == "/hook/toggle":
+            return self._hook_toggle()
+        if self.path == "/plugin/toggle":
+            return self._plugin_toggle()
         if self.path == "/open":
             return self._open_in_editor()
         if self.path == "/hook":
@@ -748,6 +1295,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._worktrees_switch()
         if self.path == "/worktrees/open":
             return self._worktrees_open()
+        if self.path == "/pty/input":
+            return self._pty_write("input")
+        if self.path == "/pty/resize":
+            return self._pty_write("resize")
+        if self.path == "/pty/close":
+            return self._pty_write("close")
+        if self.path == "/terminal/open":
+            return self._terminal_open()
+        if self.path == "/keys":
+            return self._keys()
         if self.path == "/prompt":
             return self._prompt()
         if self.path == "/paste":
@@ -756,6 +1313,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._record_start()
         if self.path == "/record/stop":
             return self._record_stop()
+        if self.path == "/pr/review":
+            return self._pr_review()
+        if self.path == "/workflow":
+            return self._workflow_write()
+        if self.path == "/govern":
+            return self._govern_write()
+        if self.path.startswith("/mcp/") and self.path != "/mcp/health":
+            return self._mcp_do(self.path[len("/mcp/"):])
+        if self.path == "/guardrails":
+            return self._guardrails_write()
+        if self.path == "/guardrail-template":
+            return self._template_write()
+        if self.path == "/guardrail-template/delete":
+            return self._template_delete()
+        if self.path == "/tests/run":
+            return self._tests_run()
+        if self.path == "/tests/stop":
+            return self._tests_stop()
+        if self.path == "/work/do":
+            return self._work_do()
         if self.path != "/macros":
             return self._send(404, "no", "text/plain")
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -771,8 +1348,20 @@ class Handler(BaseHTTPRequestHandler):
             [[None if not e else
               {"label": e.get("label") or push_cc.label_for(e.get("text", "")),
                "text": e.get("text", ""),
+               "prefix": e.get("prefix", ""),
+               "dynamic": e.get("dynamic", ""),
+               "fields": [
+                   {"name": str(field.get("name", ""))[:40],
+                    "label": str(field.get("label", ""))[:80],
+                    "placeholder": str(field.get("placeholder", ""))[:160]}
+                   for field in (e.get("fields") or [])[:20]
+                   if isinstance(field, dict)
+               ],
                "colour": int(e.get("colour", push_cc.BLUE)) & 0x7F,
-               "tag": e.get("tag"), "submit": bool(e.get("submit"))}
+               "tag": e.get("tag"), "submit": bool(e.get("submit")),
+               "scope": e.get("scope", "global"),
+               "project": e.get("project", ""),
+               "worktree": e.get("worktree", "")}
               for e in (pg or [])[:push_cc.MACRO_SLOTS]] for pg in pages],
             labels)
         self._send(200, "ok", "text/plain")
@@ -815,6 +1404,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise TypeError
             keep = {k: int(cmd[k])
                     for k in ("tab", "seat", "page", "answer") if k in cmd}
+            if "answer_text" in cmd:
+                answer_text = cmd["answer_text"]
+                if (not isinstance(answer_text, str) or not answer_text.strip()
+                        or len(answer_text) > 10000):
+                    raise ValueError("bad custom answer")
+                keep["answer_text"] = answer_text.strip()
             if "cc" in cmd:
                 cc = int(cmd["cc"])
                 if not 0 <= cc <= 127:
@@ -835,6 +1430,659 @@ class Handler(BaseHTTPRequestHandler):
         push_cc.append_command(keep)
         self._send(200, "ok", "text/plain")
 
+    def _repo_request(self, body=None):
+        """Resolve only an existing git checkout supplied by the app."""
+        cwd = (body or {}).get("cwd") or target_cwd()
+        cwd = os.path.realpath(os.path.expanduser(str(cwd)))
+        if not os.path.isdir(cwd):
+            return None, "checkout does not exist"
+        check = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=10)
+        if check.returncode:
+            return None, "not a git checkout"
+        return check.stdout.strip(), ""
+
+    def _pr_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        try:
+            number = int((q.get("number") or [0])[0])
+        except (TypeError, ValueError):
+            number = 0
+        if err or number < 1:
+            return self._send(400, err or "invalid PR number", "text/plain")
+        fields = "number,title,body,author,baseRefName,headRefName,files,statusCheckRollup,url"
+        out = subprocess.run(["gh", "pr", "view", str(number), "--json", fields],
+                             cwd=root, capture_output=True, text=True, timeout=30)
+        if out.returncode:
+            return self._send(502, (out.stderr.strip() or "gh failed")[:500], "text/plain")
+        diff = subprocess.run(["gh", "pr", "diff", str(number)], cwd=root,
+                              capture_output=True, text=True, timeout=45)
+        try:
+            row = json.loads(out.stdout)
+        except json.JSONDecodeError:
+            return self._send(502, "gh returned invalid JSON", "text/plain")
+        rollup = row.pop("statusCheckRollup", []) or []
+        row.update(author=(row.get("author") or {}).get("login", ""),
+                   base=row.pop("baseRefName", ""), head=row.pop("headRefName", ""),
+                   checks=push_cc.check_state(rollup),
+                   # the colour on the list row, spelled out: which check, and
+                   # where to go when it is the red one
+                   runs=push_cc.check_rows(rollup),
+                   diff=(diff.stdout if not diff.returncode else diff.stderr)[:250000])
+        self._send(200, json.dumps(row), "application/json")
+
+    def _prs_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        head = subprocess.run(["git", "-C", root, "branch", "--show-current"],
+                              capture_output=True, text=True, timeout=10)
+        fields = "number,title,author,isDraft,reviewDecision,statusCheckRollup,headRefName"
+        out = subprocess.run(["gh", "pr", "list", "--limit", str(push_cc.PR_MAX),
+                              "--json", fields], cwd=root, capture_output=True,
+                             text=True, timeout=30)
+        if out.returncode:
+            return self._send(502, (out.stderr.strip() or "gh failed")[:500], "text/plain")
+        try:
+            rows = push_cc.pr_rows(json.loads(out.stdout), head.stdout.strip())
+        except json.JSONDecodeError:
+            return self._send(502, "gh returned invalid JSON", "text/plain")
+        self._send(200, json.dumps({"kind": "prs", "repo": os.path.basename(root),
+                                    "rows": rows, "err": ""}), "application/json")
+
+    def _workflows_read(self):
+        """Every workflow in the checkout, described by its own contents.
+
+        A directory listing, not a `gh` call: these are files in the tree, and
+        the ones that matter most are the ones that have never run -- a
+        workflow added on a branch has no runs to be found by, and asking
+        GitHub about it would return nothing at all."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        rows = []
+        here = os.path.join(root, push_cc.WORKFLOW_DIR)
+        for path in sorted(glob.glob(os.path.join(here, "*.yml")) +
+                           glob.glob(os.path.join(here, "*.yaml"))):
+            stem = os.path.splitext(os.path.basename(path))[0]
+            try:
+                text = open(path).read()
+            except OSError:
+                continue
+            # `editable` is the honest half of the name rule: a file already on
+            # disk under a name this server will not write back is still worth
+            # listing and reading, it just cannot be saved from here, and the
+            # screen has to know that before it draws a Save.
+            rows.append({"file": os.path.basename(path), "name": stem,
+                         "lines": text.count("\n") + 1,
+                         "editable": bool(push_cc.WORKFLOW_NAME_RE.match(stem))
+                                     and path.endswith(".yml"),
+                         **push_cc.workflow_meta(text)})
+        self._send(200, json.dumps({"kind": "workflows", "dir": push_cc.WORKFLOW_DIR,
+                                    "repo": os.path.basename(root), "rows": rows}),
+                   "application/json")
+
+    def _workflow_read(self):
+        """One workflow's text, by name."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        path = push_cc.workflow_path((q.get("name") or [""])[0], root)
+        if err or not path:
+            return self._send(400, err or "invalid workflow name", "text/plain")
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError as e:
+            return self._send(404, f"could not read it: {e}", "text/plain")
+        self._send(200, json.dumps({"name": os.path.splitext(os.path.basename(path))[0],
+                                    "path": os.path.relpath(path, root), "body": text,
+                                    **push_cc.workflow_meta(text)}), "application/json")
+
+    def _workflow_write(self):
+        """Create or replace one workflow, the same bargain _skill_write drives.
+
+        The caller sends a name, never a path: WORKFLOW_NAME_RE is what makes
+        that safe to expose on a server --lan puts on the network, and
+        `.github/workflows` is named by this file. Create and update are one
+        route because the name alone decides the path, so "the one already
+        there" and "a new one" are the same write.
+
+        A workflow runs on somebody else's machine with this repo's secrets, so
+        the one thing this will not do is write a file nobody asked for by that
+        name: `replace` is the editor saying it opened this one and meant to
+        change it, and without it an existing workflow is a 409 rather than a
+        silent overwrite of a pipeline someone is relying on."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        path = push_cc.workflow_path(body.get("name"), root)
+        text = body.get("body")
+        if err or not path or not isinstance(text, str):
+            return self._send(
+                400, err or "a workflow name is lowercase letters, digits and "
+                            "dashes, starting with a letter", "text/plain")
+        if not text.strip():
+            return self._send(400, "an empty workflow is not a workflow", "text/plain")
+        self._write_repo_file(path, text, root, bool(body.get("replace")))
+
+    def _write_repo_file(self, path, text, root, replace):
+        """Put text at a path this server derived, or say why not.
+
+        Both editable things in the repo -- a workflow and the files that
+        govern a pull request -- land here, because these four lines are the
+        whole security boundary and two copies of them is two chances to fix
+        only one. The caller has already turned whatever it was given into a
+        path; nothing here takes one from a request."""
+        if os.path.exists(path) and not replace:
+            return self._send(409, f"{os.path.basename(path)} already exists",
+                              "text/plain")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(text if text.endswith("\n") else text + "\n")
+            os.replace(tmp, path)
+        except OSError as e:
+            return self._send(500, f"could not write it: {e}", "text/plain")
+        self._send(200, json.dumps({"path": os.path.relpath(path, root)}),
+                   "application/json")
+
+    def _templates_read(self):
+        """Every saved checklist, whole.
+
+        Not a name list plus a fetch per name: a template is a few kilobytes,
+        there are never many, and the screen wants to say how big each one is
+        before you pick it. One request answers the whole panel."""
+        rows = []
+        for name, spot in sorted(load_templates().items()):
+            if not isinstance(spot, dict):
+                continue
+            rows.append({"name": name, "made": spot.get("made") or 0,
+                         "items": clean_items(spot.get("items")),
+                         "phases": clean_phases(spot.get("phases"))})
+        self._send(200, json.dumps({"kind": "guardrail-templates", "rows": rows}),
+                   "application/json")
+
+    def _template_write(self):
+        """Save a checklist under a name, for use in another checkout.
+
+        The items and not the ticks: which guardrails a team holds itself to
+        travels between repos, and whether each one is actually in force is a
+        fact about one repo that would be a lie anywhere else."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        name = clean_template_name(body.get("name"))
+        items = clean_items(body.get("items"))
+        if not name:
+            return self._send(400, "a template needs a name", "text/plain")
+        if not items:
+            return self._send(400, "an empty checklist is not a template", "text/plain")
+        everything = load_templates()
+        # same bargain as a workflow: overwriting one someone else is loading
+        # from is a way to lose a list by reusing its name
+        if name in everything and not body.get("replace"):
+            return self._send(409, f"a template called {name} already exists",
+                              "text/plain")
+        everything[name] = {"made": int(time.time()), "items": items,
+                            "phases": clean_phases(body.get("phases"))}
+        try:
+            save_templates(everything)
+        except OSError as e:
+            return self._send(500, f"could not save it: {e}", "text/plain")
+        self._send(200, json.dumps({"name": name, "count": len(items)}),
+                   "application/json")
+
+    def _template_delete(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        name = clean_template_name(body.get("name"))
+        everything = load_templates()
+        if name not in everything:
+            return self._send(404, "no template by that name", "text/plain")
+        del everything[name]
+        try:
+            save_templates(everything)
+        except OSError as e:
+            return self._send(500, f"could not save it: {e}", "text/plain")
+        self._send(200, "gone", "text/plain")
+
+    def _mcp_health(self):
+        """Which of them are actually up, cached behind a thread.
+
+        Separate from /mcps on purpose: the list is a file read and answers
+        instantly, the health is nine seconds of starting subprocesses. Tying
+        them together would make the rail wait on the slow half to draw the
+        fast one."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        cwd = (q.get("cwd") or [""])[0] or target_cwd()
+        cwd = os.path.realpath(os.path.expanduser(str(cwd)))
+        if not os.path.isdir(cwd):
+            return self._send(400, "checkout does not exist", "text/plain")
+        # `claude mcp list` prints a plugin's server as `plugin:<plugin>:<name>`
+        # where mcp_rows calls it `<plugin>:<name>` -- the same server, one
+        # prefix apart. Ask under both spellings and answer under ours, or
+        # every plugin MCP draws as "never checked" forever.
+        names = [row["name"] for row in mcp_rows(cwd)]
+        theirs = {n: n for n in names}
+        theirs.update({f"plugin:{n}": n for n in names})
+        slot = mcp_health_for(cwd, list(theirs), time.time())
+        rows = {theirs.get(k, k): v for k, v in (slot["rows"] or {}).items()}
+        self._send(200, json.dumps({"kind": "mcp-health", "rows": rows,
+                                    "checking": slot["busy"], "err": slot["err"]}),
+                   "application/json")
+
+    # `disable` is only honest for the scopes Claude Code actually has a switch
+    # for. A project (.mcp.json) server is listed in settings.json's
+    # disabledMcpjsonServers, and a plugin's MCP goes off with its plugin. A
+    # user or local server has no such key -- the only way to stop it is to
+    # remove it, and offering a Disable that quietly did a Remove would be the
+    # worst of the three.
+    MCP_VERBS = ("login", "logout", "remove", "add", "disable", "enable")
+
+    def _mcp_do(self, verb):
+        body = self._read_json_body()
+        if body is None or verb not in self.MCP_VERBS:
+            return self._send(400, "bad request", "text/plain")
+        cwd = os.path.realpath(os.path.expanduser(
+            str(body.get("cwd") or target_cwd())))
+        if not os.path.isdir(cwd):
+            return self._send(400, "checkout does not exist", "text/plain")
+        name = str(body.get("name") or "").strip()
+        if not name or len(name) > 120 or "\n" in name:
+            return self._send(400, "that is not an MCP name", "text/plain")
+        if verb in ("disable", "enable"):
+            return self._mcp_switch(cwd, name, verb == "disable")
+        if verb == "add":
+            return self._mcp_add(cwd, body, name)
+        # login opens a browser and waits for the redirect, so it cannot be
+        # awaited inside a request -- it is started and its result is read off
+        # the next health check, which is the same thing the user is watching.
+        argv = ["claude", "mcp", verb, name]
+        if verb == "remove":
+            scope = str(body.get("scope") or "local")
+            if scope not in ("local", "user", "project"):
+                return self._send(400, "unknown scope", "text/plain")
+            argv += ["-s", scope]
+        if verb == "login":
+            subprocess.Popen(argv, cwd=cwd, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            _mcp_health.pop(cwd, None)      # whatever it says now is stale
+            return self._send(200, "a browser is opening to authorise it",
+                              "text/plain")
+        out = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                             timeout=60)
+        if out.returncode:
+            return self._send(502, (out.stderr.strip() or out.stdout.strip()
+                                    or f"{verb} failed")[:400], "text/plain")
+        _mcp_health.pop(cwd, None)
+        self._send(200, (out.stdout.strip() or "done")[:400], "text/plain")
+
+    def _mcp_switch(self, cwd, name, off):
+        """Turn a project-scoped server off or on via settings.json.
+
+        Absent means on, so turning one back on deletes it from the list
+        rather than writing the word `false` -- settings.json stays a record
+        of the decisions actually made, the same rule the skill switch keeps."""
+        rows = repo_worktrees(cwd)
+        root = rows[0]["path"] if rows else cwd
+        here = next((r for r in mcp_rows(cwd) if r["name"] == name), None)
+        if not here:
+            return self._send(404, "no MCP by that name here", "text/plain")
+        if here["scope"] not in ("project",):
+            return self._send(
+                400, f"a {here['scope']}-scope server has no disable switch in "
+                     "Claude Code -- removing it is the only way to stop it, "
+                     "and this will not do that behind your back", "text/plain")
+
+        def change(data):
+            off_list = data.get("disabledMcpjsonServers")
+            off_list = [n for n in off_list if isinstance(n, str)] \
+                if isinstance(off_list, list) else []
+            if off and name not in off_list:
+                off_list.append(name)
+            if not off:
+                off_list = [n for n in off_list if n != name]
+            if off_list:
+                data["disabledMcpjsonServers"] = sorted(set(off_list))
+            else:
+                data.pop("disabledMcpjsonServers", None)
+            return None
+
+        path = os.path.join(root, ".claude", "settings.local.json")
+        bad = edit_settings(path, change)
+        if bad:
+            return self._send(500, bad, "text/plain")
+        _mcp_health.pop(cwd, None)
+        self._send(200, json.dumps({"name": name, "disabled": off}),
+                   "application/json")
+
+    def _mcp_add(self, cwd, body, name):
+        """Install one, by handing `claude mcp add` an argv it built itself.
+
+        Everything here is a separate argv element and no shell is involved,
+        so nothing on this wire is concatenated into a command line. That is
+        the difference between passing a server's command through and letting
+        a caller compose one."""
+        scope = str(body.get("scope") or "local")
+        transport = str(body.get("transport") or "stdio")
+        target = str(body.get("target") or "").strip()
+        if scope not in ("local", "user", "project"):
+            return self._send(400, "unknown scope", "text/plain")
+        if transport not in ("stdio", "sse", "http"):
+            return self._send(400, "unknown transport", "text/plain")
+        if not target:
+            return self._send(400, "an MCP needs a command or a URL", "text/plain")
+        argv = ["claude", "mcp", "add", "-s", scope, "-t", transport]
+        for pair in (body.get("env") or [])[:20]:
+            if isinstance(pair, str) and "=" in pair and "\n" not in pair:
+                argv += ["-e", pair[:400]]
+        for pair in (body.get("headers") or [])[:20]:
+            if isinstance(pair, str) and ":" in pair and "\n" not in pair:
+                argv += ["--header", pair[:400]]
+        argv += [name, target]
+        args = [str(a) for a in (body.get("args") or [])[:40]
+                if isinstance(a, (str, int)) and "\n" not in str(a)]
+        if args:
+            argv += args
+        out = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                             timeout=60)
+        if out.returncode:
+            return self._send(502, (out.stderr.strip() or out.stdout.strip()
+                                    or "add failed")[:400], "text/plain")
+        _mcp_health.pop(cwd, None)
+        self._send(200, (out.stdout.strip() or "added")[:400], "text/plain")
+
+    def _guardrails_read(self):
+        """One checkout's guardrail checklist state.
+
+        Only the state: which are ticked, which were added, which of the
+        starters were struck out. The starter list itself ships with the app,
+        so a record for a checkout nobody has touched is simply empty."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        got = clean_guardrails(load_guardrails().get(root))
+        self._send(200, json.dumps({"kind": "guardrails", "root": root, **got}),
+                   "application/json")
+
+    def _guardrails_write(self):
+        """Replace one checkout's record. Whole-record rather than per-tick:
+        the thing is a few kilobytes, and a partial update protocol is a way
+        to end up with a checklist that disagrees with itself."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        everything = load_guardrails()
+        everything[root] = clean_guardrails(body)
+        try:
+            save_guardrails(everything)
+        except OSError as e:
+            return self._send(500, f"could not save it: {e}", "text/plain")
+        self._send(200, json.dumps(everything[root]), "application/json")
+
+    def _governs_read(self):
+        """The files that shape a pull request without being one -- whether
+        they are there or not.
+
+        A missing one is the interesting row: no CODEOWNERS is why nobody was
+        asked to review, and a list that only showed what exists could never
+        say so."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        rows = []
+        for key, spot in push_cc.GOVERNS.items():
+            path = push_cc.govern_path(key, root)
+            there = os.path.exists(path)
+            rows.append({"key": key, "what": spot["what"],
+                         "path": os.path.relpath(path, root), "there": there,
+                         "lines": (sum(1 for _ in open(path, errors="replace"))
+                                   if there else 0)})
+        self._send(200, json.dumps({"kind": "governs",
+                                    "repo": os.path.basename(root), "rows": rows}),
+                   "application/json")
+
+    def _govern_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        key = (q.get("key") or [""])[0]
+        path = push_cc.govern_path(key, root)
+        if err or not path:
+            return self._send(400, err or "no such file to govern with", "text/plain")
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            text = ""      # not there yet is not an error; it is the empty one
+        self._send(200, json.dumps({"key": key, "path": os.path.relpath(path, root),
+                                    "there": os.path.exists(path), "body": text}),
+                   "application/json")
+
+    def _govern_write(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        path = push_cc.govern_path(body.get("key"), root)
+        text = body.get("body")
+        if err or not path or not isinstance(text, str):
+            return self._send(400, err or "no such file to govern with", "text/plain")
+        if not text.strip():
+            return self._send(400, "an empty file governs nothing", "text/plain")
+        self._write_repo_file(path, text, root, bool(body.get("replace")))
+
+    def _read_json_body(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            return body if isinstance(body, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    def _pr_review(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        action = body.get("action")
+        note = str(body.get("body") or "").strip()
+        try:
+            number = int(body.get("number"))
+        except (TypeError, ValueError):
+            number = 0
+        flags = {"approve": "--approve", "comment": "--comment",
+                 "request-changes": "--request-changes"}
+        if err or number < 1 or action not in flags:
+            return self._send(400, err or "invalid review", "text/plain")
+        if action in ("comment", "request-changes") and not note:
+            return self._send(400, "a review comment is required", "text/plain")
+        cmd = ["gh", "pr", "review", str(number), flags[action]]
+        if note:
+            cmd += ["--body", note]
+        out = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=30)
+        if out.returncode:
+            return self._send(502, (out.stderr.strip() or "review failed")[:500], "text/plain")
+        self._send(200, "review submitted", "text/plain")
+
+    def _tests_payload(self, root, path):
+        files, packages = push_cc.test_files(root), push_cc.test_packages(root)
+        tree = push_cc.test_tree(files)
+        run = _app_test_runs.get(root)
+        states = run.states if run else {}
+        ok, bad = run.tally() if run else (0, 0)
+        return {"kind": "tests", "repo": os.path.basename(root), "path": path,
+                "items": push_cc.test_items(tree, path, states),
+                "running": run.now if run and not run.done else "",
+                "passed": ok, "failed": bad, "packages": len(packages),
+                "slow": any(p["slow"] for p in push_cc.scope_packages(packages, path, True))}
+
+    def _tests_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        path = [p for p in (q.get("path") or [""])[0].split("/") if p]
+        self._send(200, json.dumps(self._tests_payload(root, path)), "application/json")
+
+    def _tests_run(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        active = _app_test_runs.get(root)
+        if active and not active.done:
+            return self._send(409, "tests are already running", "text/plain")
+        path = [str(p) for p in body.get("path") or [] if p]
+        packages = push_cc.scope_packages(push_cc.test_packages(root), path)
+        if not packages:
+            return self._send(409, "no Vitest or test script is runnable here", "text/plain")
+        only = "/".join(path + ([str(body.get("file"))] if body.get("file") else [])) or None
+        _app_test_runs[root] = push_cc.TestRun(root, packages if not only else packages[:1], only).start()
+        self._send(200, "tests started", "text/plain")
+
+    def _tests_stop(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        run = _app_test_runs.get(root)
+        if run and not run.done:
+            run.abort()
+        self._send(200, "tests stopped", "text/plain")
+
+    def _work_read(self):
+        """Everything the GIT tab's overview screen needs in one call --
+        branch/upstream, the three working-tree lists, stashes, and the
+        commit graph -- so the app draws the whole screen from one request
+        instead of five round trips."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        head_line, staged, unstaged, conflicts = work_status(root)
+        row = {"repo": os.path.basename(root), "root": root,
+               **work_head(head_line),
+               "staged": staged, "unstaged": unstaged, "conflicts": conflicts,
+               "stashes": work_stashes(root), "log": work_log(root)}
+        self._send(200, json.dumps(row), "application/json")
+
+    def _work_diff(self):
+        """The raw patch for one commit or one file, sent back unparsed --
+        the app already owns a diff parser and wants git's own text, not a
+        JSON re-encoding of it."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        sha = (q.get("sha") or [""])[0]
+        if sha:
+            if not re.fullmatch(r"[0-9a-fA-F]{4,40}", sha):
+                return self._send(400, "bad sha", "text/plain")
+            out = git(root, "show", sha)
+            if out.returncode:
+                return self._send(500, (out.stderr.strip() or "git failed")[:500], "text/plain")
+            return self._send(200, out.stdout[:250000], "text/plain")
+        file = (q.get("file") or [""])[0]
+        if not file or file.startswith("/") or ".." in file.split("/"):
+            return self._send(400, "bad path", "text/plain")
+        staged = (q.get("staged") or ["0"])[0] == "1"
+        out = git(root, "diff", "--cached", "--", file) if staged else git(root, "diff", "--", file)
+        if out.returncode:
+            return self._send(500, (out.stderr.strip() or "git failed")[:500], "text/plain")
+        text = out.stdout
+        if not text and not staged:
+            # an untracked file has no diff against the index at all -- diffing
+            # it against /dev/null is how git itself renders a "new file"
+            # patch, and --no-index exits 1 by design even though stdout is
+            # exactly the patch we want
+            text = git(root, "diff", "--no-index", "--", "/dev/null", file).stdout
+        self._send(200, text[:250000], "text/plain")
+
+    def _work_do(self):
+        """The GIT tab's action bar: stage, unstage, discard, commit, fetch,
+        pull, push, stash, stash-pop, stash-drop, and branch, all through one
+        endpoint rather than one route per verb. On failure git's own refusal
+        -- nothing to commit, no upstream, a dirty checkout -- is passed back
+        verbatim, the same way _worktrees_switch already does for switch."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        verb = body.get("verb")
+        if verb not in ("stage", "unstage", "discard", "commit", "fetch", "pull",
+                        "push", "stash", "stash-pop", "stash-drop", "branch"):
+            return self._send(400, "unknown verb", "text/plain")
+        raw_files = body.get("files")
+        files = [str(f) for f in raw_files if str(f)] if isinstance(raw_files, list) else []
+        if any(f.startswith("/") or ".." in f.split("/") for f in files):
+            return self._send(400, "bad path", "text/plain")
+        message = str(body.get("message") or "")
+        amend = bool(body.get("amend"))
+        timeout = 30
+        if verb == "stage":
+            argv = ["add", "-A", "--"] + files if files else ["add", "-A"]
+        elif verb == "unstage":
+            argv = ["reset", "-q", "HEAD", "--"] + files if files else ["reset", "-q", "HEAD"]
+        elif verb == "discard":
+            # an untracked path makes checkout fail (nothing tracked to
+            # revert) and a tracked one makes clean a no-op (nothing untracked
+            # to remove) -- so only report an error when BOTH refuse
+            checkout = git(root, "checkout", "-q", "--", *(files or ["."]))
+            clean = git(root, "clean", "-qfd", "--", *files) if files else git(root, "clean", "-qfd")
+            if checkout.returncode and clean.returncode:
+                failed = checkout if checkout.stderr.strip() else clean
+                return self._send(409, (failed.stderr or failed.stdout).strip()[:500], "text/plain")
+            return self._send(200, "ok", "text/plain")
+        elif verb == "commit":
+            if not message.strip():
+                if not amend:
+                    return self._send(400, "a commit message is required", "text/plain")
+                argv = ["commit", "--amend", "--no-edit"]
+            else:
+                argv = ["commit", "-m", message] + (["--amend"] if amend else [])
+        elif verb == "fetch":
+            argv, timeout = ["fetch", "--prune"], 120
+        elif verb == "pull":
+            argv, timeout = ["pull"], 120
+        elif verb == "push":
+            timeout = 120
+            head = work_head(work_status(root)[0])
+            argv = (["push", "-u", "origin", head["branch"]]
+                    if not head["upstream"] and head["branch"] else ["push"])
+        elif verb == "stash":
+            argv = ["stash", "push", "-u"] + (["-m", message] if message.strip() else [])
+        elif verb in ("stash-pop", "stash-drop"):
+            ref = str(body.get("ref") or "")
+            if not re.fullmatch(r"stash@\{\d+\}", ref):
+                return self._send(400, "bad ref", "text/plain")
+            argv = ["stash", "pop" if verb == "stash-pop" else "drop", ref]
+        else:  # branch
+            branch = str(body.get("branch") or "")
+            if not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", branch) or branch.startswith("-"):
+                return self._send(400, "bad branch name", "text/plain")
+            argv = ["checkout", "-b", branch]
+        out = git(root, *argv, timeout=timeout)
+        if out.returncode:
+            return self._send(409, (out.stderr or out.stdout).strip()[:500], "text/plain")
+        self._send(200, (out.stdout or "ok").strip()[:500], "text/plain")
+
     def _agents_create(self):
         """A new claude, split into the tmux server. Named agents go straight
         through herdr so a taken name comes back as 409, not a silent -2."""
@@ -846,10 +2094,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "bad request", "text/plain")
         if not cwd or not os.path.isdir(cwd):
             return self._send(400, "cwd is not a directory", "text/plain")
-        split = body.get("split") or "right"
+        # empty by default: an agent gets a window of its own unless the
+        # caller explicitly asks for a split
+        split = body.get("split") or ""
         name = body.get("name")
         if name:
-            out = push_cc.herdr("agent", "start", name, "--cwd", cwd, "--split", split,
+            out = push_cc.herdr("agent", "start", name, "--cwd", cwd,
+                                *(("--split", split) if split else ()),
                                 "--focus", "--", "claude", "--permission-mode", "auto")
             err = herdr_error(out)
             if err:
@@ -1099,6 +2350,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({
             "name": name, "scope": scope, "path": path,
             "description": skill_description(path), "body": skill_body(path),
+            "label": load_skill_labels().get(
+                skill_label_key(scope, name, self._skill_root(cwd), path), ""),
         }), "application/json")
 
     def _skill_write(self):
@@ -1141,6 +2394,7 @@ class Handler(BaseHTTPRequestHandler):
             os.replace(tmp, path)
         except OSError as e:
             return self._send(500, f"could not write the skill: {e}", "text/plain")
+        set_skill_label(scope, name, body.get("label", ""), self._skill_root(cwd))
         self._send(200, json.dumps({"path": path}), "application/json")
 
     def _skill_delete(self):
@@ -1171,6 +2425,7 @@ class Handler(BaseHTTPRequestHandler):
                 os.rmdir(os.path.dirname(path))
         except OSError as e:
             return self._send(500, f"could not remove the skill: {e}", "text/plain")
+        set_skill_label(scope, name, "", self._skill_root(cwd))
         self._send(200, json.dumps({"kept": leftover}), "application/json")
 
     def _open_in_editor(self):
@@ -1267,9 +2522,195 @@ class Handler(BaseHTTPRequestHandler):
                 shutil.rmtree(src)
         except OSError as e:
             return self._send(500, f"could not move it: {e}", "text/plain")
+        if scope != "plugin":
+            old_root = self._skill_root(body.get("cwd") or target_cwd())
+            labels = load_skill_labels()
+            old_key = skill_label_key(scope, name, old_root)
+            label = labels.pop(old_key, "")
+            if label:
+                labels[skill_label_key(to, name, root)] = label
+            save_skill_labels(labels)
         self._send(200, json.dumps({"path": dest_md,
                                     "copied": scope == "plugin"}),
                    "application/json")
+
+    def _set_in_map(self, body, sub, key, value, default_scope="local"):
+        """Write `sub[key] = value` into one settings file, or delete it when
+        `value` is None.
+
+        `local` by default, which is where /skills puts skillOverrides and
+        where a decision about this checkout belongs -- it is the file git does
+        not carry, so turning something off for yourself does not turn it off
+        for everyone who clones the repo."""
+        root = self._skill_root(body.get("cwd") or target_cwd())
+        scope = body.get("scope") or default_scope
+        path = dict(settings_chain(root)).get(scope)
+        if not path:
+            return None, "that is not a settings scope"
+
+        def change(data):
+            got = data.get(sub)
+            if got is not None and not isinstance(got, dict):
+                return f"{sub} in that settings file is not an object"
+            if value is None:
+                if isinstance(got, dict):
+                    got.pop(key, None)
+                    if not got:
+                        del data[sub]
+                return None
+            data.setdefault(sub, {})[key] = value
+            return None
+
+        return path, edit_settings(path, change)
+
+    def _skill_state(self):
+        """How visible a skill is: on, name-only, user-invocable-only, or off.
+
+        Four states rather than a switch, because Claude Code has four and the
+        middle two are the useful ones -- a skill you still want to reach by
+        name but never want reaching for you. `on` deletes the key rather than
+        writing the word, so the file stays a list of decisions actually made
+        and a skill that is simply on looks like one."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            name, state = body["name"], body["state"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if state not in SKILL_STATES:
+            return self._send(400, f"a skill is one of: {', '.join(SKILL_STATES)}",
+                              "text/plain")
+        if not SKILL_NAME_RE.match(name or ""):
+            return self._send(400, "bad name for a skill", "text/plain")
+        path, bad = self._set_in_map(body, "skillOverrides", name,
+                                     None if state == "on" else state)
+        if bad:
+            return self._send(500, bad, "text/plain")
+        self._send(200, json.dumps({"path": path, "state": state}),
+                   "application/json")
+
+    def _plugin_toggle(self):
+        """A plugin on or off, which is `enabledPlugins` -- a documented map,
+        and the only switch a plugin's own skills have, since skillOverrides
+        does not reach them."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            key, on = body["key"], bool(body["enabled"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        if not isinstance(key, str) or "@" not in key or "/" in key:
+            return self._send(400, "a plugin is name@marketplace", "text/plain")
+        # written either way, never deleted: an absent entry means "whatever
+        # the installer decided", and the point of pressing this is to decide
+        path, bad = self._set_in_map(body, "enabledPlugins", key, on)
+        if bad:
+            return self._send(500, bad, "text/plain")
+        self._send(200, json.dumps({"path": path, "enabled": on}),
+                   "application/json")
+
+    def _hook_toggle(self):
+        """A hook off, or back on again.
+
+        Off lifts the whole entry out of the settings file and parks it in
+        ~/.midiai/hooks-parked.json; on puts it back into the group whose
+        matcher it had. There is no per-hook switch in the schema -- the only
+        documented one is disableAllHooks, which takes the status line and the
+        @ file suggestions with it -- so this is ours, and the trade is the
+        same one the descriptions make: settings.json holds only what Claude
+        Code documents, and what it cannot hold lives beside it.
+
+        The cost, said plainly because it is real: a parked hook is invisible
+        to anything reading settings.json. Only this app knows it exists."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+            on = bool(body["on"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return self._send(400, "bad request", "text/plain")
+        path, err = self._hook_target(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        root = self._skill_root(body.get("cwd") or target_cwd())
+        scope = body.get("scope") or ""
+        parked = load_parked()
+
+        if on:
+            key = body.get("parked") or ""
+            rec = parked.get(key)
+            if not rec:
+                return self._send(404, "that hook is not parked -- reopen the panel",
+                                  "text/plain")
+            event, matcher, entry = rec["event"], rec.get("matcher", ""), rec["entry"]
+
+            def put_back(data):
+                hooks = data.setdefault("hooks", {})
+                if not isinstance(hooks, dict):
+                    return "the hooks key in that settings file is not an object"
+                groups = hooks.setdefault(event, [])
+                if not isinstance(groups, list):
+                    return f"hooks.{event} in that settings file is not a list"
+                for group in groups:
+                    if isinstance(group, dict) and str(group.get("matcher") or "") == matcher:
+                        group.setdefault("hooks", []).append(entry)
+                        return None
+                group = {"hooks": [entry]}
+                if matcher:
+                    group["matcher"] = matcher
+                groups.append(group)
+                return None
+
+            bad = edit_settings(path, put_back)
+            if bad:
+                return self._send(500, bad, "text/plain")
+            note = {"description": str(rec.get("description") or ""),
+                    "label": str(rec.get("label") or "")}
+            if note["description"] or note["label"]:
+                notes = load_notes()
+                notes[note_key(scope, event, matcher, hook_summary(entry))] = note
+                save_notes(notes)
+            del parked[key]
+            save_parked(parked)
+            return self._send(200, json.dumps({"on": True}), "application/json")
+
+        try:
+            gi, hi = int(body["gi"]), int(body["hi"])
+        except (KeyError, TypeError, ValueError):
+            return self._send(400, "bad request", "text/plain")
+        row = next((r for r in hook_rows(path, scope)
+                    if r["gi"] == gi and r["hi"] == hi), None)
+        if not row:
+            return self._send(409, "that hook is no longer where it was -- "
+                                   "reopen the panel", "text/plain")
+
+        def lift(data):
+            hooks = data.get("hooks")
+            if not isinstance(hooks, dict) or row["event"] not in hooks:
+                return "that hook is no longer where it was -- reopen the panel"
+            groups = hooks[row["event"]]
+            try:
+                del groups[gi]["hooks"][hi]
+            except (IndexError, KeyError, TypeError):
+                return "that hook is no longer where it was -- reopen the panel"
+            if not groups[gi]["hooks"]:
+                del groups[gi]
+            if not groups:
+                del hooks[row["event"]]
+            if not hooks:
+                del data["hooks"]
+            return None
+
+        bad = edit_settings(path, lift)
+        if bad:
+            return self._send(409, bad, "text/plain")
+        parked[parked_key(scope, row["event"], row["matcher"], row["summary"])] = {
+            "scope": scope, "root": root, "event": row["event"],
+            "matcher": row["matcher"], "entry": row["entry"],
+            "description": row.get("description", ""),
+            "label": row.get("label", ""),
+        }
+        save_parked(parked)
+        self._send(200, json.dumps({"on": False}), "application/json")
 
     def _hook_target(self, body):
         """(path, error) for the scope this request names."""
@@ -1355,9 +2796,10 @@ class Handler(BaseHTTPRequestHandler):
         if was:
             notes.pop(note_key(scope, was["event"], was["matcher"], was["summary"]), None)
         key = note_key(scope, event, matcher, hook_summary(entry))
-        text = " ".join(str(body.get("description") or "").split())
-        if text:
-            notes[key] = text[:600]
+        text = " ".join(str(body.get("description") or "").split())[:600]
+        label = " ".join(str(body.get("label") or "").split())[:80]
+        if text or label:
+            notes[key] = {"description": text, "label": label}
         else:
             notes.pop(key, None)
         save_notes(notes)
@@ -1436,27 +2878,103 @@ class Handler(BaseHTTPRequestHandler):
 
         user_skills = sorted(glob.glob(os.path.expanduser("~/.claude/skills/*/SKILL.md")))
         project_skills = sorted(glob.glob(os.path.join(root, ".claude/skills/*/SKILL.md")))
-        # two glob depths because a plugin's skills can live either directly
-        # under the plugin, or nested one level deeper inside a named
-        # sub-package of it -- both are real layouts on disk. Capped at 200
-        # *before* any file is opened, so a user with a large plugin cache
-        # never turns a read-only catalog lookup into a slow one.
-        plugin_skills = sorted(set(
-            glob.glob(os.path.expanduser("~/.claude/plugins/*/*/*/skills/*/SKILL.md")) +
-            glob.glob(os.path.expanduser("~/.claude/plugins/*/*/skills/*/SKILL.md"))
-        ))[:200]
+        # Rooted at each plugin's own installPath, not globbed across the
+        # plugin tree. The old globs matched `plugins/cache/<owner>/<plugin>/
+        # <version>/skills/*` for EVERY cached version and the marketplace
+        # copy besides, so one plugin with six versions on disk listed its
+        # skills six times -- `mem-search x6`, and 21 names doubled or worse.
+        # Only one version is ever loaded, so only one belongs in a catalogue
+        # of what an agent can see. installed_plugins.json names it, the same
+        # way mcp_rows already finds a plugin's MCPs.
+        #
+        # Two depths still, because a plugin's skills sit either directly
+        # under it or one level inside a named sub-package -- both are real
+        # layouts. Capped at 200 before any file is opened.
+        plugin_skills = []
+        try:
+            installed = read_settings(os.path.expanduser(
+                "~/.claude/plugins/installed_plugins.json")).get("plugins", {})
+        except AttributeError:
+            installed = {}
+        for records in (installed or {}).values():
+            record = records[0] if isinstance(records, list) and records and \
+                isinstance(records[0], dict) else {}
+            where = record.get("installPath")
+            if not isinstance(where, str):
+                continue
+            # Any depth under a `skills/` directory, not one or two guessed
+            # levels: mattpocock files its as skills/<category>/<skill>/, and
+            # a fixed depth silently dropped every one of them. Anchored on a
+            # `skills` ancestor so a vendored SKILL.md inside node_modules --
+            # playwright ships two -- is not mistaken for a plugin's own.
+            plugin_skills += [
+                f for f in glob.glob(os.path.join(where, "**", "skills", "**",
+                                                  "SKILL.md"), recursive=True)
+                if "/node_modules/" not in f and "/.venv/" not in f]
+        if not plugin_skills:
+            # nothing installed, or a manifest we could not read -- an empty
+            # catalogue would be a worse answer than a duplicated one
+            plugin_skills = (
+                glob.glob(os.path.expanduser("~/.claude/plugins/*/*/*/skills/*/SKILL.md")) +
+                glob.glob(os.path.expanduser("~/.claude/plugins/*/*/skills/*/SKILL.md")))
+        plugin_skills = sorted(set(plugin_skills))[:200]
 
         skills = (skill_rows(user_skills, "user") +
                  skill_rows(project_skills, "project") +
                  skill_rows(plugin_skills, "plugin"))
+        labels = load_skill_labels()
+        for row in skills:
+            row["label"] = labels.get(skill_label_key(
+                row["scope"], row["name"], root, row.get("path", "")), "")
+        # skillOverrides is what /skills writes when you press Space on one.
+        # It does not reach plugin skills -- the docs are explicit -- so those
+        # say so rather than showing a switch that would do nothing.
+        for row in skills:
+            state, where = resolve_in_map(root, row["name"], "skillOverrides")
+            row["overridable"] = row["scope"] != "plugin"
+            row["state"] = state if state in SKILL_STATES else "on"
+            row["stateSet"] = state in SKILL_STATES
+            row["stateScope"] = where
         skills.sort(key=lambda s: (s["scope"], s["name"].lower()))
 
         hooks = (hook_rows(os.path.expanduser("~/.claude/settings.json"), "user") +
                 hook_rows(os.path.join(root, ".claude/settings.json"), "project") +
                 hook_rows(os.path.join(root, ".claude/settings.local.json"), "local"))
+        for row in hooks:
+            row["on"] = True
+        # A parked hook is not in any settings file, so nothing above found it.
+        # It is listed anyway, off: a hook you cannot see is a hook you will
+        # write a second copy of.
+        for key, rec in load_parked().items():
+            if rec.get("root") and os.path.realpath(rec["root"]) != os.path.realpath(root):
+                continue
+            entry = rec.get("entry") or {}
+            summary = hook_summary(entry)
+            hooks.append({"event": rec.get("event", ""),
+                          "matcher": rec.get("matcher", ""),
+                          "type": entry.get("type") or "command",
+                          "summary": summary[:400], "command": summary[:400],
+                          "entry": entry,
+                          "name": str(entry.get("statusMessage") or ""),
+                          "description": rec.get("description", ""),
+                          "label": rec.get("label", ""),
+                          # no address: it is not in a file to have one. The
+                          # parked key is how the toggle finds it again.
+                          "gi": None, "hi": None, "parked": key,
+                          "on": False,
+                          "scope": rec.get("scope", "user"), "path": ""})
         hooks.sort(key=lambda h: (h["scope"], h["event"].lower()))
 
-        self._send(200, json.dumps({"skills": skills, "hooks": hooks}),
+        plugins = []
+        for key in installed_plugins():
+            on, where = resolve_in_map(root, key, "enabledPlugins")
+            name, _, market = key.partition("@")
+            plugins.append({"key": key, "name": name, "marketplace": market,
+                            "enabled": on is not False, "set": on is not None,
+                            "scope": where})
+
+        self._send(200, json.dumps({"skills": skills, "hooks": hooks,
+                                    "plugins": plugins}),
                   "application/json")
 
     def _worktrees_switch(self):
@@ -1557,6 +3075,174 @@ class Handler(BaseHTTPRequestHandler):
             code = {"invalid_agent_name": 400,
                     "agent_name_taken": 409}.get(err.get("code"), 500)
             return self._send(code, err.get("message", "rename failed"), "text/plain")
+        self._send(200, "ok", "text/plain")
+
+    def _pty_where(self):
+        """The pane the app's terminal is currently looking at.
+
+        Cheap enough to poll: one `display-message`, no subprocess tree, and
+        only while the terminal tab is open. It is how "the app follows the
+        terminal" works -- see ptybridge.where for why it is a read and never
+        a write."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        pane = (q.get("pane") or [""])[0]
+        if not PANE_ID_RE.match(pane):
+            return self._send(400, "that is not a tmux pane", "text/plain")
+        self._send(200, json.dumps({"pane": ptybridge.where(pane)}),
+                   "application/json")
+
+    def _pty_stream(self):
+        """The pane's bytes, as they happen.
+
+        Server-sent events rather than a WebSocket: this server is a
+        ThreadingHTTPServer, so a long-lived response costs one thread and
+        nothing else, and SSE needs no handshake and no frame parser to get
+        wrong. The upstream half is a plain POST -- keystrokes are small and
+        already coalesced by the app before they are sent.
+
+        base64 because a terminal emits arbitrary bytes and SSE is a
+        line-oriented text protocol: a raw \\n inside the payload would end
+        the event early and cut a frame in half."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        pane = (q.get("pane") or [""])[0]
+        if not PANE_ID_RE.match(pane):
+            return self._send(400, "that is not a tmux pane", "text/plain")
+        try:
+            cols = int((q.get("cols") or ["120"])[0])
+            rows = int((q.get("rows") or ["32"])[0])
+        except ValueError:
+            cols, rows = 120, 32
+        slot, err = ptybridge.open_view(pane, cols, rows)
+        if err:
+            return self._send(502, err, "text/plain")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        slot["readers"] += 1
+        # a nudged resize, which is the one thing tmux always redraws for --
+        # see Pty.repaint for why replaying our own bytes shredded the screen
+        slot["pty"].repaint(cols, rows)
+        try:
+            while True:
+                chunk = slot["pty"].read(0.4)
+                if chunk:
+                    slot["pty"].touched = time.time()
+                    self.wfile.write(b"data: " + base64.b64encode(chunk) + b"\n\n")
+                    self.wfile.flush()
+                elif not slot["pty"].alive:
+                    self.wfile.write(b"event: gone\ndata: -\n\n")
+                    self.wfile.flush()
+                    break
+                else:
+                    # a comment keeps the connection warm through a quiet
+                    # agent without putting anything on the terminal
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass                       # the tab closed; the view outlives it
+        finally:
+            slot["readers"] -= 1
+            ptybridge.reap()
+
+    def _pty_write(self, what):
+        """Keystrokes, a new size, or the end of a view.
+
+        Bytes, never key names -- the same wire /keys uses, for the same
+        reason: there is no vocabulary to keep in step with anything."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        pane = str(body.get("pane") or "")
+        if not PANE_ID_RE.match(pane):
+            return self._send(400, "that is not a tmux pane", "text/plain")
+        if what == "close":
+            return self._send(200, "closed" if ptybridge.close_view(pane)
+                              else "nothing open", "text/plain")
+        slot = ptybridge.slot_for(pane)
+        if not slot:
+            return self._send(409, "no live view for that pane", "text/plain")
+        slot["pty"].touched = time.time()
+        if what == "resize":
+            ok = slot["pty"].resize(body.get("cols"), body.get("rows"))
+            return self._send(200 if ok else 500,
+                              "resized" if ok else "could not resize", "text/plain")
+        data = body.get("data")
+        if not isinstance(data, str) or len(data) > 65536:
+            return self._send(400, "data must be a short base64 string", "text/plain")
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            return self._send(400, "data must be base64", "text/plain")
+        ok = slot["pty"].write(raw)
+        self._send(200 if ok else 502, "ok" if ok else "the pty is gone", "text/plain")
+
+    def _terminal_open(self):
+        """Hand one pane to a real terminal on this machine.
+
+        The in-app terminal is a picture of the pane with a keyboard on it:
+        `capture-pane` strips the colour, polling means there is no cursor,
+        and there is no mouse and no scrollback. None of that is fixable from
+        the app side, and none of it needs fixing on a desktop -- tmux is
+        already running, so the terminal that has all of it is one attach
+        away. This is that attach, as a key.
+
+        Written as a file and opened rather than run through AppleScript: a
+        script on disk has no string to interpolate into, and the one value
+        from the request is a pane id that has already had to match
+        `%<digits>` to get here."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        pane = str(body.get("terminal_id") or read_target().get("terminal_id") or "")
+        if not PANE_ID_RE.match(pane):
+            return self._send(400, "that is not a tmux pane", "text/plain")
+        if sys.platform != "darwin":
+            return self._send(
+                501, "opening a terminal is wired for macOS only -- "
+                     f"`tmux attach` and select pane {pane} by hand", "text/plain")
+        script = os.path.join(tempfile.gettempdir(), f"midiai-attach-{pane[1:]}.command")
+        try:
+            with open(script, "w") as f:
+                f.write("#!/bin/sh\n"
+                        "# opened by midiAI -- attaches to the pane you were reading\n"
+                        f"S=$(tmux display-message -p -t '{pane}' '#{{session_name}}') || exit 1\n"
+                        f"tmux select-pane -t '{pane}'\n"
+                        'exec tmux attach -t "$S"\n')
+            os.chmod(script, 0o700)
+            subprocess.Popen(["open"] + (["-a", TERMINAL_APP] if TERMINAL_APP else [])
+                             + [script])
+        except OSError as e:
+            return self._send(500, f"could not open a terminal: {e}", "text/plain")
+        self._send(200, "opened a terminal on the machine running midiAI",
+                   "text/plain")
+
+    def _keys(self):
+        """Bytes straight through to a pane. Nothing here is interpreted.
+
+        The terminal view is a real terminal, so what it sends is what a
+        keyboard sends: characters, and the control sequences for the keys
+        that are not characters -- \\x03 for Ctrl-C, \\x1b[A for Up. Deliberately
+        bytes and not tmux key NAMES: `send-keys -l` takes them literally, so
+        there is no name to allowlist, nothing that can start with a dash and
+        be read as an option, and no second syntax to keep in step with tmux's.
+
+        /prompt is the other thing and stays the other thing -- it edits the
+        agent's input line, replaces it, decides about submitting. This does
+        none of that. It is a wire."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        keys = body.get("keys")
+        if not isinstance(keys, str) or not keys or len(keys) > 4096:
+            return self._send(400, "keys must be a short non-empty string",
+                              "text/plain")
+        target = body.get("terminal_id") or read_target().get("terminal_id")
+        if not target:
+            return self._send(409, "no session selected", "text/plain")
+        push_cc.herdr("agent", "send", target, keys)
         self._send(200, "ok", "text/plain")
 
     def _prompt(self):

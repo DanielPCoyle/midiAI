@@ -36,6 +36,19 @@ def tmux(*a):
     return subprocess.run(["tmux", *a], capture_output=True, text=True)
 
 
+# This suite's first act is kill-server, because "a cold machine" is the state
+# the first checks have to run from. That is also the state it leaves YOUR
+# machine in: every agent on it, and the work in each one, gone. It ate a live
+# session that way once, run as a gate on a machine that was mid-flight -- so
+# it now refuses to start where a server is already up, rather than trusting
+# whoever runs it to have read this far.
+if tmux("list-sessions").returncode == 0 and "--force" not in sys.argv:
+    print("A tmux server is already running.\n"
+          "This suite begins by killing it, which would close every agent on\n"
+          "this machine and lose whatever they were in the middle of.\n"
+          "Close them first, or pass --force if that is genuinely what you want.")
+    raise SystemExit(2)
+
 print("== cold machine: herdr closed, nothing started yet ==")
 tmux("kill-server")
 r = j(term.dispatch(("agent", "list")))

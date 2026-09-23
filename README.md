@@ -96,6 +96,11 @@ your branch first, then whatever is on fire. The swatch is the whole CI answer
 author and review state on the right. `gh` runs on its own thread and the list
 is cached for a minute; **Browse** opens the same list in a browser.
 
+Opening one in the app spells that swatch out: above the diff, the checks that
+are still a question — failed, or still running — each a link to its own run,
+with the rest as a count. A green check named in full says nothing the count
+does not, and a repo with twenty of them buries the PR's own description.
+
 **usage** answers one question — what is being spent — at three altitudes,
 walked with its own view button or Left/Right: the plan's own limit bars, then
 tokens by model, then output and context tokens per agent. Tokens, not money:
@@ -109,15 +114,183 @@ reading in the middle, the prompt library down the right. The Push itself —
 its screen, its two button rows, all 64 pads — is a **tab** you switch to, not
 the shell you live in.
 
-The right-hand panel has three tabs — **prompts**, **skills**, **hooks** — and
-the key in the pane's title row is the menu that picks between them, because a
-third and fourth key across a title row is how a title row stops being
-readable. Prompts are what you send an agent; skills and hooks are what it
-already has, read off disk by `GET /catalog` and split by **scope** into
-sub-tabs: project, project · local, global, plugins. Where a thing comes from
-is the first fact about it — a hook in the repo is the team's, one in
-`~/.claude` is yours — and 131 plugin skills over 38 of your own is not a list
-you scroll looking for one of the 38.
+There used to be a header — brand, status pill, view tabs, buttons — and a
+separate repo bar underneath it naming the checkout: two bands of chrome for
+one fact and a half. They are one row now, carrying a status dot, `midiAI`,
+the checkout as a chip (repo name and branch), the view tabs, the
+**following the Push** toggle or a quiet `headless` label, the path from `~`,
+and the `⋮`. The checkout became a chip rather than a band of its own because
+it is a fact about what you are looking at, the same size as the rest of
+them. Focus, guardrails and CI/CD are all answers about one repo and each
+used to name it in its own heading, which was three drawings of one fact and
+three chances to drift; they say their own subject now and the chip says the
+repo. **Usage is the exception and gets no checkout chip**: spend is
+account-wide, and a repo name over it would be claiming those were this
+repo's tokens.
+
+The status pill itself is gone, but its sentence is not. The pill's only real
+content was *why* push_cc is not answering, and that sentence still appears
+in the band — now only when push_cc is unreachable, because a red dot that
+cannot say why is worse than no light.
+
+Two tabs are drawn under a wider name than the view key beneath them, in
+`TAB_LABEL`: `tests` reads **GUARDRAILS** and `prs` reads **GIT**. The keys
+are a wire contract — `VIEWS` in `push_cc.py`, and the `views_data` the Push
+is drawn from — so only the word changes, never what anything is looked up by.
+That word was CI/CD until the tab grew a working tree; a `git status` is not
+CI, so the wider name had to get wider still.
+
+GIT carries four sub-tabs in its own title row rather than a second band of
+chrome: **work**, **pull requests**, **actions** and **hooks** — the life of a
+change, in order. Hooks is still a drawing of `.git/hooks` — it lists the
+*uninstalled* ones too, because "no pre-push here" is the answer to why nothing
+stopped a broken push and an empty list cannot say it.
+
+**Work** is the one that never leaves this machine, and the tab opens on it.
+Every other sub-tab is a question about a server — what CI said, what a
+reviewer said. This one is the checkout in front of you: the branch and how far
+it has drifted from its upstream, the files that changed, the commit graph, and
+the commands that move things between them. It splits with the same segmented
+switch:
+
+| | |
+|---|---|
+| **changes** | Staged over not-staged over conflicted, each file a row that opens its diff and carries its own `stage` / `discard`. Below it the stashes, the commit box, and stage-all / unstage-all / discard-all. |
+| **tree** | `git log --graph --all`, git's own ASCII art kept intact, one commit per row. Picking one shows its patch in the same viewer a file's changes use — the same question asked of a different range. |
+
+The diff viewer is the pull-request review's, reused whole, and so is the
+parser behind it: a patch is a patch, and a second renderer would only be a
+second thing to drift.
+
+The commands are verbs from a table the server owns — `stage`, `unstage`,
+`discard`, `commit`, `fetch`, `pull`, `push`, `stash`, `stash-pop`,
+`stash-drop`, `branch`. Nothing composes a command line, every path rides after
+a `--`, and no verb reaches a shell; a branch name, a stash ref and a sha each
+have to match their own pattern before git sees them. This server binds to the
+LAN, and "run git for me" is the one route on it that would otherwise be a way
+to run anything.
+
+Discarding and dropping a stash are the two commands here with no undo — git
+keeps no reflog for a change that was never committed — so both wait behind a
+confirm that says exactly that. Everything else is git's own refusal, passed
+back verbatim: "your local changes would be overwritten" says more than a code
+of ours would.
+
+Actions splits again, one level further down, and the third level gets a third
+idiom: the top tabs are tracked-out capitals, the CI/CD row is words in the
+title, and this is a **segmented switch**. Three levels that all looked alike
+would be three nobody could tell apart. It asks the same question wherever it
+appears — what happened, or what is configured:
+
+| | |
+|---|---|
+| **runs** | Workflow runs and their jobs. Still drawn from constants; says `mock` in the heading. `gh run list` once the shape is agreed. |
+| **manage** | The real `.github/workflows` in the checkout — read, edited and written back. |
+
+**Pull requests** splits the same way — **open** is the list, **manage** is the
+files that shape a PR without being one: `PULL_REQUEST_TEMPLATE.md`,
+`CODEOWNERS`, `dependabot.yml`. Each is looked for at every location GitHub
+itself honours, first-existing wins, so a repo with `CODEOWNERS` at the root
+is never offered a `.github/CODEOWNERS` that would silently win over it. A
+missing one is the row worth reading — no CODEOWNERS is *why* nobody was asked
+to review — so it lists hollow rather than not at all, and opens with a starter
+that already says the thing the file exists to say.
+
+Guardrails splits too: **overview** and **tests**. Overview is a checklist of
+what is meant to stand between an agent and main, grouped by SDLC phase — plan
+constrains intent, design constrains architecture, implement constrains
+actions, test verifies independently, deploy constrains authority, maintain
+detects drift — plus six cross-cutting controls. Every item carries two fields
+and they are not the same field: **the guardrail** is the claim, and **how to
+validate it** is how you find out whether the claim is true. The second is the
+one that matters; a checklist of assertions nobody can check is the thing it is
+pretending to protect against, so each validation names a command, a file, or a
+failure to induce deliberately and watch. Items can be added, edited and struck
+out, and the phases themselves renamed, reordered, added and removed — the
+starter list is a framework, not this repo's opinion of itself.
+
+Only the *difference* from what ships is stored. A `custom` entry sharing a
+shipped item's id shadows it, which is what makes editing a shipped guardrail
+possible without keeping a copy of the whole list per repo, and what lets
+"revert to shipped" simply drop the override. Untouched phases mean "whatever
+the app ships", so a team that never edits them keeps getting new ones as the
+framework grows; only taking ownership stops that. A phase holding guardrails
+will not delete — removing it would file them under a tab that no longer
+exists, and anything that does arrive orphaned still draws, under a section
+saying so. Search reads the validation text too, because "which of these
+mention gitleaks" is the question you actually arrive with.
+
+**Save as template** puts the list somewhere every project can reach it
+(`~/.midiai/guardrail-templates.json`). A template carries the guardrails and
+the phases, and deliberately **not the ticks** — which controls a team holds
+itself to travels between repos, and whether each is actually in force is a
+fact about one repo that would be a lie anywhere else. Applying one replaces
+the item set behind a confirm that names what it costs; ticks survive by id, so
+re-applying a list you already follow is a no-op on your assessment rather than
+a reset of it. Anything the template carries that this build no longer ships —
+an edit, an addition, a retired starter — is kept from the template's own copy,
+so a template outlives the list it was made from.
+
+Per-checkout state lives in `~/.midiai/guardrails.json`, deliberately outside
+the repo: a half-ticked framework committed to someone's tree reads as a claim
+nobody agreed to.
+
+Manage lists every workflow with the two facts that identify it, what fires it
+and what secret it needs, and opens one into its own YAML. **＋ new workflow**
+scaffolds from four templates in the shape the repos here already use: the
+banner header (what it does, what secret it needs, what a fork without that
+secret sees), `concurrency` on anything a rapid push can start twice, a
+`check-secret` gate ahead of any job needing a secret so a fork skips cleanly
+instead of showing a red required check nobody can fix, and action majors
+pinned rather than floating. They live in `app/src/workflows.js`.
+
+Writing one goes through `POST /workflow`, which takes a **name and never a
+path** — `WORKFLOW_NAME_RE` is the containment check, the same bargain
+`skill_path` drives, and `.github/workflows` is named by the server. `POST
+/govern` is tighter still: a key from a fixed table, so there is no open-ended
+part at all. Both land in one `_write_repo_file`, because those four lines are
+the whole security boundary and two copies of them is two chances to fix only
+one. An existing file is a 409 unless the editor sends `replace`, so a new
+workflow cannot silently take the name of a pipeline someone is relying on.
+
+Guardrails and CI/CD both describe a **checkout**, not an agent, so both read
+a worktree picked in the rail with nobody in it. That is what `place` falls
+back to when no agent is focused. Only **focus** still stands aside for the
+no-agent panel below — it is the one view that needs somebody to talk to.
+
+The right-hand column is **focus's own panel**: guardrails, CI/CD and usage
+are read, not typed into, so a column of things to say to an agent would be
+furniture with nothing to fire at on any of them, and it stays off screen on
+those views. A question on the glass takes it too — the answer pads are what
+that moment is for.
+
+At rest it is a 56px strip of three keys — **prompts**, **skills**, **hooks**
+— each drawn as an icon with a count badge, and a badge appears only when the
+count is non-zero: a faint "0" and a faint "3" read the same at a glance.
+Pressing a key opens the full 344px panel; the panel is dismissed by a
+chevron in its own header. Collapsed is the resting state at every width
+now — it used to default open above `wide` (1200) on the grounds that there
+was room for both, and there was, but the transcript wanted the width more.
+The `⋮` that used to sit in the pane's own title row and pick between the
+three tabs is gone with it: a third and fourth key across a title row was how
+a title row stopped being readable, and the panel is governed from the panel
+now.
+
+A new module `app/src/Icon.js` is the single place a meaning becomes a
+glyph — call sites say `prompts` or `mcp`, never a Feather name. It wraps
+`@expo/vector-icons`'s Feather set, which was already a dependency; nothing
+was added. It draws the strip's three keys, its own collapse chevron, and the
+rail's MCPs footer row with its down-count. The view tabs deliberately stayed
+TEXT: an icon-only tab bar is something you have to learn before you can
+navigate, and four glyphs that all mean "a view of this checkout" is exactly
+what nobody learns.
+
+Prompts are what you send an agent; skills and hooks are what it already has,
+read off disk by `GET /catalog` and split by **scope** into sub-tabs: project,
+project · local, global, plugins. Where a thing comes from is the first fact
+about it — a hook in the repo is the team's, one in `~/.claude` is yours — and
+131 plugin skills over 38 of your own is not a list you scroll looking for one
+of the 38.
 
 Every tab has a `＋` in the same place, and every row it lists opens for
 editing. `＋ prompt` fills in the first empty pad on the page; `＋ skill` and
@@ -175,6 +348,35 @@ looks like rather than under its group and entry indices — those renumber the
 moment a sibling is deleted, which would hand one hook's description to
 another. A note follows an edit that changes the hook, and is deleted with it.
 
+### Turning things off
+
+Three things you would expect to work the same way do not, and the panel says
+so rather than pretending otherwise.
+
+**Skills have four states, not two** — `skillOverrides` in settings, one of
+`on`, `name-only`, `user-invocable-only`, `off`. The middle two are the useful
+ones: a skill you still want to reach by `/name` but never want reaching for
+you. Absent means `on`, so turning one back on *deletes* the key rather than
+writing the word, and the file stays a list of the decisions actually made.
+Written to `.claude/settings.local.json` by default, which is where the
+built-in `/skills` menu puts it and where a decision about your own checkout
+belongs — it is the file git does not carry, so turning something off for
+yourself does not turn it off for everyone who clones the repo.
+
+**Plugins are a documented boolean** — `enabledPlugins`, keyed
+`name@marketplace`, and they get their own tab. That tab exists because
+`skillOverrides` explicitly does not reach a plugin's skills: for those 93
+rows the only switch there is is the plugin's own.
+
+**Hooks have no off switch at all.** The one documented control is
+`disableAllHooks`, which takes every hook, the custom status line and the `@`
+file suggestions with it. So this one is ours: turning a hook off lifts the
+whole entry out of the settings file into `~/.midiai/hooks-parked.json`, and
+turning it on puts it back into the group whose matcher it had. The panel keeps
+listing it, dimmed — a hook you cannot see is a hook you write a second copy
+of. The cost, said plainly because it is real: **a parked hook is invisible to
+anything that reads settings.json.** Only this app knows it is there.
+
 The event field is an autocomplete over all
 thirty-three of Claude Code's hook events, in the order they happen rather than
 alphabetically, each with what it actually fires on. The names alone are a
@@ -196,7 +398,7 @@ move mode does that), and the pager it needed. A list can say what a lit
 square cannot, which was always the reason the panel is a list.
 
 The panel does not appear at all when no agent is running, nor does the
-**prompts** key that opens it. Every pad fires into "whichever session the
+strip that opens it. Every pad fires into "whichever session the
 Push is pointed at"; with nothing running there is no such session and the
 server answers a fire with `409 no session selected on the Push`. A panel
 whose every button is a guaranteed error is not worth the width.
@@ -205,18 +407,24 @@ The pad editor is a sheet, not a column — an **edit pad** key appears once you
 have picked one, and the editor was holding a third of the screen open next to
 the thing you were reading.
 
-Under the focus title, one line names the checkout and the branch you are
-actually typing into — two agents in one repo is the normal case here, and on
-two different branches is why the line exists rather than the repo name alone.
+Under the focus title, one line used to name the checkout and the branch you
+were actually typing into — two agents in one repo is the normal case here,
+and on two different branches was why the line existed rather than the repo
+name alone. That fact moved to the band's own checkout chip, which names both
+for whichever agent or worktree is focused; what is left on this line now is
+the one fact that is about this agent rather than its checkout — which of its
+faces (pretty, terminal, subagents) you are looking at.
 
 The tabs are the views, uppercased so the one row of chrome reads as chrome:
-**FOCUS · TESTS · GIT · USAGE**. `prs` reads GIT because the view is the
-repo's state and PRS was the one label that had to be decoded. `sessions` and
-its subagents split are no longer tabs — the rail's AGENTS group answers "who
-is running" without a click and is on screen the whole time. The view names
-are a wire contract (`VIEWS` in `push_cc.py`, a `views_data` key) and are
-untouched: only the word drawn changed, the tab index a `/press` carries is
-still the view's own index, and the Push still has every view it had.
+**FOCUS · GUARDRAILS · GIT · USAGE**. `tests` reads GUARDRAILS because the
+view is everything meant to stand between a change and main, not the test
+files it lists today, and `prs` reads GIT because the view is the repo's
+state and PRS was the one label that had to be decoded. `sessions` and its
+subagents split are no longer tabs — the rail's tree answers "who is running"
+without a click and is on screen the whole time. The view names are a wire
+contract (`VIEWS` in `push_cc.py`, a `views_data` key) and are untouched: only
+the word drawn changed, the tab index a `/press` carries is still the view's
+own index, and the Push still has every view it had.
 
 Top right is a **⋮**, holding reconnect, Push mirror and the host field.
 Those three used to sit in the header row and drop out of it one at a time as
@@ -337,7 +545,10 @@ the surface until someone types into it.
 `smoke_tmux.py` exercises all eight against a live tmux server, including the
 one that matters here: that no call ever reaches for `herdr`. `mission_check.py`
 walks push_cc's own data path against real panes, and `mission_api.py` drives
-the routes below.
+the routes below. `probe_work.py` drives the three `/work` routes on a spare
+port, reading this checkout and writing only to a repo it makes for the
+purpose — `discard` and `stash drop` are real commands, and a gate that ran
+them here would run them over whatever anyone had uncommitted.
 
 ## The app's own hands
 
@@ -356,6 +567,9 @@ rest over HTTP:
 | `POST /projects` | `{path}` — remember a repo; any path inside it will do |
 | `POST /projects/remove` | `{path}` — forget one; nothing on disk is touched |
 | `GET /branches?cwd=` | local branches, each naming the worktree that holds it |
+| `GET /work?cwd=` | the working tree in one call — branch, upstream, ahead/behind, staged, unstaged, conflicted, stashes, and the commit graph |
+| `GET /work/diff?cwd=&file=&staged=&sha=` | one file's patch or one commit's, as git's own text; an untracked file falls back to `--no-index` so a new file still reads as a diff |
+| `POST /work/do` | `{cwd, verb, files?, message?, branch?, ref?, amend?}` — one of eleven verbs, never a command line |
 | `POST /worktrees/switch` | `{path, branch}` — check another branch out in a worktree |
 | `GET /catalog?cwd=` | the skills and hooks an agent there can reach, each tagged with its scope |
 | `GET /skill?scope=&name=` | one skill's description and instructions, for the editor |
@@ -365,6 +579,9 @@ rest over HTTP:
 | `POST /hook/delete` | `{scope, event, gi, hi}` |
 | `POST /skill/move` | `{name, scope, to, to_cwd?}` — global ↔ a project; a plugin's is copied |
 | `POST /open` | `{path}` — open that folder in the editor on this machine |
+| `POST /skill/state` | `{name, state}` — `on` / `name-only` / `user-invocable-only` / `off` |
+| `POST /hook/toggle` | `{scope, event, gi, hi, on:false}` to park one, `{on:true, parked}` to bring it back |
+| `POST /plugin/toggle` | `{key, enabled}` — writes `enabledPlugins` |
 
 `/prompt` without a `terminal_id` goes to whichever agent the Push is
 pointed at, which is the same target a pad fires into: one place decides what
@@ -377,13 +594,16 @@ rather than the pane title, which claude overwrites with its own.
 An agent with no name reads by the basename of its directory, exactly as
 before. Renaming is a convenience, not a requirement.
 
-### The rail, in two groups
+### The rail is one tree
 
-The left rail is **PROJECTS** over **AGENTS**. The lower group is the eight
-seats as cards — name, status, model, effort — with four keys in the corner of
-each. The upper group is the repos, each opening onto its worktrees. There used
-to be a `worktrees…` sheet behind an agent's menu; the PROJECTS group is that
-sheet, always on screen, so the sheet is gone.
+It used to be a **PROJECTS** tree over an **AGENTS**/MCPS tabbed section, each
+capped at 30% of the window height — two capped scrolls inside one scrolling
+rail, and the relationship that actually matters, which worktree a given
+agent is living in, was drawn nowhere: you read a card's cwd and matched it
+against the tree above by eye. Before that there was a `worktrees…` sheet
+behind an agent's menu instead of a PROJECTS tree at all. Now repos open onto
+their worktrees and each worktree carries the agents living in it, so
+placement is the tree's own structure rather than something you reconstruct.
 
 Projects are a **server-side list**, `~/.midiai/projects.json`, and `GET
 /projects` returns each one with its worktrees already attached — one call, not
@@ -401,13 +621,20 @@ is placed in its **longest** matching worktree, not its first. This repo keeps
 its own worktrees under `.claude/worktrees/`, inside the main checkout, and a
 first-match rule files every one of them under the checkout instead.
 
+A collapsed repo still answers "is anything blocked in here" without opening
+it: its row draws one status dot, worst-first across every agent nested
+underneath — blocked beats working beats done beats idle beats unknown — so a
+collapsed tree still tells you where to look.
+
 Per row: a linked worktree is marked `↳`, the checkout is not. One with an
 agent shows that agent's status hue and taps through to its seat; one without
 **selects** it, and the pane draws the panel below rather than starting a
-claude on the spot — one tap on a list is not enough intent to spawn a process.
-The `⋮` on the row holds *switch branch*, *close agent* and *close + delete
-worktree*; the parent row carries a `＋` for a new worktree and a `×` to forget
-the project.
+claude on the spot — one tap on a list is not enough intent to spawn a
+process. An empty worktree still draws, marked `empty` rather than dropped
+from the tree — selecting one nobody is in is still how you pick a checkout
+to read guardrails or CI for. The `⋮` on the row holds *switch branch*,
+*close agent* and *close + delete worktree*; the parent row carries a `＋` for
+a new worktree and a `×` to forget the project.
 
 `GET /branches` says which branches another worktree already holds, because git
 will not check one out twice — so a branch that could only produce that error
@@ -415,31 +642,64 @@ is drawn as the fact rather than offered as a button. There is no dirty check
 of ours: git refuses a checkout that would lose work and carries changes over
 when it would not, and its own sentence comes back as the error.
 
-An agent card carries four keys rather than a menu: **✎** rename, **⊟**
-`/compact`, **⊘** `/clear`, **×** close. Compact and clear are *typed*, not
-called — they are Claude Code's own commands with no API behind them, so they
-go down the same pty a pad fires into. Clear arms before it fires: it throws
-away everything the agent knows and it is a 20px target in a 268px column, so
-one tap reddens it and the next does it.
+An agent nested under its worktree carries four keys rather than a menu, but
+only when it is the **selected** agent: **✎** rename, **⊟** `/compact`, **⊘**
+`/clear`, **×** close. Four keys on every nested row at 268px is not a row
+anyone can read, so everyone else keeps just the hue, the name and the
+model — the same as the selected row shows before you have picked one.
+Compact and clear are *typed*, not called — they are Claude Code's own
+commands with no API behind them, so they go down the same pty a pad fires
+into. Clear arms before it fires: it throws away everything the agent knows
+and it is a 20px target in a 268px column, so one tap reddens it and the next
+does it.
 
-The lit card carries a subagent count, and the tree itself is a sub-tab in the
-focus view — under the agent it belongs to, rather than under the list you use
-to leave it. Only the **focused** agent's, either way: reading them per seat
-would mean globbing and parsing every agent's transcript on every 400ms poll,
-so a card that is not lit shows no count at all rather than showing zero, which
-would be a lie.
+A nested row has no width left for a third fact once the name and model are
+drawn, so an agent's subagent count no longer rides along on its own row —
+reading it per seat would mean globbing and parsing every agent's transcript
+on every 400ms poll regardless of whether anyone is looking. It reads now
+under the agent itself, in the focus view's own `subagents · N` sub-tab, for
+whichever agent you are currently looking at.
 
 Eight seats is few enough to read at a glance and too many to read while you
-are working in one repo of three, so the AGENTS heading carries **all · here** —
-`here` being the worktree you picked in PROJECTS, or the one the focused agent
-is in. It is never the default: hiding agents by default is how you lose one.
-Filtered, never renumbered — `i` is still the seat index a `/press` carries,
-and the Push's eighth button is still the eighth seat.
+are working in one repo of three, so the rail's own header row carries
+**all · here** — `here` being the worktree you picked in the tree, or the one
+the focused agent is in. It is never the default: hiding agents by default is
+how you lose one. Filtered, never renumbered — `i` is still the seat index a
+`/press` carries, and the Push's eighth button is still the eighth seat.
+
+MCPS left the AGENTS tab pair it used to share and became a pinned **footer
+row** instead — there is no tab pair left to share, since the tree is AGENTS
+now and always on screen. The footer holds an MCPs row and `＋ new agent`,
+both outside the body scroll. The MCPs row carries the count of servers that
+are down, in red, and only when at least one is — the same zero-is-not-a-
+warning rule as everywhere else. Pressing it swaps the rail's body between
+the tree and the MCP list and reads as selected while the list is showing, so
+there is a way back. All the MCP machinery — health checking, scope tabs, the
+add form, per-server actions — is unchanged; only the way you reach it
+changed. `＋ install an MCP` is pinned in the footer too, above the MCPs row:
+installing one is what you came for when the list has not got it, so it
+cannot sit underneath however many servers the list happens to have. It was
+previously kept above the fold by capping the list's height, and that cap
+clipped the list while leaving the rest of the rail empty beneath it — worth
+recording, because it is exactly the kind of fix that trades one bug for
+another.
+
+Both 30vh caps are gone now too. Whichever body is showing — the tree, or the
+MCP list — takes the whole body scroll. The header (search, the `all / here`
+scope toggle, `＋ add project`) and the footer both stay outside that scroll,
+same as they always did: an action or a "show more" buried below a long list
+is one nobody can reach.
 
 ### No active agent
 
-Pick a worktree nobody is in and the pane says so by name, with **＋ new
-agent**, **close** (stop looking at it) and **close and delete worktree**. It
+Pick a worktree nobody is in and **focus** says so by name, with **＋ new
+agent**, **close** (stop looking at it) and **close and delete worktree**.
+Guardrails and CI/CD are unaffected and keep reading that checkout — they used
+to be replaced by this too, which made picking a repo just to look at its tests
+or its pull requests impossible. The tab counts go quiet while a pick is up:
+they are read off the Push's own focused agent, so beside a picked worktree
+they are counting a different checkout, and CI/CD read `· 0` over a pane
+listing five open PRs. It
 is also where you land after closing an agent, which otherwise left you staring
 at whichever seat the Push happened to be on with no sign of what you had just
 emptied. A dirty tree comes back as git's own refusal, with a second key to
@@ -552,6 +812,10 @@ takes typed paths.
 
 ## Notes
 
+- A `\r` typed with `send-keys -l` does not submit. Claude Code takes it as a
+  newline in the input, so a prompt from the app sat in the agent's box,
+  typed and never sent, with nothing reporting an error. `term.py` sends each
+  `\r` as tmux's named `Enter` key and keeps the text around it literal.
 - A question is only a question if the pane draws a **caret** on one of its
   options. The pattern that finds them matches anything opening with `1.`, and
   Claude writes numbered lists in prose constantly — a two-bullet recap read as
@@ -562,6 +826,146 @@ takes typed paths.
 - Only agents in the multiplexer's panes appear. `claude agents --json` knows
   every agent's cwd, status and id but offers no focus, no send and no read,
   so a pane is still the substrate — it is the half that has hands.
+- A re-run does not replace the run it re-ran. `statusCheckRollup` carries
+  every attempt, so a fixed PR keeps its old failure in the list forever — 37
+  entries where GitHub's own page shows 18. `check_rows` keeps each check once,
+  at its newest attempt, and `check_state` reads the colour off those rows
+  rather than the raw rollup, so the dot and the list cannot disagree.
+- MCPs are listed from the config files and health-checked separately, because
+  the list is a file read and `claude mcp list` is nine seconds of starting
+  every stdio server and speaking to every remote one. The check runs behind a
+  two-minute cache on its own thread, the way `open_prs` runs behind the PR
+  list; until it lands a server draws grey, never red. Two name traps live
+  here: the CLI prints a plugin's server as `plugin:<plugin>:<name>` where
+  `mcp_rows` calls it `<plugin>:<name>`, so health is asked under both
+  spellings and answered under ours; and a plugin can declare `mcpServers`
+  inline in `.claude-plugin/marketplace.json` with no `.mcp.json` anywhere,
+  which is how the one server that was actually failing became the one server
+  the rail could not draw.
+- Disable is only offered where Claude Code has a switch. A project
+  (`.mcp.json`) server goes in `disabledMcpjsonServers`; a plugin's server
+  goes off with its plugin. A user or local server has no such key — the only
+  way to stop one is to remove it, and a Disable that quietly did a Remove
+  would be worse than not offering it.
+- The pretty view reads as prose because `reflow` puts it back together first.
+  `capture-pane` hard-wraps every line to the PANE's width -- 39 columns in a
+  split -- so one sentence arrives as four lines, and drawn a line at a time
+  it became four paragraphs. Wrapped lines rejoin; only a blank line, a bullet,
+  a numbered item, a heading, a fence, a table row or a short shouty line
+  (TLDR, NEXT) actually breaks. Those last three also CLOSE, or the line after
+  a heading glues onto it. It lives in `app/src/reflow.js` with one runnable
+  check beside it -- `node app/reflow_check.mjs`, no runner, importing the same
+  function the app does so the rule cannot drift from its test.
+- What the agent is doing NOW sits at the foot of the conversation, not in the
+  title bar: a dot that moves, Claude Code's own `✻` progress line (which
+  already carries the elapsed seconds and the token count), and the tool call
+  it is inside. That last one is the only terminal detail the pretty view shows
+  on purpose -- everything else stays behind the work receipt. The work
+  collected after the last finished answer used to be dropped, because no `⏺`
+  ever came to close it, which is exactly the moment worth seeing.
+- The projects tree and the agents/MCPs list below it used to each cap at 30%
+  of the WINDOW height and scroll inside that, measured off
+  `useWindowDimensions` rather than a percentage: the rail was one scroll
+  holding the tree and the agents below it, so a `maxHeight: '45%'` would have
+  measured against a parent that grows with the list and capped nothing.
+  Thirty-one worktrees pushed AGENTS off the bottom of the screen, and eight
+  agents or a dozen MCPs did the same to whatever was under them. Both caps
+  are gone now that the tree and the MCP list are two bodies sharing one
+  footer-switched scroll rather than two lists sharing one rail: whichever
+  body is showing takes the whole thing, which is the fix that actually holds
+  rather than a smaller cap in a new place.
+
+  The header and the footer's keys still stay OUTSIDE that scroll, the same
+  rule the caps existed to protect. ＋ new agent is in the footer rather than
+  the top of the list so it does not end up below eight agent rows; putting it
+  inside a scrolling list would have carried it off the top instead, which is
+  the same problem from the other end.
+- An agent gets a WINDOW of its own, not a split. Two agents sharing a window
+  share its layout, and tmux keeps layout and zoom on the window -- every
+  client in a group sees the same one -- so a split makes it impossible for
+  the app to show one agent while a terminal beside it shows another: zooming
+  for one zooms for both. Window *selection* is per session, which is what
+  lets the two look at different agents at once. `agent start --split` still
+  splits for whoever wants a side-by-side on the glass; it is no longer what
+  every caller passes without meaning it.
+- The terminal tab is a real terminal on the web build: xterm.js over a pty
+  running `tmux attach`, in `ptybridge.py`. Colour, cursor, mouse, resize and
+  scrollback, because it is not a drawing of a terminal. The native build keeps
+  the scraped view -- xterm needs a DOM -- so both live in `Pane.js` behind
+  `Platform.OS === 'web'`. `python3 ptybridge.py` is its self-check.
+- The pty attaches to a session GROUPED with the agent's, never the agent's
+  own. tmux sizes a session to its smallest client, so attaching the app beside
+  a real Terminal window would shrink that window to the browser's idea of a
+  terminal. One view per SESSION, not per pane: a pty per pane put several of
+  our own clients on one session and the app squeezed itself.
+- A reconnecting reader gets the screen from a **nudged resize**, not a replay.
+  Two wrong answers came first. `refresh-client` sends only what CHANGED and
+  tmux believes the departed reader still has the screen, so it sent nothing --
+  a fresh terminal was a cursor on an empty box. Keeping our own tail and
+  replaying it shredded the screen instead, because those bytes were written
+  for whatever size the terminal was THEN. A size change is the one thing tmux
+  always redraws for.
+- `refresh-client -t` wants a CLIENT -- a tty -- and not a session. Handing it
+  a session name fails silently, which is what made the repaint look broken
+  rather than misaddressed.
+- What the terminal is looking at is a READ, never a write: `#{pane_id}` of the
+  app's own client, polled while that tab is open, and the focused agent
+  follows it. The app cannot steer it -- tmux keeps the active pane per window
+  and shares it between every client, so moving it from here would move the
+  cursor in the Terminal window beside it.
+- **open in Terminal** hands the pane to a real one. The in-app view cannot
+  have colour (`capture-pane -p` strips it), a cursor (it polls), the mouse or
+  scrollback, and none of that needs solving on a desktop where tmux is already
+  running -- the terminal that has all four is one `attach` away. The key
+  writes a `.command` script and opens it rather than building an AppleScript
+  string: a file on disk has nothing to interpolate into, and the one value
+  from the request had to match `%<digits>` to get that far. Web only; the
+  native iPad build is the case with no terminal to open.
+- The terminal tab is a terminal. What it sends is what a keyboard sends --
+  characters, and the control sequences for the keys that are not characters
+  (`\x03` for Ctrl-C, `\x1b[A` for Up) -- through `POST /keys`, which hands
+  them to `send-keys -l` and interprets nothing. Bytes and not tmux key NAMES
+  deliberately: no name to allowlist, nothing that can start with a dash and
+  be read as an option, no second syntax to keep in step with tmux's. The
+  composer is hidden while it is showing, because a terminal already has a
+  line and a second box sending to the same pane is two prompts for one cursor.
+- Keystrokes go out one request at a time, everything typed meanwhile riding
+  the next. A fetch per key looked right and was not: they are concurrent, so
+  they arrive in whatever order the network settles on, and typing
+  `echo terminal-is-live` put `ech toremnial-is-live` in the pane. Typing is a
+  stream and a stream has exactly one order.
+- Agents sharing a worktree get tabs above the focus title. Same checkout, not
+  merely the same repo -- two agents on different branches of one project are
+  not working on the same thing. Drawn only when there is more than one: a
+  single tab is a label pretending to be a control.
+- `panel_col` counts each agent's subagents on the wire, which used to put
+  the count on every rail card and not just the lit one. It was focused-only
+  to begin with because the wire carried the focused agent's subagents and
+  nobody else's -- a blank meant "not known" where a 0 would have been a lie.
+  Now that the rail is a tree, a nested row has no width left for a third
+  fact once the name and model are drawn, so the count doesn't reach a rail
+  row at all any more -- it reads under the focused agent itself, in the
+  focus view's own `subagents · N` sub-tab, the only place the wire ever
+  detailed it in the first place.
+- The skills catalogue lists a plugin's skills from its own `installPath`,
+  found at any depth under a `skills/` directory. Globbing the plugin tree
+  instead matched every cached VERSION and the marketplace copy besides, so
+  one plugin with six versions listed its skills six times; and a fixed one-
+  or two-level depth silently dropped every skill filed under a category.
+  Duplicates that survive this are real: two marketplaces can install the
+  same plugin, and that is worth seeing rather than hiding.
+- A workflow file has two names and they are not the same name. Its stem is
+  its identity on the wire — a write is addressed by it — and `name:` inside is
+  the label GitHub draws. Calling both `name` meant one dict spread renamed
+  `publish-sdk` to `Publish SDK`, and every read and write of it 400'd on a
+  path that could not exist. `workflow_meta` returns `title` for the label.
+- tmux's server exits with its last session, so `no server running` is the
+  ordinary state of a machine with no agents on it, not a fault. `new-window`
+  and `split-window` cannot answer it -- neither creates a session, only
+  `new-session` does. `_agent_start` knew that and the worktree verbs did not,
+  so opening a worktree worked all day and then 500'd the morning after the
+  last agent was closed. Every path that opens a pane goes through
+  `_open_pane` now, which asks once.
 - Slots pin per terminal id: an agent exiting does not shuffle the others, so
   muscle memory survives. A 9th agent is invisible.
 - Prompts insert and do not submit. Pressing a pad is the only way to learn what

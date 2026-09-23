@@ -59,6 +59,13 @@ things in there look like bugs and are not:
 - An agent with no session yet reports `unknown`, not `idle`. The process is
   what says an agent is present; the session only enriches it.
 
-`python3 push_cc.py --selftest`, `python3 term.py` and `python3 smoke_tmux.py`
-are the three gates. The last one needs a live tmux server and cleans up after
-itself.
+`python3 push_cc.py --selftest`, `python3 term.py`, `python3 ptybridge.py`,
+`node app/reflow_check.mjs` and `python3 smoke_tmux.py` are the gates.
+
+**The last one is destructive.** It opens with `kill-server` because its first
+checks are about a cold machine, so running it closes every agent on the box
+and loses whatever each was in the middle of. "Cleans up after itself" used to
+be written here and is what got a live session killed mid-flight. It now
+refuses to start where a server is already up; `--force` is the only way past,
+and it means what it says. Run it when the machine is idle, not as a
+reflexive gate.

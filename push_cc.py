@@ -302,8 +302,15 @@ def read_page(pads, by_name):
         colour = by_name.get(entry.get("tag"), entry.get("colour", BLUE))
         out.append({"label": entry.get("label") or label_for(text),
                     "text": text,
+                    "prefix": entry.get("prefix") or "",
+                    "dynamic": entry.get("dynamic") or "",
+                    "fields": entry.get("fields") if isinstance(entry.get("fields"), list) else [],
                     "colour": int(colour) & 0x7F,
                     "tag": entry.get("tag"),
+                    "scope": entry.get("scope") if entry.get("scope") in
+                             ("global", "project", "local") else "global",
+                    "project": entry.get("project") or "",
+                    "worktree": entry.get("worktree") or "",
                     # off unless asked for: a pad that fires on contact is how
                     # /handoff went into a live session three times
                     "submit": bool(entry.get("submit"))})
@@ -558,13 +565,17 @@ def herdr(*args):
     return text
 
 
-def start_agent(where, split="right"):
+def start_agent(where, split=""):
     """A new claude in `where`. herdr insists agent names are unique, so take
-    the directory's name and number it rather than reusing one."""
+    the directory's name and number it rather than reusing one.
+
+    No `--split` unless one is asked for: an agent gets a window of its own,
+    so the app and a terminal can look at different ones at the same time."""
     base = os.path.basename(where.rstrip("/")) or "agent"
     for n in range(1, 21):
         name = base if n == 1 else f"{base}-{n}"
-        out = herdr("agent", "start", name, "--cwd", where, "--split", split,
+        out = herdr("agent", "start", name, "--cwd", where,
+                    *(("--split", split) if split else ()),
                     "--focus", "--", "claude", "--permission-mode", "auto")
         if "agent_name_taken" not in out:
             return name
@@ -1148,6 +1159,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # accepting those filled the grid with pads named "concatenating" and "emits".
 # The guard below is the real fix: a result line names a test FILE.
 _RESULT_RE = re.compile(r"^\s*(PASS|FAIL)\s+(\S+)")
+_VITEST_RE = re.compile(r"^\s*([✓×❯])\s+(\S+(?:\.test\.|\.spec\.)\S+)")
 # playwright drives real browsers against a real app, detox drives a simulator.
 # They belong in the tree, but not behind a pad you might lean on.
 TEST_SLOW = ("playwright", "detox", "cypress")
@@ -1261,7 +1273,10 @@ def parse_result(line):
     jest paints PASS green and the escape lands before the word."""
     m = _RESULT_RE.match(_ANSI_RE.sub("", line))
     if not m:
-        return None
+        vm = _VITEST_RE.match(_ANSI_RE.sub("", line))
+        if not vm:
+            return None
+        return ("pass" if vm.group(1) == "✓" else "fail"), vm.group(2)
     path = m.group(2)
     if not any(pat in path for pat in TEST_PATS):
         return None                      # a test's name, not a file's
@@ -1455,7 +1470,7 @@ def plan_fetch():
         bars.append({
             # a scoped window names its own model, which is the only place
             # "Fable" appears -- there is no fable key to look up
-            "label": model or USAGE_KINDS.get(seat.get("kind"), seat.get("kind", "?")),
+            "label": "Claude · " + (model or USAGE_KINDS.get(seat.get("kind"), seat.get("kind", "?"))),
             "used": max(0.0, min(1.0, float(seat["percent"]) / 100.0)),
             "severity": seat.get("severity") or "normal",
             "active": bool(seat.get("is_active")),
@@ -1468,7 +1483,47 @@ def plan_usage(now):
     if not _plan["busy"] and now - _plan["at"] >= USAGE_TTL:
         _plan.update(at=now, busy=True)
         threading.Thread(target=plan_fetch, daemon=True).start()
-    return _plan["bars"], _plan["err"]
+    return _plan["bars"] + codex_usage(now), _plan["err"]
+
+
+_codex_plan = {"at": 0.0, "bars": []}
+
+
+def codex_usage(now):
+    """Latest Codex rate-limit snapshot already written to local session JSONL."""
+    if now - _codex_plan["at"] < 5:
+        return _codex_plan["bars"]
+    _codex_plan["at"] = now
+    paths = glob.glob(os.path.expanduser("~/.codex/sessions/**/*.jsonl"), recursive=True)
+    paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    limits = None
+    for path in paths[:12]:
+        try:
+            with open(path, "rb") as f:
+                lines = f.readlines()[-80:]
+            for line in reversed(lines):
+                row = json.loads(line)
+                payload = row.get("payload") or {}
+                if payload.get("type") == "token_count" and payload.get("rate_limits"):
+                    limits = payload["rate_limits"]
+                    break
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if limits:
+            break
+    bars = []
+    for key, fallback in (("primary", "5h"), ("secondary", "weekly")):
+        item = (limits or {}).get(key) or {}
+        if item.get("used_percent") is None:
+            continue
+        minutes = item.get("window_minutes")
+        label = "5h" if minutes == 300 else "weekly" if minutes == 10080 else fallback
+        bars.append({"label": f"Codex · {label}",
+                     "used": max(0.0, min(1.0, float(item["used_percent"]) / 100)),
+                     "severity": "normal", "active": True,
+                     "resets": item.get("resets_at") or ""})
+    _codex_plan["bars"] = bars
+    return bars
 
 
 PR_TTL = 60.0       # gh reaches the network; a minute-old list is still true
@@ -1476,23 +1531,56 @@ PR_MAX = 20         # what one gh call asks for; the screen shows its worst
 _prs = {}           # checkout -> {at, busy, rows, err}
 
 
+def run_state(run):
+    """One check run, one word. Both the rollup colour and the per-check list
+    read this, so the dot beside a PR can never disagree with the rows the
+    review modal draws under it."""
+    if not isinstance(run, dict):
+        return ""
+    # check runs report conclusion+status, plain statuses report state
+    done = (run.get("conclusion") or run.get("state") or "").upper()
+    if not done or run.get("status") in ("QUEUED", "IN_PROGRESS", "PENDING"):
+        return "pending"
+    if done in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+        return "pass"
+    if done in ("PENDING", "EXPECTED"):
+        return "pending"
+    return "fail"                   # failure, cancelled, timed out, action req
+
+
+def check_rows(rollup):
+    """The colour spelled out: every check, worst first, with the link to the
+    run that failed so the next step is one tap and not a hunt through Actions.
+
+    A re-run does not replace the old one in gh's answer -- the rollup carries
+    every attempt -- so a check is kept once, at its newest attempt. Without
+    that a green PR whose first try failed keeps a red dot forever."""
+    latest = {}
+    for run in rollup or []:
+        state = run_state(run)
+        if not state:
+            continue
+        # a workflow's job is named twice: "CI / test" says more than "test"
+        name = run.get("name") or run.get("context") or "check"
+        flow = run.get("workflowName") or ""
+        key = f"{flow} / {name}" if flow and flow != name else name
+        # ISO 8601 sorts as text; a StatusContext has no time and simply keeps
+        # the last one gh listed
+        at = str(run.get("startedAt") or run.get("completedAt") or "")
+        if key in latest and at < latest[key][0]:
+            continue
+        latest[key] = (at, {"name": key, "state": state,
+                            "url": run.get("detailsUrl") or run.get("targetUrl") or ""})
+    rank = {"fail": 0, "pending": 1, "pass": 2}
+    return sorted((row for _, row in latest.values()),
+                  key=lambda r: (rank.get(r["state"], 3), r["name"]))
+
+
 def check_state(rollup):
     """Many check runs, one colour. The worst one wins, which is the only
-    summary a glance can use."""
-    seen = set()
-    for run in rollup or []:
-        if not isinstance(run, dict):
-            continue
-        # check runs report conclusion+status, plain statuses report state
-        done = (run.get("conclusion") or run.get("state") or "").upper()
-        if not done or run.get("status") in ("QUEUED", "IN_PROGRESS", "PENDING"):
-            seen.add("pending")
-        elif done in ("SUCCESS", "NEUTRAL", "SKIPPED"):
-            seen.add("pass")
-        elif done in ("PENDING", "EXPECTED"):
-            seen.add("pending")
-        else:
-            seen.add("fail")        # failure, cancelled, timed out, action req
+    summary a glance can use -- read off the same deduplicated rows the review
+    modal lists, so the dot and the list can never tell different stories."""
+    seen = {row["state"] for row in check_rows(rollup)}
     for state in ("fail", "pending", "pass"):
         if state in seen:
             return state
@@ -1557,6 +1645,146 @@ def open_prs(where, now):
         slot.update(at=now, busy=True)
         threading.Thread(target=pr_fetch, args=(where,), daemon=True).start()
     return slot["rows"], slot["err"]
+
+
+# A workflow's name is the client's whole say in where the file goes, the same
+# bargain skill_path drives: the regex IS the containment check, admitting no
+# separator, no dot and no leading dash, so there is nothing for a `..` to
+# traverse from. `.github/workflows` is named here and never by the caller.
+WORKFLOW_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+WORKFLOW_DIR = os.path.join(".github", "workflows")
+
+
+def workflow_path(name, root):
+    """Where a workflow of this name lives in this checkout -- or None."""
+    if not root or not WORKFLOW_NAME_RE.match(name or ""):
+        return None
+    return os.path.join(root, WORKFLOW_DIR, name + ".yml")
+
+
+def workflow_meta(text):
+    """What a workflow file says about itself, without a YAML parser.
+
+    Three facts and a name is the whole of what a list row draws, and every one
+    of them is a top-level key or a two-space-indented key under one -- which a
+    regex reads correctly on every file in this repo and costs no dependency.
+    A file this cannot parse still lists, with whatever it did find: a workflow
+    you cannot see is worse than one described thinly."""
+    # YAML 1.1 reads a bare `on` as boolean true, so a linted repo writes it
+    # quoted -- same key, and the difference is not the caller's problem
+    lines = [re.sub(r'^"on":', "on:", l) for l in str(text or "").splitlines()]
+
+    def under(key):
+        """The two-space-indented keys under a column-0 `key:`."""
+        out, grab = [], False
+        for line in lines:
+            if line.startswith(key + ":"):
+                grab = True
+                continue
+            if grab:
+                if line.strip() and not line[0].isspace():
+                    break
+                hit = re.match(r"  ([\w-]+):", line)
+                if hit:
+                    out.append(hit.group(1))
+        return out
+
+    # `title`, not `name`: a workflow's file stem is its identity everywhere on
+    # this wire (it is what a write is addressed by), and the `name:` field is
+    # the label GitHub draws. Calling both of them `name` meant one dict spread
+    # silently renamed publish-sdk to "Publish SDK" and every write of it 400d.
+    title = ""
+    on = []
+    for line in lines:
+        if line.startswith("name:") and not title:
+            title = line[5:].strip().strip("'\"")
+        if line.startswith("on:"):
+            rest = line[3:].strip()
+            if rest.startswith("["):
+                on = [w.strip().strip("'\"") for w in rest[1:-1].split(",") if w.strip()]
+            elif rest:
+                on = [rest]
+    return {"title": title,
+            "on": on or under("on"),
+            "jobs": under("jobs"),
+            # what the file needs configured before it can do anything -- the
+            # one fact about a workflow you cannot read off a run
+            "secrets": sorted(set(re.findall(r"secrets\.([A-Z_0-9]+)", "\n".join(lines))))}
+
+
+# The files that govern a pull request without being one. Not a directory
+# listing: a fixed table, so the client sends a key this file knows and never
+# a path -- the tightest version of the bargain workflow_path drives.
+#
+# Each is listed at every location GitHub itself honours, first-existing wins.
+# A repo with CODEOWNERS at the root and this offering to create
+# `.github/CODEOWNERS` would be offering to create the one that silently wins
+# over the one already doing the job.
+GOVERNS = {
+    "pr-template": {
+        "what": "What every PR description starts as.",
+        "paths": (".github/PULL_REQUEST_TEMPLATE.md",
+                  "PULL_REQUEST_TEMPLATE.md",
+                  "docs/PULL_REQUEST_TEMPLATE.md")},
+    "codeowners": {
+        "what": "Who gets asked for review, by path.",
+        "paths": (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")},
+    "dependabot": {
+        "what": "What opens the dependency PRs, and how often.",
+        "paths": (".github/dependabot.yml",)},
+}
+
+
+def govern_path(key, root):
+    """Where this governing file lives in this checkout -- the one already
+    there if any, else where a new one belongs."""
+    spot = GOVERNS.get(key or "")
+    if not spot or not root:
+        return None
+    here = [os.path.join(root, rel) for rel in spot["paths"]]
+    return next((p for p in here if os.path.exists(p)), here[0])
+
+
+# `claude mcp list` health-checks every server and prints one line each:
+#
+#   name: endpoint - <mark> <words>
+#
+# Three states worth telling apart, because each has a different next move:
+# connected is nothing to do, needs-auth is one command away from working, and
+# failed is a thing to read the reason for.
+MCP_MARKS = (("\u2714", "up"), ("!", "auth"), ("\u2718", "down"))
+
+
+def mcp_health(text, names=()):
+    """{name: {"state", "said"}} out of `claude mcp list`.
+
+    Both halves of a line fight naive splitting. A name can contain colons
+    (`plugin:claude-mem:mcp-search`), so the first `: ` is not the boundary;
+    and an endpoint can be a whole node -e program containing ` - `, so the
+    first ` - ` is not either. The configured names are already known from the
+    config files, so the longest one that the line starts with IS the name --
+    no guessing. Only a server that is somehow not in the config falls back to
+    splitting, and it falls back to the loosest reading rather than none."""
+    known = sorted((n for n in names if n), key=len, reverse=True)
+    out = {}
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        name = next((n for n in known if line.startswith(n + ": ")), "")
+        rest = line[len(name) + 2:] if name else line.split(": ", 1)[-1]
+        if not name:
+            name = line.split(": ", 1)[0]
+        # the status is what follows the LAST " - ", because the endpoint may
+        # hold any number of earlier ones
+        said = rest.rsplit(" - ", 1)[-1].strip() if " - " in rest else ""
+        state = next((word for mark, word in MCP_MARKS if said.startswith(mark)), "")
+        if not state:
+            continue                  # a header line, or output we do not know
+        for mark, _ in MCP_MARKS:
+            said = said.lstrip(mark).strip()
+        out[name] = {"state": state, "said": said}
+    return out
 
 
 _ctx_cache = {}     # path -> (size, used)
@@ -1645,6 +1873,15 @@ _TLDR_RE = re.compile(r"^[*#\s]*TL;?DR\b", re.I)
 _MARKERS = ("\u23fa", "\u273b", "\u203b", "\u276f")
 
 
+def terminal_chrome(line):
+    """True for status/footer rows drawn by Claude Code or Ponytail."""
+    text = line.strip()
+    return (text.startswith("[PONYTAIL]") or
+            text.startswith("⏵⏵ auto mode") or
+            bool(re.match(r"^(esc to interrupt|shift\+tab to cycle|ctrl\+)",
+                          text, re.I)))
+
+
 def tldr(lines):
     """The agent's last word, which is the only part of a pane worth reading
     at a glance.
@@ -1663,7 +1900,7 @@ def tldr(lines):
                 # the pane's own furniture ends the section: the next answer,
                 # the status footer, a recap, the prompt. Running past them was
                 # putting "recap:" and half a typed prompt in the summary.
-                if line[:1] in _MARKERS and out:
+                if (line[:1] in _MARKERS or terminal_chrome(line)) and out:
                     break
                 if line.strip():
                     out.append(line.strip())
@@ -1940,6 +2177,12 @@ def panel_col(agent, unseen=False):
             # dict) only ever sets it there -- but carried as its own field
             # rather than folded into status, same reasoning as DONE above.
             "unseen": bool(unseen),
+            # how many Task subagents this one has out. Counted per agent
+            # rather than only for the focused one: the rail's whole job is
+            # telling you which seat to look at, and "this one has six
+            # running" is exactly that kind of fact -- it used to be visible
+            # only after you had already gone and looked.
+            "subs": len(subagents(agent)),
             "context": used / limit if limit else 0.0}
 
 
@@ -2095,6 +2338,7 @@ def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
                  "running": (test_run.now if test_run
                              and not test_run.done else ""),
                  "passed": ok, "failed": bad,
+                 "packages": len(tpkgs),
                  "slow": any(p["slow"] for p in
                              scope_packages(tpkgs, test_path, True))}
         data = {"kind": "tests", **tinfo}
@@ -2425,8 +2669,11 @@ def run():
                     if "answer" in cmd and target:
                         k = int(cmd["answer"])
                         if 0 <= k < len(opts):
+                            keys = answer_keys(k, summary.get("sel") or 0)
+                            if cmd.get("answer_text"):
+                                keys += str(cmd["answer_text"]) + ENTER
                             herdr("agent", "send", target,
-                                  answer_keys(k, summary.get("sel") or 0))
+                                  keys)
                             print(f"answer {k + 1}/{len(opts)} from the mirror",
                                   flush=True)
                     # Any of the ~54 mapped controls, not just the four above.
@@ -3315,6 +3562,87 @@ def selftest():
                         {"conclusion": "FAILURE", "status": "COMPLETED"}]) == "fail", \
         "red outranks a run still going"
     assert check_state([{"conclusion": "SKIPPED", "status": "COMPLETED"}]) == "pass"
+    # the list under the dot: same verdict per run, worst first, named as
+    # GitHub names it, and a StatusContext still has somewhere to link
+    named = check_rows([{"name": "test", "workflowName": "CI",
+                         "conclusion": "FAILURE", "status": "COMPLETED",
+                         "detailsUrl": "u"},
+                        {"name": "lint", "conclusion": "SUCCESS",
+                         "status": "COMPLETED"},
+                        {"context": "codecov", "state": "PENDING",
+                         "targetUrl": "t"}])
+    assert [r["state"] for r in named] == ["fail", "pending", "pass"], named
+    assert named[0] == {"name": "CI / test", "state": "fail", "url": "u"}, named[0]
+    assert named[1]["name"] == "codecov" and named[1]["url"] == "t", named[1]
+    assert named[2]["name"] == "lint", "no workflow name, no slash"
+    assert check_rows([{"name": "x", "workflowName": "x", "state": "SUCCESS"}])[0]["name"] == "x", \
+        "GitHub repeats a one-job workflow's name; say it once"
+    assert check_rows(None) == [] and check_rows(["junk"]) == [], "no rollup, no rows"
+    # a re-run is a second entry, not a replacement: the newest attempt is the
+    # only true one, and the dot above the list has to agree with it
+    rerun = [{"name": "test", "conclusion": "FAILURE", "status": "COMPLETED",
+              "startedAt": "2026-01-01T00:00:00Z"},
+             {"name": "test", "conclusion": "SUCCESS", "status": "COMPLETED",
+              "startedAt": "2026-01-02T00:00:00Z"}]
+    assert check_rows(rerun) == [{"name": "test", "state": "pass", "url": ""}], \
+        "the older attempt is history, not a failing check"
+    assert check_state(rerun) == "pass", "and the dot says so too"
+    assert check_state(rerun[::-1]) == "pass", "whichever order gh listed them"
+
+    # a workflow describes itself in three facts a regex can reach
+    wf = workflow_meta("""name: Publish SDK
+
+on:
+  push:
+    tags: ['sdk-v*']
+  workflow_dispatch:
+
+jobs:
+  check-secret:
+    steps:
+      - env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+  publish:
+    needs: check-secret
+""")
+    assert wf["title"] == "Publish SDK", "the label, kept apart from the stem"
+    assert "name" not in wf, \
+        "a file's stem is its identity on this wire; a second `name` overwrote it"
+    assert wf["on"] == ["push", "workflow_dispatch"], wf
+    assert wf["jobs"] == ["check-secret", "publish"], wf
+    assert wf["secrets"] == ["NPM_TOKEN"], wf
+    inline = workflow_meta('name: X\n"on": [push, pull_request]\njobs:\n  a:\n')
+    assert inline["on"] == ["push", "pull_request"], "quoted key, inline list"
+    assert inline["jobs"] == ["a"] and inline["secrets"] == [], inline
+    assert workflow_meta("")["title"] == "", "an unreadable file still lists"
+    # every shape `claude mcp list` actually prints, including the two that
+    # break naive splitting: a colon inside a name, and " - " inside a command
+    health = mcp_health("""Checking MCP server health\u2026
+
+claude.ai Slack: https://mcp.slack.com/mcp - ! Needs authentication
+plugin:claude-mem:mcp-search: node -e const x = a - b; - \u2714 Connected
+plugin:firebase:firebase: npx -y firebase-tools mcp --dir . - \u2718 Failed to connect \u2014 CONNECTION_CLOSED
+bugcast: node /x/index.mjs - \u2714 Connected
+""", ["claude.ai Slack", "plugin:claude-mem:mcp-search",
+      "plugin:firebase:firebase", "bugcast"])
+    assert health["claude.ai Slack"]["state"] == "auth", health
+    assert health["plugin:claude-mem:mcp-search"]["state"] == "up", \
+        "a colon inside the name is not the name boundary"
+    assert health["plugin:firebase:firebase"]["state"] == "down", health
+    assert "CONNECTION_CLOSED" in health["plugin:firebase:firebase"]["said"]
+    assert health["bugcast"]["state"] == "up", health
+    assert len(health) == 4, "the header line is not a server"
+    assert mcp_health("") == {} and mcp_health(None) == {}
+    assert workflow_path("ci", "/r") == "/r/.github/workflows/ci.yml"
+    # a key this file knows, or nothing -- there is no path on that wire
+    assert govern_path("dependabot", "/r") == "/r/.github/dependabot.yml"
+    assert govern_path("codeowners", "/r").endswith(".github/CODEOWNERS"), \
+        "nothing on disk, so a new one goes where GitHub looks first"
+    for bad in ("../etc/passwd", "workflows", "", None):
+        assert govern_path(bad, "/r") is None, bad
+    assert govern_path("dependabot", "") is None, "no checkout, no file"
+    for bad in ("../ci", "a/b", ".hidden", "-lead", "Ci", "", None):
+        assert workflow_path(bad, "/r") is None, bad
     pr = lambda n, **kw: {"number": n, "title": "  t\n t ",
                           "author": {"login": "me"}, **kw}
     rows = pr_rows([pr(1), pr(2, statusCheckRollup=[{"conclusion": "FAILURE"}]),
@@ -3353,7 +3681,8 @@ def selftest():
     assert col["unseen"] is False, "the default is seen, not done"
     # every renderer reads by key, so a new field cannot break an old unpack
     assert set(col) == {"name", "status", "model", "effort", "sub", "tid",
-                        "cwd", "focused", "unseen", "context"}, col
+                        "cwd", "focused", "unseen", "subs", "context"}, col
+    assert col["subs"] == 0, "no transcript, no subagents -- not a crash"
     assert col["tid"] == "t", "the app acts on a seat and must know which agent"
     done_col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
                           "terminal_id": "t", "focused": False}, unseen=True)
@@ -3474,6 +3803,9 @@ def selftest():
     # matched however it is spelled, and dropped either way
     assert tldr(["tl;dr", "- Progress: x"]) == ["- Progress: x"]
     assert tldr(["## TL;DR", "- Next: y"]) == ["- Next: y"]
+    assert tldr(["TLDR", "- Done: yes", "[PONYTAIL] /rc",
+                 "⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent"]) == ["- Done: yes"], \
+        "Ponytail's footer is terminal chrome, not part of the answer"
 
     # moving pads: one operation, because an empty destination is just None
     a = [{"label": "a", "text": "a", "colour": BLUE, "tag": None, "submit": False},
