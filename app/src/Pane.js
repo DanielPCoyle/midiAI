@@ -2301,14 +2301,14 @@ function Overview({ base, cwd }) {
                     ticked && styles.grItemOn,
                     drag?.id === it.id && [styles.grLifted, { transform: [{ translateY: drag.dy }] }],
                   ]}>
-                  <Pressable
-                    style={styles.grRow}
-                    accessibilityRole="button"
-                    accessibilityState={{ expanded: on }}
-                    onPress={() => setOpen(on ? '' : it.id)}>
-                    {/* no reordering mid-search: a filtered phase hides the
-                        rows you would be placing it between */}
-                    {!needle && (
+                  {/* The grip sits beside the row's open key, not inside it:
+                      inside, letting go of a drag also counted as a tap on
+                      the row, and every reorder opened the guardrail. */}
+                  <View style={styles.grRowWrap}>
+                  {/* no reordering mid-search: a filtered phase hides the
+                      rows you would be placing it between */}
+                  {!needle && (
+                    <View style={styles.grGrip}>
                       <DragHandle
                         label={`drag to reorder ${it.title}`}
                         onStart={() => setDrag({ id: it.id, phase: p.key, dy: 0 })}
@@ -2318,7 +2318,13 @@ function Overview({ base, cwd }) {
                           if (dy !== null) dropAt(p.key, it.id, dy);
                         }}
                       />
-                    )}
+                    </View>
+                  )}
+                  <Pressable
+                    style={[styles.grRow, styles.spacer, !needle && styles.grRowGripped]}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: on }}
+                    onPress={() => setOpen(on ? '' : it.id)}>
                     <Pressable
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked: ticked }}
@@ -2333,6 +2339,7 @@ function Overview({ base, cwd }) {
                     {edited(it.id) && <Text style={styles.tag}>edited</Text>}
                     <Text style={styles.grCaret}>{on ? '−' : '+'}</Text>
                   </Pressable>
+                  </View>
                   {on && (writing ? (
                     <GuardrailForm
                       form={form}
@@ -4622,6 +4629,9 @@ const styles = StyleSheet.create({
   grItem: { borderWidth: 1, borderColor: C.line, borderRadius: S.radius, backgroundColor: C.panel, overflow: 'hidden' },
   grItemOn: { borderColor: '#2a5a35' },
   grRow: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 12, paddingVertical: 9, minHeight: 44 },
+  grRowWrap: { flexDirection: 'row', alignItems: 'stretch' },
+  grGrip: { justifyContent: 'center', paddingLeft: 8 },
+  grRowGripped: { paddingLeft: 4 },
   grBox: { width: 18, height: 18, borderRadius: 4, borderWidth: 1, borderColor: C.edge, alignItems: 'center', justifyContent: 'center' },
   grBoxOn: { borderColor: '#3cd05a', backgroundColor: '#14291a' },
   grTick: { color: '#3cd05a', fontSize: 11, fontWeight: '700' },

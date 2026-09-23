@@ -969,6 +969,12 @@ gate.
   of each in the rail and the seat tabs. `term._match_agents` keeps one per
   pane. Anything else that walks `list-panes -a` and counts what it finds
   has to do the same.
+- A control inside a row's own Pressable is a trap twice over. A button in
+  a button is invalid HTML on the web (the console says `<button> cannot
+  contain a nested <button>`), and a drag grip inside one lets the release
+  land as a tap -- every guardrail reorder opened the guardrail. Put the
+  row's open key and its other controls side by side in a plain View, as
+  WorkFile and the guardrail rows now do.
 - `{text && <View/>}` with an empty string renders the `''` itself, and
   React Native will not have a bare string inside a View. The page looks
   right; the console fills with `Unexpected text node: . A text node cannot
