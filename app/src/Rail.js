@@ -25,7 +25,6 @@ import {
 import Icon from './Icon';
 import { Menu, MenuButton } from './Menu';
 import { inside } from './Projects';
-import PushButton from './PushButton';
 import SessionSheet from './SessionSheet';
 import { C, S, SEAT_HEX, seatHue, seatWord } from './theme';
 
@@ -714,6 +713,19 @@ export default function Rail({
                             </View>
                           );
                         })}
+                        {/* new agents start under the branch they will run on, and
+                            the sheet is told which one -- there is no "where" to pick */}
+                        {row.exists && free > 0 && (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`new agent on ${label} in ${p.name}`}
+                            onPress={() => setSheet({
+                              mode: 'new', seatIndex: null, cwd: row.path, place: `${p.name} › ${label}`,
+                            })}
+                            style={styles.newHere}>
+                            <Text style={styles.newHereText}>＋ new agent</Text>
+                          </Pressable>
+                        )}
                       </View>
                     );
                   })}
@@ -953,15 +965,6 @@ export default function Rail({
             </>
           )}
         </Pressable>
-        {free > 0 && (
-          <PushButton
-            colour="transparent"
-            accessibilityLabel="new agent"
-            onPress={() => setSheet({ mode: 'new', seatIndex: null })}
-            style={styles.free}>
-            <Text style={styles.freeText}>＋ new agent</Text>
-          </PushButton>
-        )}
       </View>
 
       {sheet && (
@@ -971,7 +974,8 @@ export default function Rail({
           base={base}
           tid={activeSeat?.tid}
           name={activeSeat?.name}
-          cwd={activeSeat?.cwd}
+          cwd={sheet.cwd ?? activeSeat?.cwd}
+          place={sheet.place}
           onClose={() => setSheet(null)}
           onDone={() => {
             setSheet(null);
@@ -1161,19 +1165,8 @@ const styles = StyleSheet.create({
   mcpsRowTextOn: { color: C.text },
   mcpsRowDown: { color: C.bad, fontSize: 11, fontWeight: '600' },
 
-  free: {
-    minHeight: 44,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: C.line,
-    borderTopColor: C.line, // PushButton's own key style tints the top edge -- flatten it back to the dash
-    borderRadius: S.radius,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'transparent',
-    paddingBottom: 0,
-  },
-  freeText: { color: C.edge, fontSize: 11 },
+  newHere: { paddingVertical: 3, paddingLeft: 22 },
+  newHereText: { color: C.faint, fontSize: 11 },
   mcpCard: { borderWidth: 1, borderColor: C.line, borderRadius: S.radius, padding: 12, gap: 6 },
   mcpTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, paddingTop: 10, paddingHorizontal: 4 },
   mcpTab: { color: C.faint, fontSize: 10, paddingBottom: 3 },

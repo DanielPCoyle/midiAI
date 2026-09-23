@@ -389,7 +389,7 @@ function nameValid(mode, value) {
 //   onClose  () => void                        -- dismiss without doing anything
 //   onDone   () => void                        -- fired after the api call succeeds; caller should
 //                                                  dismiss (visible=false) and refetch /agents
-export default function SessionSheet({ visible, mode, base, tid, name, cwd, onClose, onDone }) {
+export default function SessionSheet({ visible, mode, base, tid, name, cwd, place, onClose, onDone }) {
   const [cwdField, setCwdField] = useState('');
   const [nameField, setNameField] = useState('');
   const [branchField, setBranchField] = useState('');
@@ -474,7 +474,15 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
           {mode === 'new' && (
             <>
               <Text style={styles.label}>where</Text>
-              <PlacePick base={base} value={cwdField} onChange={setCwdField} />
+              {/* opened from a branch row: the place is decided, so say it */}
+              {place ? (
+                <View>
+                  <Text style={styles.placeName}>{place}</Text>
+                  <Text style={styles.hint} numberOfLines={1}>{cwdField}</Text>
+                </View>
+              ) : (
+                <PlacePick base={base} value={cwdField} onChange={setCwdField} />
+              )}
               <Text style={styles.label}>name <Text style={styles.hint}>(optional)</Text></Text>
               <TextInput
                 style={styles.input}
@@ -626,6 +634,7 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, onCl
 }
 
 const styles = StyleSheet.create({
+  placeName: { color: C.text, fontSize: 14, fontWeight: '600' },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',

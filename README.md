@@ -685,8 +685,10 @@ how you lose one. Filtered, never renumbered — `i` is still the seat index a
 
 MCPS left the AGENTS tab pair it used to share and became a pinned **footer
 row** instead — there is no tab pair left to share, since the tree is AGENTS
-now and always on screen. The footer holds an MCPs row and `＋ new agent`,
-both outside the body scroll. The MCPs row carries the count of servers that
+now and always on screen. The footer holds the MCPs row, outside the body
+scroll. `＋ new agent` is under each branch in the tree instead: the branch is
+where the agent will run, so the sheet opens already knowing it (it names
+"project › branch" and drops the where picker) rather than asking. The MCPs row carries the count of servers that
 are down, in red, and only when at least one is — the same zero-is-not-a-
 warning rule as everywhere else. Pressing it swaps the rail's body between
 the tree and the MCP list and reads as selected while the list is showing, so
@@ -1073,10 +1075,10 @@ gate.
   rather than a smaller cap in a new place.
 
   The header and the footer's keys still stay OUTSIDE that scroll, the same
-  rule the caps existed to protect. ＋ new agent is in the footer rather than
-  the top of the list so it does not end up below eight agent rows; putting it
-  inside a scrolling list would have carried it off the top instead, which is
-  the same problem from the other end.
+  rule the caps existed to protect. ＋ new agent used to be a footer key for
+  that reason; it now sits under each branch, inside the scroll, because a
+  button that already knows where the agent goes is worth scrolling to -- one
+  that has to ask is not.
 - An agent gets a WINDOW of its own, not a split. Two agents sharing a window
   share its layout, and tmux keeps layout and zoom on the window -- every
   client in a group sees the same one -- so a split makes it impossible for
