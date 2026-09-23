@@ -431,13 +431,17 @@ export default function Rail({
         </View>
       )}
       <View style={styles.headRow}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="add a project"
-          onPress={() => setWsheet({ mode: 'project' })}
-          style={styles.addRow}>
-          <Text style={styles.addText}>＋ add project</Text>
-        </Pressable>
+        {/* projects are the tree's business; over the MCP list the key
+            would add something you cannot see from there */}
+        {tab !== 'mcps' && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="add a project"
+            onPress={() => setWsheet({ mode: 'project' })}
+            style={styles.addRow}>
+            <Text style={styles.addText}>＋ add project</Text>
+          </Pressable>
+        )}
         <View style={styles.spacer} />
         {/* MCPs are configuration, not work in progress: scoping them to one
             worktree is what the three scope tabs below already do, so this
