@@ -129,6 +129,7 @@ export default function Pane({
   current,
   onSeat,
   onAnswer,
+  question,
   base,
   onSent,
   mode,
@@ -144,7 +145,7 @@ export default function Pane({
   // tests -- the pads are what answer from wherever you are, and here that is
   // the rail.
   if (opts && opts.length && (!kind || kind === 'focus')) {
-    return <Question opts={opts} onAnswer={onAnswer} />;
+    return <Question opts={opts} question={question} onAnswer={onAnswer} />;
   }
   if (kind === 'focus')
     return (
@@ -186,14 +187,15 @@ function Empty({ what }) {
   );
 }
 
-function Question({ opts, onAnswer }) {
+function Question({ opts, question, onAnswer }) {
   const [custom, setCustom] = useState('');
   const customAt = opts.findIndex(([, label]) => /^type something\.?$/i.test(label.trim()));
   const chatAt = opts.findIndex(([, label]) => /^chat about this\.?$/i.test(label.trim()));
   return (
     <ScrollView contentContainerStyle={[styles.body, styles.asking]}>
       <Text style={styles.askHead}>ASKING</Text>
-      <Text style={styles.askText}>{opts.length} ways to answer</Text>
+      {/* the options alone said "3 ways to answer" and nothing about to what */}
+      <Text style={styles.askText}>{question || `${opts.length} ways to answer`}</Text>
       <View style={styles.opts}>
         {opts.map(([num, label], k) => {
           if (k === customAt || k === chatAt) return null;

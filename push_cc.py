@@ -2068,7 +2068,7 @@ def read_pane(lines):
     pointed, so a caret at the wrong index sends the wrong number of downs into
     a live session."""
     runs, cur, say, act, at_run, at_opt = [], [], "", "", None, None
-    for line in lines:
+    for i, line in enumerate(lines):
         m = _OPT_RE.match(line)
         if m and not line.lstrip().startswith(("⏺", "✻")):
             n = int(m.group(2))
@@ -2081,7 +2081,7 @@ def read_pane(lines):
                 cur = []
             if m.group(1):
                 at_run, at_opt = len(runs), len(cur)
-            cur.append((n, m.group(2), m.group(3)))
+            cur.append((n, m.group(2), m.group(3), i))
         elif line.startswith("⏺"):
             say = line[1:].strip()             # new answer, every stale list with it
             runs, cur, at_run, at_opt = [], [], None, None
@@ -2089,9 +2089,33 @@ def read_pane(lines):
             act = line[1:].strip()
     runs.append(cur)
     if at_run is None:                         # numbered prose, not a question
-        return {"say": say, "act": act, "opts": [], "sel": None}
+        return {"say": say, "act": act, "opts": [], "sel": None, "question": ""}
     return {"say": say, "act": act, "sel": at_opt,
-            "opts": [(num, label) for _, num, label in runs[at_run]]}
+            "question": question_above(lines, runs[at_run][0][3]),
+            "opts": [(num, label) for _, num, label, _ in runs[at_run]]}
+
+
+def question_above(lines, first):
+    """The question a widget is asking: the block of text right above its
+    first option, up to the blank line or rule that opens it.
+
+    The app drew the options alone -- "3 ways to answer", and nothing saying
+    to what. The question is only on the pane, so it is read from there.
+    Capped, because a permission prompt stacks its command and description
+    over "Do you want to proceed?" and all of that is context, not a novel."""
+    out = []
+    for line in reversed(lines[:first]):
+        text = line.strip()
+        if not text or set(text) <= set("─━ "):
+            if out:
+                break
+            continue
+        if text.startswith(("⏺", "✻", "❯")):
+            break
+        out.append(text)
+        if len(out) == 6:
+            break
+    return " ".join(reversed(out))
 
 
 def pane_summary(agent, depth=SCRAPE_LINES):
@@ -2658,6 +2682,7 @@ def run():
                 if not talking:
                     summary = pane_summary(cur)
                 opts = summary.get("opts") or []
+                question = summary.get("question") or ""
                 target = slots.get(current) or focused
                 if (cur or {}).get("terminal_id") != published:
                     published = (cur or {}).get("terminal_id")
@@ -2871,7 +2896,7 @@ def run():
                         "seats": seats, "current": current,
                         # a question is answerable from wherever you are, so
                         # the app is told about one in every view
-                        "opts": opts,
+                        "opts": opts, "question": question,
                         "page": page, "pages": len(PAGES),
                         # what the app needs to draw this view itself, and
                         # every seat in enough detail for its rail
@@ -3919,6 +3944,14 @@ bugcast: node /x/index.mjs - \u2714 Connected
     seen = read_pane(widget)
     assert [o[1] for o in seen["opts"]] == ["Yes", "Hold"], "a real one still reads"
     assert seen["sel"] == 0, "and the caret says where the walk starts"
+    assert seen["question"] == "Commit this?", "and what it is asking"
+    asked = ["⏺ Done.", "", " ☐ Commit", "", "Commit the Work view, and add",
+             "commit actions?", "", "❯ 1. Commit as is", "     Enough for now",
+             "  2. Hold", "────", "  3. Chat about this"]
+    seen = read_pane(asked)
+    assert seen["question"] == "Commit the Work view, and add commit actions?", \
+        seen["question"]
+    assert [o[1] for o in seen["opts"]][-1] == "Chat about this", seen["opts"]
     assert read_pane(["⏺ done", "1. a note"])["opts"] == [], "nor after an answer"
     # a pane holds more than one numbered list; only the one with the caret is
     # a question, and the caret's index is an index into that list alone

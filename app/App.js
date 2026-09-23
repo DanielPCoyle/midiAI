@@ -791,6 +791,7 @@ export default function App() {
             <Pane
                 data={data}
                 opts={opts}
+                question={surface.question}
                 cols={cols}
                 current={surface.current}
                 onSeat={(i) => press({ seat: i })}
@@ -863,6 +864,7 @@ export default function App() {
               <Pane
                 data={data}
                 opts={opts}
+                question={surface.question}
                 cols={cols}
                 current={surface.current}
                 onSeat={(i) => press({ seat: i })}
