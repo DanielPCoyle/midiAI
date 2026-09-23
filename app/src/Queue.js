@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { getQueue, setQueue } from './api';
 import { C, S } from './theme';
@@ -29,13 +29,55 @@ export function useQueue(base, tid) {
   return [queue, change, setQ, err];
 }
 
-// The queue, Spotify-style: what goes next is on top. Tap a message to edit
-// it in place (saved when you leave the box), arrows to move it, the top
-// arrow to play it next, x to drop it.
-// ponytail: arrows, not drag -- a drag handle needs a gesture library or a
-// PanResponder; add one if reordering long queues gets tedious.
+// A grip that reports a vertical drag. PanResponder, so no gesture library;
+// it refuses to hand the touch back mid-drag, or the list would scroll away
+// with the row you are holding.
+function DragHandle({ onStart, onMove, onEnd }) {
+  const cb = useRef();
+  cb.current = { onStart, onMove, onEnd };
+  const pan = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderGrant: () => cb.current.onStart(),
+    onPanResponderMove: (_, g) => cb.current.onMove(g.dy),
+    onPanResponderRelease: (_, g) => cb.current.onEnd(g.dy),
+    onPanResponderTerminate: () => cb.current.onEnd(null),
+  })).current;
+  return (
+    <View {...pan.panHandlers} accessibilityLabel="drag to reorder" style={styles.handle}>
+      <MaterialIcons name="drag-indicator" size={18} color={C.dim} />
+    </View>
+  );
+}
+
+// The queue, Spotify-style: what goes next is on top. Drag a row by its grip
+// to move it, or use the arrows (the top one plays it next); tap a message
+// to edit it in place (saved when you leave the box); x drops it.
 export function QueuePanel({ queue, onChange, err }) {
   const [editing, setEditing] = useState({});   // id -> text being typed
+  // Rows are as tall as their text, so where a drag lands is worked out from
+  // each row's measured box, not from a fixed row height.
+  const boxes = useRef({});                      // id -> { y, h }
+  const [drag, setDrag] = useState(null);        // { id, dy }
+  const others = (id) => queue.filter((q) => q.id !== id && boxes.current[q.id]);
+  // the index the dragged row would take: how many other rows' middles sit
+  // above its own middle
+  const landing = (id, dy) => {
+    const me = boxes.current[id];
+    if (!me) return 0;
+    const mid = me.y + me.h / 2 + dy;
+    return others(id).filter((q) => boxes.current[q.id].y + boxes.current[q.id].h / 2 < mid).length;
+  };
+  const dropLine = () => {
+    if (!drag) return null;
+    const rest = others(drag.id);
+    const to = landing(drag.id, drag.dy);
+    if (!rest.length) return null;
+    const b = boxes.current[(rest[to] || rest[rest.length - 1]).id];
+    return to < rest.length ? b.y - 5 : b.y + b.h + 3;
+  };
+  const line = dropLine();
   const move = (i, to) => {
     const next = [...queue];
     const [item] = next.splice(i, 1);
@@ -61,7 +103,10 @@ export function QueuePanel({ queue, onChange, err }) {
     </Pressable>
   );
   return (
-    <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      contentContainerStyle={styles.list}
+      keyboardShouldPersistTaps="handled"
+      scrollEnabled={!drag}>
       {queue.length === 0 ? (
         <Text style={styles.none}>
           nothing queued — send to a busy agent and it waits here, editable, until
@@ -76,9 +121,30 @@ export function QueuePanel({ queue, onChange, err }) {
         </View>
       )}
       {!!err && <Text style={styles.err}>{err}</Text>}
+      {line !== null && <View pointerEvents="none" style={[styles.dropLine, { top: line }]} />}
       {queue.map((q, i) => (
-        <View key={q.id} style={styles.row}>
+        <View
+          key={q.id}
+          onLayout={(e) => {
+            const { y, height } = e.nativeEvent.layout;
+            boxes.current[q.id] = { y, h: height };
+          }}
+          style={[
+            styles.row,
+            drag?.id === q.id && [styles.rowLifted, { transform: [{ translateY: drag.dy }] }],
+          ]}>
           <View style={styles.rowHead}>
+            <DragHandle
+              onStart={() => setDrag({ id: q.id, dy: 0 })}
+              onMove={(dy) => setDrag({ id: q.id, dy })}
+              onEnd={(dy) => {
+                setDrag(null);
+                const from = queue.findIndex((x) => x.id === q.id);
+                if (dy === null || from < 0) return;   // cancelled, or it already went
+                const to = landing(q.id, dy);
+                if (to !== from) move(from, to);
+              }}
+            />
             <Text style={styles.num}>{i + 1}</Text>
             <View style={styles.spacer} />
             {key('play next', 'vertical-align-top', () => move(i, 0), i === 0)}
@@ -107,7 +173,10 @@ const styles = StyleSheet.create({
   note: { flex: 1, color: '#e0a03c', fontSize: 11 },
   clear: { color: C.faint, fontSize: 11, padding: 4 },
   err: { color: C.bad, fontSize: 12 },
-  row: { gap: 4, borderWidth: 1, borderColor: C.line, borderRadius: S.radius, padding: 6 },
+  row: { gap: 4, borderWidth: 1, borderColor: C.line, borderRadius: S.radius, padding: 6, backgroundColor: C.panel },
+  rowLifted: { zIndex: 10, borderColor: C.accentText, opacity: 0.92 },
+  handle: { paddingRight: 4, cursor: 'grab', userSelect: 'none', touchAction: 'none' },
+  dropLine: { position: 'absolute', left: 12, right: 12, height: 2, borderRadius: 1, backgroundColor: C.accentText, zIndex: 20 },
   rowHead: { flexDirection: 'row', alignItems: 'center' },
   num: { color: C.faint, fontSize: 11 },
   spacer: { flex: 1 },
