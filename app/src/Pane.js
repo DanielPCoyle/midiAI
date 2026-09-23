@@ -1319,6 +1319,19 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue }
         placeholderTextColor={ghost ? C.dim : C.faint}
         multiline
         editable={!sending}
+        // Enter sends, same as the button (to the queue while the agent is
+        // busy). Web: Shift+Enter is still a newline, and an IME mid-word
+        // keeps its Enter. The tablet has no shift to read, so Return always
+        // sends there; a pasted or dictated newline still gets through.
+        onKeyPress={Platform.OS === 'web' ? (e) => {
+          const ev = e.nativeEvent;
+          if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing) return;
+          e.preventDefault();
+          if (!disabled) send(true);
+        } : undefined}
+        submitBehavior={Platform.OS === 'web' ? undefined : 'submit'}
+        onSubmitEditing={Platform.OS === 'web' ? undefined : () => !disabled && send(true)}
+        returnKeyType="send"
       />
       {!!err && <Text style={styles.err}>{err}</Text>}
       {/* The box mirrors the agent's own input line so dictation can be edited
