@@ -260,6 +260,17 @@ export default function App() {
   // a project folder with no repo yet: GIT wears a warning, and opening it
   // is where `git init` is offered
   const TAB_WARN = { prs: dirty?.git === false };
+  // FOCUS reads "active | blocked | passive" across every agent, each number
+  // in its seat hue. Passive is idle, done (idle + unseen) and unknown alike.
+  const live = cols.filter(Boolean);
+  const nStatus = (...st) => live.filter((c) => st.includes(c.status)).length;
+  const TAB_PARTS = live.length ? {
+    focus: [
+      { n: nStatus('working'), hue: SEAT_HEX.working, word: 'active' },
+      { n: nStatus('blocked'), hue: SEAT_HEX.blocked, word: 'blocked' },
+      { n: live.length - nStatus('working', 'blocked'), hue: SEAT_HEX.idle, word: 'passive or complete' },
+    ],
+  } : {};
   const filled = macros.filter(Boolean).length;
 
   // Two different facts were being read as one status. Whether push_cc
@@ -690,6 +701,7 @@ export default function App() {
                   count={TAB_COUNT[name]}
                   count2={TAB_COUNT2[name]}
                   warn={TAB_WARN[name]}
+                  parts={TAB_PARTS[name]}
                   hue={hue}
                   on={i === viewIdx}
                   onPress={() => {
@@ -1094,12 +1106,13 @@ const PANELS = [
 // landing on whichever node the pointer was actually over, sometimes just
 // the count on its own ("· 0", nothing to say what it counted) (MIDI-015).
 // The inner Text is aria-hidden so that name isn't read out a second time.
-function Tab({ label, count, count2, warn, hue, on, onPress }) {
+function Tab({ label, count, count2, warn, parts, hue, on, onPress }) {
   const has = (count != null && count > 0) || (count2 != null && count2 > 0);
   return (
     <Pressable
       accessibilityRole="tab"
-      accessibilityLabel={warn ? `${label} · no repository yet`
+      accessibilityLabel={parts ? `${label} · ${parts.map((p) => `${p.n} ${p.word}`).join(', ')}`
+        : warn ? `${label} · no repository yet`
         : count2 != null ? `${label} · ${count} changed, ${count2} open pull request${count2 === 1 ? '' : 's'}`
         : count != null ? `${label} · ${count}` : label}
       accessibilityState={{ selected: on }}
@@ -1115,6 +1128,17 @@ function Tab({ label, count, count2, warn, hue, on, onPress }) {
         ]}>
         {label}
         {warn && <Text style={styles.tabWarn}> ⚠</Text>}
+        {parts && (
+          <Text style={styles.tabCount}>
+            {' · '}
+            {parts.map((p, i) => (
+              <Text key={p.word}>
+                {i > 0 && ' | '}
+                <Text style={p.n > 0 && { color: p.hue, fontWeight: '700' }}>{p.n}</Text>
+              </Text>
+            ))}
+          </Text>
+        )}
         {count != null && (
           <Text style={[styles.tabCount, has && { color: hue, fontWeight: '700' }]}>
             {' '}
