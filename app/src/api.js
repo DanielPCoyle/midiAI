@@ -127,6 +127,42 @@ export const saveGuardrailTemplate = (base, name, items, phases, replace = false
 export const dropGuardrailTemplate = (base, name) =>
   post(base, '/guardrail-template/delete', { name });
 
+// Enforcement: a guardrail can carry a script or an agent-review brief that
+// checks it mechanically, kept in the repo under .guardrails/ and compiled by
+// guardrails.py. This is a separate store from getGuardrails/saveGuardrails
+// (that one is the checklist itself, in ~/.midiai/guardrails.json) -- status
+// here is manifest + last results + local approvals + hook state, all at once,
+// the same "one call, several things read together" idea as getWork.
+export const getEnforce = (base, cwd) =>
+  getJSON(base, `/guardrails/enforce?cwd=${encodeURIComponent(cwd || '')}`);
+
+export const compileRail = (base, cwd, item) =>
+  post(base, '/guardrails/compile', { cwd, item }).then((t) => JSON.parse(t));
+
+export const getRail = (base, cwd, id) =>
+  post(base, '/guardrails/rail', { cwd, id }).then((t) => JSON.parse(t));
+
+// sha is the digest getRail handed back with the text that was shown: the
+// server approves exactly that, and refuses if the file has moved since
+export const approveRail = (base, cwd, id, sha) =>
+  post(base, '/guardrails/approve', { cwd, id, sha }).then((t) => JSON.parse(t));
+
+export const runRails = (base, cwd, { ids, phase } = {}) =>
+  post(base, '/guardrails/run', {
+    cwd,
+    ...(ids ? { ids } : {}),
+    ...(phase ? { phase } : {}),
+  }).then((t) => JSON.parse(t));
+
+export const setRailBlocking = (base, cwd, id, blocking) =>
+  post(base, '/guardrails/blocking', { cwd, id, blocking: !!blocking }).then((t) => JSON.parse(t));
+
+export const setPhaseTrigger = (base, cwd, phase, trigger) =>
+  post(base, '/guardrails/trigger', { cwd, phase, trigger }).then((t) => JSON.parse(t));
+
+export const setGuardrailHooks = (base, cwd, install) =>
+  post(base, '/guardrails/hooks', { cwd, install: !!install }).then((t) => JSON.parse(t));
+
 export const getTests = (base, cwd, path = []) =>
   getJSON(
     base,

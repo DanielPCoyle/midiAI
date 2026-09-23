@@ -25,6 +25,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import guardrails
 import memory
 import ptybridge
 import push_cc
@@ -1647,6 +1648,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._templates_read()
         if self.path == "/guardrails" or self.path.startswith("/guardrails?"):
             return self._guardrails_read()
+        if self.path == "/guardrails/enforce" or self.path.startswith("/guardrails/enforce?"):
+            return self._guardrails_enforce_read()
         if self.path == "/governs" or self.path.startswith("/governs?"):
             return self._governs_read()
         if self.path == "/govern" or self.path.startswith("/govern?"):
@@ -1791,6 +1794,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._mcp_do(self.path[len("/mcp/"):])
         if self.path == "/guardrails":
             return self._guardrails_write()
+        if self.path == "/guardrails/compile":
+            return self._guardrails_compile()
+        if self.path == "/guardrails/rail":
+            return self._guardrails_rail()
+        if self.path == "/guardrails/approve":
+            return self._guardrails_approve()
+        if self.path == "/guardrails/run":
+            return self._guardrails_run()
+        if self.path == "/guardrails/blocking":
+            return self._guardrails_blocking()
+        if self.path == "/guardrails/trigger":
+            return self._guardrails_trigger()
+        if self.path == "/guardrails/hooks":
+            return self._guardrails_hooks()
         if self.path == "/guardrail-template":
             return self._template_write()
         if self.path == "/guardrail-template/delete":
@@ -2301,6 +2318,126 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return self._send(500, f"could not save it: {e}", "text/plain")
         self._send(200, json.dumps(everything[root]), "application/json")
+
+    def _guardrails_enforce_read(self):
+        """Enforcement status for one checkout: the manifest, each rail's
+        last result and approval state, and whether the git/Stop hooks are
+        installed. A different record from _guardrails_read's checklist --
+        that one is ticks, this one is whether a tick actually runs."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        self._send(200, json.dumps(guardrails.status(root)), "application/json")
+
+    def _guardrails_compile(self):
+        """AI compile: turns one checklist item into a script or an agent
+        review brief. Can take up to a few minutes, so the caller should
+        show a spinner rather than treat a slow reply as a hang."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        item = body.get("item")
+        if not isinstance(item, dict) or not item.get("id"):
+            return self._send(400, "item needs an id", "text/plain")
+        try:
+            out = guardrails.compile_rail(root, item)
+        except Exception as e:
+            return self._send(500, str(e)[:500], "text/plain")
+        self._send(200, json.dumps(out), "application/json")
+
+    def _guardrails_rail(self):
+        """The enforcer's own text, for the app's read-only view toggle."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        rid = str(body.get("id") or "")
+        path, content = guardrails.rail_file(root, rid)
+        if path is None:
+            return self._send(404, "no enforcer for that guardrail", "text/plain")
+        kind = "agent" if path.endswith(".review.md") else "script"
+        self._send(200, json.dumps({"file": os.path.basename(path), "content": content,
+                                    "sha": guardrails.digest(content),
+                                    "approved": guardrails.is_approved(root, rid), "kind": kind}),
+                  "application/json")
+
+    def _guardrails_approve(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            # the app always sends the digest of what it showed; approval
+            # without one (an old client) would approve unseen text
+            if not body.get("sha"):
+                return self._send(400, "view the script before approving it", "text/plain")
+            guardrails.approve(root, str(body.get("id") or ""), expect=str(body["sha"]))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        self._send(200, json.dumps(guardrails.status(root)), "application/json")
+
+    def _guardrails_run(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        raw_ids = body.get("ids")
+        ids = [str(i) for i in raw_ids] if isinstance(raw_ids, list) else None
+        phase = body.get("phase") or None
+        try:
+            results = guardrails.run(root, ids=ids, phase=phase)
+        except Exception as e:
+            return self._send(500, str(e)[:500], "text/plain")
+        self._send(200, json.dumps({"results": results}), "application/json")
+
+    def _guardrails_blocking(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            guardrails.set_blocking(root, str(body.get("id") or ""), bool(body.get("blocking")))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        self._send(200, json.dumps(guardrails.status(root)), "application/json")
+
+    def _guardrails_trigger(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            guardrails.set_trigger(root, str(body.get("phase") or ""), str(body.get("trigger") or ""))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        self._send(200, json.dumps(guardrails.status(root)), "application/json")
+
+    def _guardrails_hooks(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        if body.get("install"):
+            guardrails.install_hooks(root)
+        else:
+            guardrails.uninstall_hooks(root)
+        self._send(200, json.dumps(guardrails.status(root)), "application/json")
 
     def _governs_read(self):
         """The files that shape a pull request without being one -- whether

@@ -241,6 +241,74 @@ Per-checkout state lives in `~/.midiai/guardrails.json`, deliberately outside
 the repo: a half-ticked framework committed to someone's tree reads as a claim
 nobody agreed to.
 
+### Guardrail enforcement
+
+The checklist above is a claim and a way to check it by hand. `guardrails.py`
+(stdlib only) makes a guardrail actually run. Every rail is either a
+**script** -- any executable, exit 0 pass, exit 2 n/a, anything else fail,
+stdout+stderr tail is the reason -- or an **agent review**: a written brief
+that an isolated `claude -p` judges a diff against, answering
+`{"verdict":"pass|fail|na","reason":"..."}`. **Compile** (`POST
+/guardrails/compile`) reads one checklist item and asks a model to write
+whichever kind fits, preferring a script whenever the check is mechanical.
+Scripts it writes are read-only by instruction -- never a repo write, commit,
+or push -- and honour the exit-code convention above.
+
+Enforcers live IN the repo, because a check the team is supposed to run
+together belongs where the team can see it change:
+```
+.guardrails/manifest.json
+.guardrails/<id>.sh | <id>.py       (script, chmod +x)
+.guardrails/<id>.review.md          (agent brief)
+```
+Two facts stay OUTSIDE the repo, beside `guardrails.json`, because they are
+true of this machine rather than of the checkout: `~/.midiai/guardrail-approvals.json`
+-- a script only runs if its *current* content hash was approved here, so an
+AI-written check needs a look before it can execute, and a pulled change to
+one needs approving again -- and `~/.midiai/guardrail-runs.json`, the last
+result per rail. `--trust` on the
+CLI skips the approval gate, for CI. An agent brief executes nothing, so it
+needs no approval.
+
+Approval is of the text you READ, not of whatever is on disk when you press
+the key. The app only offers **Approve script** once **view** has put the
+script on screen; `/guardrails/rail` hands back its sha256 with it, and
+`/guardrails/approve` requires that sha and refuses if the file has changed
+since (a recompile, a pull, another agent). An approve with no sha is a 400.
+
+Things found by testing it, so they are not rediscovered:
+- The model's JSON is read with `raw_decode(strict=False)`, not by counting
+  braces: scripts are full of `}` inside strings, and models put raw newlines
+  inside a script string. Both broke the first parser.
+- A manifest's `file` is repo content, so it may only name a file inside
+  `.guardrails/` -- `../x` is refused even under `--trust`.
+- Hooks resolve the checkout to git's top level, the same key mapui uses.
+  A Stop hook fired from a subfolder otherwise found no manifest and no
+  approvals, and passed everything by finding nothing.
+- The Stop hook's timeout is 300s: an agent review takes up to 180.
+  `stop_hook_active` lets the agent stop on its second try, so a guardrail
+  it cannot satisfy bounces it once rather than forever.
+
+Failures are advisory by default; **blocking** is opt-in per rail
+(`POST /guardrails/blocking`) and is what turns a fail, error, or unapproved
+script into something that actually stops a trigger -- fail closed. A phase
+fires its rails on **manual** (the run button), **stop** (a Claude Code
+agent finishing its turn), **pre-commit**, or **pre-push**
+(`POST /guardrails/trigger`); `POST /guardrails/hooks {install}` writes the
+git hooks and, for `stop`, merges a `hooks.Stop` entry into
+`.claude/settings.local.json` rather than replacing the file. Both kinds of
+hook refuse to touch anything they did not write themselves -- a git hook
+with no `# midiai-guardrails` marker is reported `exists` and left alone,
+same as a Stop entry that is not ours.
+
+`python3 guardrails.py run --cwd . [--phase P] [--id I]... [--trigger T]
+[--trust] [--json]` is the CLI the hooks shell out to; it exits 1 iff a
+blocking rail came back fail, error, or unapproved. `python3 guardrails.py
+status --cwd .` and `python3 guardrails.py compile --cwd . --id I` (item
+JSON on stdin) are the other two entry points mapui's routes wrap.
+`test_guardrails.py` is its gate, and never calls the real `claude` CLI --
+every model call in it is faked.
+
 Manage lists every workflow with the two facts that identify it, what fires it
 and what secret it needs, and opens one into its own YAML. **＋ new workflow**
 scaffolds from four templates in the shape the repos here already use: the

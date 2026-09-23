@@ -26,12 +26,16 @@ const PANEL_NAME = Object.fromEntries(PANELS);
 import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
 import {
+  approveRail,
+  compileRail,
   doWork,
   dropGuardrailTemplate,
+  getEnforce,
   getGovern,
   getGuardrails,
   getGuardrailTemplates,
   getPr,
+  getRail,
   getTests,
   getWork,
   getWorkDiff,
@@ -59,8 +63,12 @@ import {
   setAgentModel,
   addToQueue,
   reviewPr,
+  runRails,
   runTests,
   sendKeys,
+  setGuardrailHooks,
+  setPhaseTrigger,
+  setRailBlocking,
   startRecording,
   stopRecording,
   stopTests,
@@ -107,6 +115,23 @@ const TERM_THEME = {
 
 const TEST_HEX = { pass: '#3cd05a', fail: '#e03c3c', run: '#f0c828', '': C.edge };
 const CI_HEX = { pass: '#3cd05a', fail: '#e03c3c', pending: '#e0d02c', none: C.edge };
+
+// A guardrail enforcer's last verdict, drawn as a dot beside its chip.
+// pass borrows the seat colour an idle agent already means; fail and error
+// share the checklist's own C.bad rather than inventing a second red.
+const VERDICT_HEX = {
+  pass: SEAT_HEX.idle,
+  fail: C.bad,
+  error: C.bad,
+  na: C.faint,
+  unapproved: C.warn,
+};
+
+// manual is the wire's default (absent = manual), so the cycle starts there
+// and "agent stop" is the trigger's app-facing name for the wire's "stop".
+const TRIGGER_CYCLE = ['manual', 'stop', 'pre-commit', 'pre-push'];
+const TRIGGER_LABEL = { manual: 'manual', stop: 'agent stop', 'pre-commit': 'pre-commit', 'pre-push': 'pre-push' };
+const nextTrigger = (cur) => TRIGGER_CYCLE[(TRIGGER_CYCLE.indexOf(cur || 'manual') + 1) % TRIGGER_CYCLE.length];
 
 // The centre pane: the active view, drawn at sizes a person reads from a desk
 // rather than scaled up off a 960x160 strip meant to be read from a keyboard.
@@ -2099,6 +2124,15 @@ function Overview({ base, cwd }) {
   // to its phase), the same way the up-next queue does it.
   const boxes = useRef({});                     // id -> { y, h }
   const [drag, setDrag] = useState(null);       // { id, phase, dy }
+  // Enforcement, read from guardrails.py rather than the checklist store.
+  // null means "unknown" -- either still loading or the routes are not there
+  // yet (an older mapui, or a repo with nothing installed) -- and every piece
+  // of enforcement UI below is gated on it, so a repo with none of this just
+  // shows the checklist exactly as it always has.
+  const [enf, setEnf] = useState(null);
+  const [busy, setBusy] = useState({});         // id | `phase:key` | 'hooks' -> verb in flight
+  const [msg, setMsg] = useState({});           // id -> a compile/approve/run failure, shown inline
+  const [railView, setRailView] = useState({}); // id -> {loading|error|kind,file,content}
 
   useEffect(() => {
     if (!base || !cwd) return;
@@ -2109,6 +2143,16 @@ function Overview({ base, cwd }) {
       .catch((e) => { setState({ checked: {}, custom: [], hidden: [] }); setErr(e.message); });
   }, [base, cwd]);
 
+  const loadEnf = () => {
+    if (!base || !cwd) return;
+    getEnforce(base, cwd).then(setEnf).catch(() => setEnf(null));
+  };
+  useEffect(() => {
+    setRailView({});
+    loadEnf();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base, cwd]);
+
   // Every write is the whole record. Optimistic, because a checkbox that waits
   // for a round trip before it moves feels broken on a tablet -- and a failed
   // save says so in the error line rather than silently disagreeing with disk.
@@ -2116,6 +2160,66 @@ function Overview({ base, cwd }) {
     setState(next);
     saveGuardrails(base, cwd, next).then(() => setErr('')).catch((e) => setErr(e.message));
   };
+
+  // Enforcement actions. Each clears its own inline message on the way in and
+  // sets a fresh one only on failure -- these are advisory (the row already
+  // says pass/fail/na from the last real run), never the checklist's red err.
+  const setBusyFor = (key, v) => setBusy((b) => ({ ...b, [key]: v }));
+  const setMsgFor = (id, v) => setMsg((m) => ({ ...m, [id]: v }));
+  const compile = (it) => {
+    setMsgFor(it.id, '');
+    setBusyFor(it.id, 'compiling');
+    compileRail(base, cwd, {
+      id: it.id, phase: it.phase, title: it.title,
+      implemented: it.implemented, validate: it.validate,
+    })
+      .then(() => { setRailView((v) => { const n = { ...v }; delete n[it.id]; return n; }); loadEnf(); })
+      .catch((e) => setMsgFor(it.id, e.message))
+      .finally(() => setBusyFor(it.id, ''));
+  };
+  const approve = (id) => {
+    setMsgFor(id, '');
+    setBusyFor(id, 'approving');
+    approveRail(base, cwd, id, railView[id]?.sha)
+      .then(loadEnf)
+      .catch((e) => setMsgFor(id, e.message))
+      .finally(() => setBusyFor(id, ''));
+  };
+  const run = (id) => {
+    setMsgFor(id, '');
+    setBusyFor(id, 'running');
+    runRails(base, cwd, { ids: [id] })
+      .then(loadEnf)
+      .catch((e) => setMsgFor(id, e.message))
+      .finally(() => setBusyFor(id, ''));
+  };
+  const runPhase = (key) => {
+    const busyKey = `phase:${key}`;
+    setBusyFor(busyKey, 'running');
+    runRails(base, cwd, { phase: key })
+      .then(loadEnf)
+      .catch(() => {})
+      .finally(() => setBusyFor(busyKey, ''));
+  };
+  const toggleBlocking = (id, blocking) =>
+    setRailBlocking(base, cwd, id, !blocking).then(loadEnf).catch(() => {});
+  const cycleTrigger = (key) =>
+    setPhaseTrigger(base, cwd, key, nextTrigger(enf?.manifest?.triggers?.[key])).then(loadEnf).catch(() => {});
+  const toggleHooks = (install) => {
+    setBusyFor('hooks', install ? 'installing' : 'removing');
+    setGuardrailHooks(base, cwd, install)
+      .then(loadEnf)
+      .catch(() => {})
+      .finally(() => setBusyFor('hooks', ''));
+  };
+  const toggleView = (id) => {
+    if (railView[id]) { setRailView((v) => { const n = { ...v }; delete n[id]; return n; }); return; }
+    setRailView((v) => ({ ...v, [id]: { loading: true } }));
+    getRail(base, cwd, id)
+      .then((got) => setRailView((v) => ({ ...v, [id]: { ...got, loading: false } })))
+      .catch((e) => setRailView((v) => ({ ...v, [id]: { loading: false, error: e.message } })));
+  };
+
   if (!state) return <Empty what="reading the checklist…" />;
 
   // untouched means "whatever the app ships", so the shipped list is the
@@ -2255,6 +2359,39 @@ function Overview({ base, cwd }) {
   return (
     <>
       {!!err && <Text style={styles.err}>{err}</Text>}
+      {/* Silent unless enf actually loaded -- an older mapui with no
+          /guardrails/enforce route leaves this whole line out rather than
+          showing a permanent "unknown" state. */}
+      {!!enf && (() => {
+        const hooksOn = !!(enf.hooks && (enf.hooks['pre-commit'] || enf.hooks['pre-push'] || enf.hooks.stop));
+        const wantsHooks = Object.values(enf.manifest?.triggers || {}).some((t) => t && t !== 'manual');
+        if (hooksOn) {
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="hooks on, tap to remove"
+              onPress={() => toggleHooks(false)}
+              style={styles.hookLine}>
+              <Text style={styles.hookSub}>
+                {busy.hooks === 'removing' ? 'removing…'
+                  // which ones: a hook that already existed is never
+                  // overwritten, so "on" can be partial and should say so
+                  : `hooks on: ${['pre-commit', 'pre-push', 'stop'].filter((k) => enf.hooks[k]).map((k) => TRIGGER_LABEL[k]).join(', ')} · remove`}
+              </Text>
+            </Pressable>
+          );
+        }
+        if (!wantsHooks) return <Text style={styles.hookSub}>no guardrail hooks installed</Text>;
+        return (
+          <View style={styles.manageRow}>
+            <Text style={styles.hookSub}>no guardrail hooks installed</Text>
+            <View style={styles.spacer} />
+            <Pressable accessibilityRole="button" onPress={() => toggleHooks(true)} style={styles.reviewedKey}>
+              <Text style={styles.reviewedKeyText}>{busy.hooks === 'installing' ? 'installing…' : 'install hooks'}</Text>
+            </Pressable>
+          </View>
+        );
+      })()}
       <View style={styles.manageRow}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={styles.walk}>
@@ -2312,11 +2449,38 @@ function Overview({ base, cwd }) {
               {/* the phase's one-line job: constrain intent, constrain
                   architecture, constrain actions... */}
               <Text style={styles.grPhaseWhat}>constrains {p.constrains}</Text>
+              <View style={styles.spacer} />
+              {!!enf && (
+                <>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`run every guardrail in ${p.name}`}
+                    onPress={() => runPhase(p.key)}
+                    style={styles.grPhaseBtn}>
+                    <Text style={styles.grPhaseBtnText}>
+                      {busy[`phase:${p.key}`] === 'running' ? 'running…' : 'run phase'}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${p.name} trigger: ${TRIGGER_LABEL[enf.manifest?.triggers?.[p.key] || 'manual']}, tap to change`}
+                    onPress={() => cycleTrigger(p.key)}
+                    style={styles.grPhaseBtn}>
+                    <Text style={styles.grPhaseBtnText}>
+                      {TRIGGER_LABEL[enf.manifest?.triggers?.[p.key] || 'manual']}
+                    </Text>
+                  </Pressable>
+                </>
+              )}
             </View>
             {shown.filter((it) => it.phase === p.key).map((it) => {
               const on = open === it.id;
               const ticked = done(it.id);
               const writing = form && !form.isNew && form.id === it.id;
+              const rail = enf?.manifest?.rails?.[it.id];
+              const result = enf?.results?.[it.id];
+              const approved = !!enf?.approved?.[it.id];
+              const needsApproval = rail?.kind === 'script' && !approved;
               return (
                 <View
                   key={it.id}
@@ -2362,6 +2526,20 @@ function Overview({ base, cwd }) {
                       <Text style={styles.grTick}>{ticked ? '✓' : ''}</Text>
                     </Pressable>
                     <Text style={[styles.grTitle, ticked && styles.grTitleOn]}>{it.title}</Text>
+                    {/* Decoration, not a control -- the row's own Pressable
+                        already opens/closes on tap, so nothing here takes a
+                        press of its own (a nested Pressable here renders as a
+                        <button> inside a <button> on web and breaks). */}
+                    {!!rail && (
+                      <View style={styles.enfChip}>
+                        {needsApproval && <Text style={styles.enfWarnText}>⚠ approve</Text>}
+                        <Text style={styles.enfKindText}>{rail.kind}</Text>
+                        {!!result && (
+                          <View style={[styles.dot, styles.enfDot, { backgroundColor: VERDICT_HEX[result.verdict] || C.faint }]} />
+                        )}
+                        {!!rail.blocking && <Text style={styles.tag}>blocking</Text>}
+                      </View>
+                    )}
                     <View style={styles.spacer} />
                     {!shipped.has(it.id) && <Text style={styles.tag}>ours</Text>}
                     {edited(it.id) && <Text style={styles.tag}>edited</Text>}
@@ -2408,6 +2586,101 @@ function Overview({ base, cwd }) {
                           <Text style={styles.reviewedKeyText}>Not for us</Text>
                         </Pressable>
                       </View>
+                      {/* Left out entirely when enf never loaded -- an older
+                          mapui with no enforcement routes, or the fetch
+                          simply failing, means this repo has no enforcement
+                          opinion rather than a broken-looking half a UI. */}
+                      {!!enf && (
+                        <View style={styles.enfBlock}>
+                          <Text style={styles.grLabel}>enforcement</Text>
+                          {!rail ? (
+                            busy[it.id] === 'compiling' ? (
+                              <Text style={styles.enfNote}>writing a check… (can take a minute)</Text>
+                            ) : (
+                              <Pressable
+                                accessibilityRole="button"
+                                onPress={() => compile(it)}
+                                style={styles.reviewedKey}>
+                                <Text style={styles.reviewedKeyText}>Make enforceable</Text>
+                              </Pressable>
+                            )
+                          ) : (
+                            <>
+                              <View style={styles.manageRow}>
+                                <Text style={styles.enfNote}>{rail.kind} · {rail.file}</Text>
+                                <View style={styles.spacer} />
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => toggleView(it.id)}
+                                  style={styles.reviewedKey}>
+                                  <Text style={styles.reviewedKeyText}>{railView[it.id] ? 'hide' : 'view'}</Text>
+                                </Pressable>
+                              </View>
+                              {!!railView[it.id] && (
+                                railView[it.id].loading ? (
+                                  <Text style={styles.enfNote}>loading…</Text>
+                                ) : railView[it.id].error ? (
+                                  <Text style={styles.enfNote}>{railView[it.id].error}</Text>
+                                ) : (
+                                  <ScrollView horizontal style={styles.enfCodeBox}>
+                                    <Text style={[styles.enfCode, mono]}>{railView[it.id].content}</Text>
+                                  </ScrollView>
+                                )
+                              )}
+                              {needsApproval && !railView[it.id]?.sha && (
+                                <Text style={styles.grWarn}>view the script to approve it — it runs on this machine</Text>
+                              )}
+                              {/* approve what was read: only once the text is on screen */}
+                              {needsApproval && !!railView[it.id]?.sha && (
+                                <View style={styles.manageRow}>
+                                  <Text style={styles.grWarn}>runs on this machine once approved</Text>
+                                  <View style={styles.spacer} />
+                                  <Pressable
+                                    accessibilityRole="button"
+                                    onPress={() => approve(it.id)}
+                                    style={[styles.reviewedKey, styles.reviewedKeyOn]}>
+                                    <Text style={styles.reviewedKeyText}>
+                                      {busy[it.id] === 'approving' ? 'approving…' : 'Approve script'}
+                                    </Text>
+                                  </Pressable>
+                                </View>
+                              )}
+                              <View style={styles.manageRow}>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => run(it.id)}
+                                  style={styles.reviewedKey}>
+                                  <Text style={styles.reviewedKeyText}>
+                                    {busy[it.id] === 'running' ? 'running…' : 'Run'}
+                                  </Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => compile(it)}
+                                  style={styles.reviewedKey}>
+                                  <Text style={styles.reviewedKeyText}>
+                                    {busy[it.id] === 'compiling' ? 'writing…' : 'Rewrite'}
+                                  </Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
+                                  onPress={() => toggleBlocking(it.id, rail.blocking)}
+                                  style={[styles.reviewedKey, rail.blocking && styles.reviewedKeyOn]}>
+                                  <Text style={styles.reviewedKeyText}>
+                                    {rail.blocking ? 'blocking ✓' : 'blocking'}
+                                  </Text>
+                                </Pressable>
+                              </View>
+                              {!!result && (
+                                <Text style={[styles.enfNote, { color: VERDICT_HEX[result.verdict] || C.faint }]}>
+                                  {result.verdict}{!!result.reason && ` — ${result.reason}`}
+                                </Text>
+                              )}
+                            </>
+                          )}
+                          {!!msg[it.id] && <Text style={styles.grWarn}>{msg[it.id]}</Text>}
+                        </View>
+                      )}
                     </View>
                   ))}
                 </View>
@@ -4723,7 +4996,9 @@ const styles = StyleSheet.create({
   grTrack: { height: 3, borderRadius: 2, backgroundColor: C.raised, overflow: 'hidden' },
   grFill: { height: 3, backgroundColor: '#3cd05a' },
   grPhase: { gap: 5, paddingTop: 6 },
-  grPhaseHead: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingBottom: 2 },
+  grPhaseHead: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingBottom: 2, flexWrap: 'wrap' },
+  grPhaseBtn: { paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: C.edge, borderRadius: 4 },
+  grPhaseBtnText: { color: C.faint, fontSize: 10 },
   grAddRow: { borderWidth: 1, borderStyle: 'dashed', borderColor: C.edge, borderRadius: S.radius, paddingVertical: 9, paddingHorizontal: 12 },
   grAddBare: { borderWidth: 0, padding: 0 },
   grAddText: { color: C.faint, fontSize: 12 },
@@ -4751,6 +5026,15 @@ const styles = StyleSheet.create({
   grPhaseEdit: { flex: 1, flexDirection: 'row', gap: 6, minWidth: 200 },
   grPhaseField: { flex: 1, minWidth: 90 },
   grWarn: { color: C.warn, fontSize: 11, flexShrink: 1 },
+  hookLine: { paddingVertical: 4 },
+  enfChip: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  enfKindText: { color: C.faint, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 },
+  enfWarnText: { color: C.warn, fontSize: 10 },
+  enfDot: { width: 7, height: 7, borderRadius: 4 },
+  enfBlock: { borderTopWidth: 1, borderTopColor: C.line, marginTop: 4, paddingTop: 8, gap: 6 },
+  enfNote: { color: C.dim, fontSize: 11.5, flexShrink: 1 },
+  enfCodeBox: { maxHeight: 160, borderWidth: 1, borderColor: C.line, borderRadius: 5, backgroundColor: C.bg, padding: 8 },
+  enfCode: { color: C.dim, fontSize: 11, lineHeight: 16 },
   seg: { flexDirection: 'row', alignSelf: 'flex-start', borderWidth: 1, borderColor: C.line, borderRadius: 7, overflow: 'hidden', backgroundColor: C.panel },
   segAt: { paddingHorizontal: 14, paddingVertical: 6 },
   segOn: { backgroundColor: C.raised },

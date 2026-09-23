@@ -72,7 +72,8 @@ things in there look like bugs and are not:
 `python3 test_memory_routes.py`,
 `python3 test_agent_def.py`,
 `python3 test_summarize_prompt.py`,
-`python3 test_commit_message.py` and `python3 smoke_tmux.py` are the gates.
+`python3 test_commit_message.py`,
+`python3 test_guardrails.py` and `python3 smoke_tmux.py` are the gates.
 
 **The last one is destructive.** It opens with `kill-server` because its first
 checks are about a cold machine, so running it closes every agent on the box
