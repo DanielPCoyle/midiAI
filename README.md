@@ -156,7 +156,7 @@ switch:
 | | |
 |---|---|
 | **changes** | Staged over not-staged over conflicted, each file a row that opens its diff and carries its own `stage` / `discard`. Below it the stashes, the commit box, and stage-all / unstage-all / discard-all. |
-| **tree** | `git log --graph --all`, git's own ASCII art kept intact, one commit per row. Picking one shows its patch in the same viewer a file's changes use — the same question asked of a different range. |
+| **tree** | Every branch as a GitKraken-style graph: a coloured lane per branch, a dot per commit (hollow for a merge), and pills for local branches (filled), remotes (☁) and tags. `mapui.graph_lanes` lays the lanes out from `git log --all --topo-order`'s parents and the app only draws lines, as rotated Views, so it needs no SVG library; `python3 test_graph.py` is its gate. Picking one shows its patch in the same viewer a file's changes use — the same question asked of a different range. |
 
 The diff viewer is the pull-request review's, reused whole, and so is the
 parser behind it: a patch is a patch, and a second renderer would only be a
@@ -831,6 +831,10 @@ gate.
 
 ## Notes
 
+- The view (focus, guardrails, git, usage) is push_cc's, not the page's. A
+  test browser that clicks a top tab moves the Push and every other open
+  app with it -- so a check that visits GIT should switch back to focus
+  straight after, or someone typing on the iPad loses their screen.
 - `/relaunch` starts `push_cc` with *mapui's* interpreter. Start mapui with
   `.venv/bin/python`; start it with a bare `python3` and the relaunched
   `push_cc` dies at `import mido` while mapui keeps answering as if all were

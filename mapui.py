@@ -508,31 +508,89 @@ def work_head(head_line):
             "behind": behind, "detached": False}
 
 
-def work_log(root, limit=120):
-    """The commit graph for the GIT tab's graph pane. `--graph` draws the DAG
-    as the same ASCII art `git log --graph` always has; \\x1f (a byte no
-    commit message will contain) separates the graph art from the per-commit
-    fields on the rest of the line. A pure connector line -- part of the art
-    but no commit attached to it -- has no separator at all, and is kept
-    rather than dropped so the graph the app draws has no gaps. A repo with
-    no commits yet makes git exit non-zero rather than print nothing, so that
-    is treated as "no log" rather than an error."""
-    fmt = "\x1f%H\x1f%h\x1f%an\x1f%ar\x1f%D\x1f%s"
-    out = git(root, "log", "--graph", "--all", "--decorate=short",
+def graph_lanes(commits):
+    """Lay commits (newest first, each {"sha", "parents"}) out in lanes, the
+    way GitKraken draws them: a commit's first parent carries on in its lane,
+    a merge's other parents open or join lanes beside it, and a lane ends when
+    the branch it was waiting for turns out to be one already drawn.
+
+    Adds "col" (the commit's lane), "width" (lanes in play on that row) and
+    "edges" -- [x1, y1, x2, y2, lane] with x in lanes and y in half-rows
+    (0 top, 1 the dot, 2 bottom) -- so the app only has to draw lines."""
+    lanes = []                      # lane -> the sha it is waiting to reach
+    for c in commits:
+        sha, parents = c["sha"], c["parents"]
+        if sha in lanes:
+            col = lanes.index(sha)
+        else:                       # a branch tip nothing above points at
+            col = lanes.index(None) if None in lanes else len(lanes)
+            if col == len(lanes):
+                lanes.append(None)
+        edges = []
+        for i, want in enumerate(lanes):
+            if want == sha:         # this lane, and any others ending here
+                edges.append([i, 0, col, 1, i])
+                if i != col:
+                    lanes[i] = None
+            elif want is not None:  # passing straight by
+                edges.append([i, 0, i, 2, i])
+        lanes[col] = parents[0] if parents else None
+        for n, p in enumerate(parents):
+            if n == 0:
+                j = col
+            elif p in lanes:
+                j = lanes.index(p)
+            else:
+                j = lanes.index(None) if None in lanes else len(lanes)
+                if j == len(lanes):
+                    lanes.append(None)
+                lanes[j] = p
+            edges.append([col, 1, j, 2, j if n else col])
+        while lanes and lanes[-1] is None:
+            lanes.pop()
+        c.update(col=col, edges=edges,
+                 width=max([col] + [max(e[0], e[2]) for e in edges]) + 1)
+    return commits
+
+
+def work_log(root, limit=150):
+    """The commit graph for the GIT tab: every branch, laid out in lanes by
+    graph_lanes. Topo order so a commit always comes after every child it
+    has, which the lane walk depends on. A repo with no commits yet makes git
+    exit non-zero rather than print nothing, so that is "no log", not an
+    error."""
+    fmt = "%H\x1f%P\x1f%h\x1f%an\x1f%ar\x1f%D\x1f%s"
+    out = git(root, "log", "--all", "--topo-order", "--decorate=short",
              f"--max-count={limit}", f"--format={fmt}")
     if out.returncode:
         return []
+    remotes = git(root, "remote").stdout.split()
     rows = []
     for line in out.stdout.split("\n"):
-        art, sep, rest = line.partition("\x1f")
-        if not sep:
-            if line:
-                rows.append({"art": line, "sha": ""})
+        if "\x1f" not in line:
             continue
-        sha, short, who, when, refs, subject = rest.split("\x1f", 5)
-        rows.append({"art": art, "sha": sha, "short": short, "who": who,
-                     "when": when, "refs": refs, "subject": subject})
-    return rows
+        sha, parents, short, who, when, refs, subject = line.split("\x1f", 6)
+        rows.append({"sha": sha, "parents": parents.split(), "short": short,
+                     "who": who, "when": when, "subject": subject,
+                     "refs": ref_pills(refs, remotes)})
+    return graph_lanes(rows)
+
+
+def ref_pills(decorate, remotes):
+    """%D ("HEAD -> main, origin/main, tag: v1") as {name, kind, head}. A
+    slash says nothing -- feat/x is a local branch -- so remote is decided by
+    this repo's actual remote names."""
+    out = []
+    for r in filter(None, decorate.split(", ")):
+        head = r.startswith("HEAD -> ")
+        r = r[8:] if head else r
+        if r.startswith("tag: "):
+            out.append({"name": r[5:], "kind": "tag", "head": False})
+        elif r == "HEAD" or r.split("/", 1)[0] in remotes:
+            out.append({"name": r, "kind": "remote", "head": r == "HEAD"})
+        else:
+            out.append({"name": r, "kind": "local", "head": head})
+    return out
 
 
 def work_stashes(root):

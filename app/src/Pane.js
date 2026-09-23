@@ -2352,6 +2352,49 @@ function WorkFile({ row, on, staged, onOpen, onStage, onDiscard }) {
   );
 }
 
+// The GIT tab's commit graph, GitKraken-style: a lane per branch, a dot per
+// commit, and the lines between them. mapui lays it out (graph_lanes); each
+// edge arrives as lane and half-row coordinates and is drawn as a thin
+// rotated View, so it needs no SVG library on either the web or the tablet.
+const LANE = 14;
+const ROW_H = 40;
+const LANE_HEX = ['#3cb4e0', '#e0a03c', '#3cd05a', '#e03c8c', '#a07cf0', '#e0d03c', '#3ce0c8', '#e0603c'];
+const laneHex = (i) => LANE_HEX[(i || 0) % LANE_HEX.length];
+
+function GraphCell({ row, lanes }) {
+  const at = (x, y) => [x * LANE + LANE / 2, (y * ROW_H) / 2];
+  return (
+    <View style={{ width: lanes * LANE, height: ROW_H }}>
+      {(row.edges || []).map(([x1, y1, x2, y2, lane], i) => {
+        const [ax, ay] = at(x1, y1);
+        const [bx, by] = at(x2, y2);
+        const len = Math.hypot(bx - ax, by - ay);
+        return (
+          <View
+            key={i}
+            style={{
+              position: 'absolute',
+              left: (ax + bx) / 2 - len / 2,
+              top: (ay + by) / 2 - 1,
+              width: len,
+              height: 2,
+              backgroundColor: laneHex(lane),
+              transform: [{ rotate: `${Math.atan2(by - ay, bx - ax)}rad` }],
+            }}
+          />
+        );
+      })}
+      <View
+        style={[
+          styles.wkDot,
+          { left: row.col * LANE + LANE / 2 - 5, top: ROW_H / 2 - 5, borderColor: laneHex(row.col) },
+          (row.parents || []).length > 1 && { backgroundColor: C.panel },
+        ]}
+      />
+    </View>
+  );
+}
+
 function Work({ base, cwd, tabs }) {
   const narrow = useNarrow();
   const [work, setWork] = useState(null);
@@ -2418,6 +2461,8 @@ function Work({ base, cwd, tabs }) {
   const dirty = work?.unstaged || [];
   const clashes = work?.conflicts || [];
   const log = work?.log || [];
+  // one width for every row's graph, so the messages beside it line up
+  const lanes = log.reduce((n, r) => Math.max(n, r.width || 1), 1);
   const files = parseDiff(diff);
   const ahead = work?.ahead || 0;
   const behind = work?.behind || 0;
@@ -2500,19 +2545,35 @@ function Work({ base, cwd, tabs }) {
         <View style={[styles.wkTree, styles.wkTreeCol, narrow && styles.diffFilesNarrow]}>
           <Text style={styles.wkGroup}>history · {log.length}{pick?.sha ? ' · showing ' + (log.find((r) => r.sha === pick.sha)?.short || '') : ''}</Text>
           <ScrollView style={narrow ? styles.wkTreeNarrow : undefined} nestedScrollEnabled>
-            {log.map((row, i) => (
+            {log.map((row) => (
               <Pressable
-                key={i}
-                disabled={!row.sha}
+                key={row.sha}
                 accessibilityRole="button"
-                accessibilityLabel={row.sha ? `commit ${row.short}: ${row.subject}` : undefined}
+                accessibilityLabel={`commit ${row.short}: ${row.subject}`}
                 onPress={() => setPick(pick?.sha === row.sha ? null : { sha: row.sha })}
-                style={[styles.wkCommit, pick?.sha && pick.sha === row.sha && styles.diffFileOn]}>
-                <Text style={styles.wkArt}>{row.art}</Text>
-                {!!row.sha && <Text style={styles.wkSha}>{row.short}</Text>}
-                {!!row.refs && <Text numberOfLines={1} style={styles.wkRefs}>{row.refs}</Text>}
-                <Text numberOfLines={1} style={styles.wkSubject}>{row.subject}</Text>
-                {!!row.sha && <Text style={styles.wkWhen}>{row.who} · {row.when}</Text>}
+                style={[styles.wkCommit, pick?.sha === row.sha && styles.diffFileOn]}>
+                <GraphCell row={row} lanes={lanes} />
+                <View style={styles.wkText}>
+                  <View style={styles.wkLine}>
+                    {(row.refs || []).map((r) => (
+                      <Text
+                        key={r.name}
+                        numberOfLines={1}
+                        style={[
+                          styles.wkPill,
+                          { borderColor: laneHex(row.col) },
+                          r.kind === 'local' && { backgroundColor: laneHex(row.col), color: C.bg },
+                          r.head && styles.wkPillHead,
+                        ]}>
+                        {r.kind === 'tag' ? '⌂ ' : r.kind === 'remote' ? '☁ ' : ''}{r.name}
+                      </Text>
+                    ))}
+                    <Text numberOfLines={1} style={styles.wkSubject}>{row.subject}</Text>
+                  </View>
+                  <Text numberOfLines={1} style={styles.wkWhen}>
+                    <Text style={styles.wkSha}>{row.short}</Text> · {row.who} · {row.when}
+                  </Text>
+                </View>
               </Pressable>
             ))}
             {!log.length && <Empty what="no commits yet" />}
@@ -3897,10 +3958,13 @@ const styles = StyleSheet.create({
   wkSplitNarrow: { flexDirection: 'column' },
   wkTreeCol: { width: 380, borderWidth: 1, borderColor: C.line, borderRadius: 6, overflow: 'hidden' },
   wkMain: { flex: 1, minWidth: 0, gap: 14 },
-  wkCommit: { minHeight: 30, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10 },
-  wkArt: { color: C.accentText, fontSize: 12, lineHeight: 18, ...mono },
+  wkCommit: { height: ROW_H, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 },
+  wkText: { flex: 1, minWidth: 0, gap: 2 },
+  wkLine: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  wkDot: { position: 'absolute', width: 10, height: 10, borderRadius: 5, borderWidth: 2, backgroundColor: C.text },
+  wkPill: { color: C.text, fontSize: 10, borderWidth: 1, borderRadius: 4, paddingHorizontal: 4, maxWidth: 120, overflow: 'hidden', ...mono },
+  wkPillHead: { fontWeight: '700' },
   wkSha: { color: C.warn, fontSize: 11, ...mono },
-  wkRefs: { color: C.good, fontSize: 10, maxWidth: 150, ...mono },
   wkSubject: { color: C.dim, fontSize: 11, flex: 1 },
   wkWhen: { color: C.faint, fontSize: 10 },
   diffFileHead: { minHeight: 43, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: C.panel },
