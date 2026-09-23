@@ -822,6 +822,17 @@ Web only, and on purpose: iOS hands React Native no paste event and no
 clipboard image without another dependency. In Expo Go the composer still
 takes typed paths.
 
+## What you asked, pinned
+
+The pretty conversation keeps your last prompt pinned above it, **YOU
+ASKED**, so an answer scrolling past never loses its question; tap it to
+jump back to the prompt. Up to 160 characters it shows as typed. Past that
+it is one line from Haiku (`/summarize-prompt`, the same isolated `claude
+-p` the memory summaries use), cached by the prompt's text on both sides.
+The first call can take ten seconds or more, so until it lands the pin
+shows the prompt's own opening words. `test_summarize_prompt.py` is its
+gate.
+
 ## Subagents
 
 The focus view's **subagents** tab lists what the agent in focus has

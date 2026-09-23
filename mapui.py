@@ -304,6 +304,55 @@ def queue_tick():
             save_queue(q)
 
 
+# The conversation's pinned header: what you last asked, in one line. A
+# short prompt is its own summary; a long one (a pasted spec, a wall of
+# dictation) gets a line from Haiku -- the same isolated `claude -p` the
+# memory summaries use, so it writes no transcript and fires no hooks.
+# Cached by the text itself, so a prompt is summarised once however often
+# the app redraws. mapui can be bound to the LAN, so the input is capped.
+# ponytail: memory-only cache, lost on restart -- a restart re-summarises
+# whatever is pinned then, one call.
+PROMPT_SHORT = 160
+_prompt_lines = {}              # sha1(text) -> one line
+_prompt_lock = threading.Lock()
+
+
+def one_line(text, n=PROMPT_SHORT):
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= n else flat[:n - 1].rstrip() + "…"
+
+
+def summarize_prompt(text, run=None):
+    text = (text or "")[:8000]
+    flat = " ".join(text.split())
+    if len(flat) <= PROMPT_SHORT:
+        return flat
+    key = hashlib.sha1(text.encode()).hexdigest()
+    with _prompt_lock:
+        if key in _prompt_lines:
+            return _prompt_lines[key]
+    ask = ("Summarise what this request asks for in ONE line of at most 100 "
+           "characters, imperative voice, no preamble, no quotes:\n\n" + text)
+    try:
+        if run:
+            line = run(ask)
+        else:
+            out = subprocess.run(memory.SUMMARY_CMD, input=ask, text=True,
+                                 capture_output=True, timeout=60,
+                                 cwd=tempfile.gettempdir())
+            if out.returncode:
+                raise RuntimeError(out.stderr[-200:])
+            line = out.stdout
+        line = one_line(line.strip().splitlines()[0] if line.strip() else "", 120)
+    except Exception:
+        return one_line(text)       # not cached: the next ask tries again
+    if not line:
+        return one_line(text)
+    with _prompt_lock:
+        _prompt_lines[key] = line
+    return line
+
+
 def queue_loop():
     while True:
         try:
@@ -1633,6 +1682,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._prompt()
         if self.path in ("/queue", "/queue/add"):
             return self._queue_post()
+        if self.path == "/summarize-prompt":
+            body = self._read_json_body() or {}
+            return self._send(200, json.dumps({"summary": summarize_prompt(str(body.get("text") or ""))}),
+                              "application/json")
         if self.path == "/agent-def/model":
             return self._agent_model_post()
         if self.path == "/paste":

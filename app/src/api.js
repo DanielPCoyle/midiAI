@@ -310,6 +310,10 @@ export const getHistory = (base, tid, since = 0, sub = '') =>
   getJSON(base, `/history?tid=${encodeURIComponent(tid || '')}&since=${since}`
     + (sub ? `&sub=${encodeURIComponent(sub)}` : ''));
 
+// One line saying what a prompt asked for -- the conversation's pinned header.
+export const summarizePrompt = async (base, text) =>
+  JSON.parse(await post(base, '/summarize-prompt', { text })).summary;
+
 // Files changed and not committed in a checkout -- the GIT tab's count.
 export const getDirty = async (base, cwd) =>
   (await getJSON(base, `/work/dirty?cwd=${encodeURIComponent(cwd || '')}`)).count;

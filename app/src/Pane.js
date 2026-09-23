@@ -51,6 +51,7 @@ import {
   pasteImage,
   promptAgent,
   getAgentDef,
+  summarizePrompt,
   setAgentModel,
   addToQueue,
   reviewPr,
@@ -400,6 +401,7 @@ function Focus({
   // Pinned to the newest turn unless you have scrolled up to read.
   const chatRef = useRef(null);
   const atBottom = useRef(true);
+  const askY = useRef({});      // turn index -> y, for the pinned prompt's jump
   const compactingNow = (info?.lines || []).some((l) => /Compacting conversation/.test(l));
   useEffect(() => {
     if (compactingNow) setCompactAsked(false);
@@ -439,6 +441,9 @@ function Focus({
   const all = logged.length ? [...logged, ...unlogged] : scraped.turns;
   const hidden = Math.max(0, all.length - shown);
   const chat = all.slice(hidden);
+  // what you last asked, pinned above the conversation (index into `all`)
+  const lastAskAt = all.map((t) => t.role).lastIndexOf('user');
+  const lastAsk = lastAskAt >= 0 ? { i: lastAskAt, text: all[lastAskAt].text } : null;
   const contextPct = Math.round(Math.max(0, Math.min(1, Number(info.context || 0))) * 100);
   // The rail card and these selectors read the same polled seat record. The
   // focus payload still provides a fallback for subagents and older servers.
@@ -666,6 +671,18 @@ function Focus({
           lines into the page, which is one long scroll by then anyway. */}
       {tab === 'pretty' && (
       <View style={[styles.transcript, styles.pretty, narrow && styles.transcriptNarrow]}>
+        {lastAsk && (
+          <PinnedPrompt
+            base={base}
+            text={lastAsk.text}
+            onPress={() => {
+              const y = askY.current[lastAsk.i];
+              if (y == null) return;
+              atBottom.current = false;
+              chatRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });
+            }}
+          />
+        )}
         <ScrollView
           ref={chatRef}
           contentContainerStyle={styles.chat}
@@ -691,7 +708,10 @@ function Focus({
           {chat.map((turn, i) => turn.role === 'note' ? (
             <Text key={`note-${hidden + i}`} style={styles.chatNote}>— {turn.text} —</Text>
           ) : (
-            <View key={`${turn.role}-${hidden + i}`} style={turn.role === 'user' ? styles.userTurn : styles.agentTurn}>
+            <View
+              key={`${turn.role}-${hidden + i}`}
+              onLayout={turn.role === 'user' ? (e) => { askY.current[hidden + i] = e.nativeEvent.layout.y; } : undefined}
+              style={turn.role === 'user' ? styles.userTurn : styles.agentTurn}>
               <Text style={styles.speaker}>{turn.role === 'user' ? 'You' : info.name}</Text>
               <Markdown text={turn.text} />
               {turn.role === 'agent' && (
@@ -1110,6 +1130,40 @@ function Markdown({ text }) {
 // one agent's half-written prompt never lands in another's box.
 // ponytail: memory only -- a reload still loses it; localStorage if that bites
 const drafts = new Map();
+
+// What you last asked, held above the conversation so the answer scrolling
+// past it never loses the question. A short prompt shows as typed; a long
+// one gets one line from the server (Haiku, cached there and here), and
+// shows its own opening words until that line arrives. Tap to jump to it.
+const askLines = new Map();     // prompt text -> one-line summary
+
+function PinnedPrompt({ base, text, onPress }) {
+  const flat = String(text || '').split(/\s+/).join(' ').trim();
+  const [line, setLine] = useState(() => askLines.get(flat) || '');
+  useEffect(() => {
+    let live = true;
+    const known = askLines.get(flat);
+    if (known) { setLine(known); return undefined; }
+    setLine('');
+    if (flat.length <= 160) { askLines.set(flat, flat); setLine(flat); return undefined; }
+    summarizePrompt(base, text)
+      .then((got) => { if (!got) return; askLines.set(flat, got); if (live) setLine(got); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [base, flat]);   // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`you asked: ${line || flat}. Jump to it`}
+      onPress={onPress}
+      style={styles.pinned}>
+      <Text style={styles.pinnedHead}>YOU ASKED</Text>
+      <Text numberOfLines={2} style={[styles.pinnedText, !line && styles.pinnedPending]}>
+        {line || flat}
+      </Text>
+    </Pressable>
+  );
+}
 
 // The subagents of the agent in focus. Each row says which model that one
 // ran on; the line under it sets the model the NEXT dispatch of its type
@@ -4426,6 +4480,10 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  pinned: { flexDirection: 'row', alignItems: 'baseline', gap: 10, paddingHorizontal: 16, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: C.panel },
+  pinnedHead: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
+  pinnedText: { flex: 1, color: C.text, fontSize: 13, lineHeight: 19 },
+  pinnedPending: { color: C.dim },
   subNote: { color: C.faint, fontSize: 12, paddingVertical: 10, textAlign: 'center' },
   subNext: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
   subNextText: { color: C.faint, fontSize: 11 },
