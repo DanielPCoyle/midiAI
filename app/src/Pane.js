@@ -407,6 +407,14 @@ function Focus({
   // Pinned to the newest turn unless you have scrolled up to read.
   const chatRef = useRef(null);
   const atBottom = useRef(true);
+  // Following the foot of an active conversation. "At the bottom" is judged
+  // against the content as it was, not as it is: text that lands in the
+  // moment between reaching the bottom and the scroll settling would
+  // otherwise measure you as short of a bottom that just moved, and the
+  // view stopped following. The box shrinking (the pin or the composer
+  // growing) is a reason to re-stick too, not only the content growing.
+  const scrollAt = useRef({ y: 0, view: 0, content: 0 });
+  const stick = () => chatRef.current?.scrollToEnd({ animated: false });
   const askY = useRef({});      // turn index -> y, for the pinned prompt's jump
   // Which prompt the pin shows: null follows the latest; a number is the
   // prompt whose part of the conversation is at the top of the scroll --
@@ -721,17 +729,37 @@ function Focus({
         <ScrollView
           ref={chatRef}
           contentContainerStyle={styles.chat}
-          scrollEventThrottle={100}
+          scrollEventThrottle={16}
+          onLayout={(e) => {
+            scrollAt.current.view = e.nativeEvent.layout.height;
+            if (atBottom.current) stick();
+          }}
           onScroll={(e) => {
             const { layoutMeasurement: box, contentOffset: at, contentSize: size } = e.nativeEvent;
-            atBottom.current = at.y + box.height >= size.height - 48;
+            const movedUp = at.y < scrollAt.current.y - 1;
+            scrollAt.current = { y: at.y, view: box.height, content: size.height };
+            const nowBottom = at.y + box.height >= size.height - 48;
+            // Only moving up leaves the bottom. A scroll event can report
+            // content that grew under a view that never moved -- it lands
+            // between the growth and onContentSizeChange -- and reading that
+            // as "scrolled away" is what stopped the view following.
+            atBottom.current = nowBottom || (atBottom.current && !movedUp);
+            if (atBottom.current && !nowBottom) stick();
             if (away === atBottom.current) setAway(!atBottom.current);
             // following along at the foot: the latest prompt. Scrolled up:
             // whichever one the top of the view is inside.
             const next = atBottom.current ? null : askFor(at.y);
             if (next !== askAt) setAskAt(next);
           }}
-          onContentSizeChange={() => atBottom.current && chatRef.current?.scrollToEnd({ animated: false })}>
+          onContentSizeChange={(w, h) => {
+            const was = scrollAt.current;
+            const following = atBottom.current || was.y + was.view >= was.content - 48;
+            scrollAt.current = { ...was, content: h };
+            if (following) {
+              atBottom.current = true;
+              stick();
+            }
+          }}>
           {hidden > 0 && (
             <Pressable
               accessibilityRole="button"
