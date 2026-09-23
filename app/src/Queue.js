@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { getQueue, setQueue } from './api';
 import { C, S } from './theme';
@@ -57,6 +57,14 @@ export function DragHandle({ onStart, onMove, onEnd, label = 'drag to reorder' }
 // to edit it in place (saved when you leave the box); x drops it.
 export function QueuePanel({ queue, onChange, err }) {
   const [editing, setEditing] = useState({});   // id -> text being typed
+  const [draft, setDraft] = useState('');
+  // ponytail: the id is made here and the whole list is sent, like every other
+  // edit -- the server's clean_queue keeps any id it is given.
+  const add = () => {
+    if (!draft.trim()) return;
+    onChange([...queue, { id: `own-${Date.now().toString(36)}`, text: draft }]);
+    setDraft('');
+  };
   // Rows are as tall as their text, so where a drag lands is worked out from
   // each row's measured box, not from a fixed row height.
   const boxes = useRef({});                      // id -> { y, h }
@@ -110,8 +118,8 @@ export function QueuePanel({ queue, onChange, err }) {
       scrollEnabled={!drag}>
       {queue.length === 0 ? (
         <Text style={styles.none}>
-          nothing queued — send to a busy agent and it waits here, editable, until
-          the agent is free
+          nothing queued — send to a busy agent, or add one below, and it waits
+          here, editable, until the agent is free
         </Text>
       ) : (
         <View style={styles.headRow}>
@@ -163,6 +171,33 @@ export function QueuePanel({ queue, onChange, err }) {
           />
         </View>
       ))}
+      <View style={styles.addRow}>
+        <TextInput
+          style={[styles.text, styles.addInput]}
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="a message for later"
+          placeholderTextColor={C.faint}
+          multiline
+          accessibilityLabel="message to add to the queue"
+          // web: Enter adds, Shift+Enter is a newline -- same as the composer
+          onKeyPress={Platform.OS === 'web' ? (e) => {
+            const ev = e.nativeEvent;
+            if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing) return;
+            e.preventDefault();
+            add();
+          } : undefined}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add to queue"
+          disabled={!draft.trim()}
+          onPress={add}
+          style={[styles.addBtn, !draft.trim() && styles.keyOff]}>
+          <MaterialIcons name="playlist-add" size={16} color={C.accentText} />
+          <Text style={styles.addLabel}>Add to queue</Text>
+        </Pressable>
+      </View>
     </ScrollView>
   );
 }
@@ -184,4 +219,8 @@ const styles = StyleSheet.create({
   text: { color: C.text, fontSize: 13, lineHeight: 19, padding: 6, borderRadius: S.radius, backgroundColor: C.bg },
   key: { padding: 4 },
   keyOff: { opacity: 0.3 },
+  addRow: { gap: 6, marginTop: 4 },
+  addInput: { borderWidth: 1, borderColor: C.line, minHeight: 38 },
+  addBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 7, borderRadius: S.radius, borderWidth: 1, borderColor: C.accentText },
+  addLabel: { color: C.accentText, fontSize: 12, fontWeight: '600' },
 });
