@@ -68,6 +68,7 @@ import {
 import { GOVERN_STARTERS, TEMPLATES, WORKFLOW_NAME_RE } from './workflows';
 import { PHASES, STARTER } from './guardrails';
 import reflow from './reflow';
+import Icon from './Icon';
 import { useQueue } from './Queue';
 import { NAME_HELP, NAME_RE } from './SessionSheet';
 import { SlashMenu, slashCommands, slashMatches, slashQuery } from './Slash';
@@ -2790,49 +2791,82 @@ function Git({ data, base, cwd, place }) {
 // because the answer to "what am I in the middle of" was previously only
 // available by leaving for a terminal.
 
-// git's own word for what happened to a file, in the app's hues. Untracked is
-// deliberately not the green of added: one is a file git is already carrying,
-// the other is a file it would happily lose.
-const WORK_HEX = {
-  modified: '#e0d02c',
-  added: '#3cd05a',
-  deleted: '#e03c3c',
-  renamed: '#4a86d0',
-  copied: '#4a86d0',
-  typechange: '#e08a2c',
-  untracked: '#6b7280',
-  conflicted: '#e03c3c',
-};
 
 // A row in the file column. The whole row opens the diff; the keys on its
 // right act on that one path -- staging file by file is the normal way a
 // commit gets built, and a screen that could only stage everything would be
 // a screen you still had to leave.
+// One changed file: its state as git's own letter, the path with the folder
+// quiet and the name bright, how big the change is, and icon keys for what
+// can be done to it -- the bordered stage/discard words used to squeeze the
+// path itself down to "app/src…".
+const STATE_LETTER = { modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C',
+  typechange: 'T', untracked: 'U', conflicted: '!' };
+const STATE_TONE = { M: ['#e0a02c', '#2a2210'], A: ['#7fdc8f', '#16301d'], D: ['#e08a8a', '#2e1719'],
+  R: ['#7aa2d2', '#15202e'], '!': ['#e08a8a', '#2e1719'] };
+
 function WorkFile({ row, on, staged, onOpen, onStage, onDiscard }) {
+  const letter = STATE_LETTER[row.state] || '?';
+  const [fg, bg] = STATE_TONE[letter] || ['#c8ccd2', '#1d1d24'];
+  const path = row.path || '';
+  const cut = path.lastIndexOf('/') + 1;
+  // The row is a View, not a button: a button holding the stage and discard
+  // buttons is a <button> inside a <button> on the web, which the browser
+  // refuses. The opening key is the letter, path and counts; the icon keys
+  // sit beside it as siblings.
   return (
-    <Pressable onPress={onOpen} style={[styles.diffFile, on && styles.diffFileOn]}>
-      <View style={[styles.chip, { backgroundColor: WORK_HEX[row.state] || C.edge }]} />
-      <Text numberOfLines={1} style={styles.diffFileName}>
-        {row.was ? `${row.was} → ${row.path}` : row.path}
-      </Text>
-      <Text style={styles.wkState}>{row.state}</Text>
-      <Text
+    <View style={[styles.wfRow, on && styles.wfRowOn]}>
+      <Pressable
+        onPress={onOpen}
         accessibilityRole="button"
-        accessibilityLabel={`${staged ? 'unstage' : 'stage'} ${row.path}`}
-        onPress={onStage}
-        style={styles.wkKey}>
-        {staged ? 'unstage' : 'stage'}
+        accessibilityLabel={`${row.state} ${path}${row.add != null ? `, ${row.add} added, ${row.del} deleted` : ''}`}
+        style={styles.wfOpen}>
+      <Text style={[styles.wfState, { color: fg, backgroundColor: bg }]}>{letter}</Text>
+      <Text numberOfLines={1} style={styles.wfPath}>
+        {!!row.was && <Text style={styles.wfDir}>{row.was} → </Text>}
+        <Text style={styles.wfDir}>{path.slice(0, cut)}</Text>
+        {path.slice(cut)}
       </Text>
-      {!staged && (
-        <Text
-          accessibilityRole="button"
-          accessibilityLabel={`discard ${row.path}`}
-          onPress={onDiscard}
-          style={[styles.wkKey, styles.wkDrop]}>
-          discard
+      {row.add != null ? (
+        <Text style={styles.wfStats}>
+          <Text style={styles.diffPlus}>+{row.add}</Text> <Text style={styles.diffMinus}>−{row.del}</Text>
         </Text>
+      ) : row.state === 'untracked' ? (
+        <Text style={styles.wfUntracked}>new</Text>
+      ) : null}
+      </Pressable>
+      {!staged && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`discard ${path}`}
+          hitSlop={4}
+          onPress={onDiscard}
+          style={styles.wfKey}>
+          <Icon name="rotate-ccw" size={15} color={C.dim} />
+        </Pressable>
       )}
-    </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${staged ? 'unstage' : 'stage'} ${path}`}
+        hitSlop={4}
+        onPress={onStage}
+        style={[styles.wfKey, !staged && styles.wfKeyStage]}>
+        <Icon name={staged ? 'minus' : 'plus'} size={15} color={staged ? C.dim : C.accentText} />
+      </Pressable>
+    </View>
+  );
+}
+
+// A section of the file list: its name, how many, and the links that act
+// on all of it at once.
+function WorkGroup({ name, count, children }) {
+  return (
+    <View style={styles.wgHead}>
+      <Text style={styles.wgName}>{name}</Text>
+      <Text style={styles.wgCount}>{count}</Text>
+      <View style={styles.spacer} />
+      {children}
+    </View>
   );
 }
 
@@ -3066,33 +3100,59 @@ function Work({ base, cwd, tabs }) {
             {!log.length && <Empty what="no commits yet" />}
           </ScrollView>
         </View>
+        {/* The right column, redesigned (Claude Design, direction A): a
+            quiet sync toolbar, the commit box where you write -- above what
+            it commits -- then the files beside the diff. It replaced a row
+            of five hardware-style keys over a split that was half empty,
+            and a second row of mismatched keys under the message. */}
         <View style={styles.wkMain}>
-          <View style={styles.manageRow}>
-            <PushButton label="fetch" disabled={busy} onPress={() => run('fetch')} style={styles.wkBtn} />
-            <PushButton
-              label={behind ? `pull ${behind}` : 'pull'}
-              lit={behind > 0}
+          <View style={styles.syncBar}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`switch branch, now ${work?.branch || 'unknown'}`}
               disabled={busy}
-              onPress={() => run('pull')}
-              style={styles.wkBtn}
-            />
-            <PushButton
-              label={ahead ? `push ${ahead}` : 'push'}
-              colour="#3cd05a"
-              lit={ahead > 0}
-              disabled={busy}
-              onPress={() => run('push')}
-              style={styles.wkBtn}
-            />
-            <PushButton label="branch…" disabled={busy} onPress={openBranches} style={styles.wkBtn} />
-            <PushButton
-              label="stash"
+              onPress={openBranches}
+              style={styles.branchChip}>
+              <Icon name="git-branch" size={15} color={C.accentText} />
+              <Text numberOfLines={1} style={styles.branchName}>
+                {work?.detached ? 'detached HEAD' : work?.branch || '…'}
+              </Text>
+              {!!work?.upstream && <Text style={styles.syncDim}>→ {work.upstream}</Text>}
+              <Icon name="chevron-down" size={13} color={C.dim} />
+            </Pressable>
+            <Text numberOfLines={1} style={[styles.syncDim, styles.spacer]}>
+              {!work?.upstream ? 'no upstream'
+                : ahead || behind
+                  ? [ahead && `${ahead} to push`, behind && `${behind} to pull`].filter(Boolean).join(' · ')
+                  : 'in step with the remote'}
+            </Text>
+            <View style={styles.syncGroup}>
+              {[
+                ['fetch', 'refresh-cw', 'Fetch', false],
+                ['pull', 'arrow-down', behind ? `Pull ${behind}` : 'Pull', behind > 0],
+                ['push', 'arrow-up', ahead ? `Push ${ahead}` : 'Push', ahead > 0],
+              ].map(([verb, icon, word, hot], i) => (
+                <Pressable
+                  key={verb}
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => run(verb)}
+                  style={[styles.syncKey, i > 0 && styles.syncKeyRule, hot && styles.syncKeyHot]}>
+                  <Icon name={icon} size={15} color={hot ? '#9be3a8' : C.dim} />
+                  <Text style={[styles.syncWord, hot && styles.syncWordHot]}>{word}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable
+              accessibilityRole="button"
               disabled={busy || !(staged.length + dirty.length)}
               onPress={() => run('stash')}
-              style={styles.wkBtn}
-            />
-            {!!say && <Text numberOfLines={1} style={styles.caption}>{say}</Text>}
+              style={[styles.ghostKey, !(staged.length + dirty.length) && styles.keyOff]}>
+              <Icon name="archive" size={15} color={C.dim} />
+              <Text style={styles.syncWord}>Stash</Text>
+            </Pressable>
           </View>
+          {!!say && <Text numberOfLines={1} style={styles.caption}>{say}</Text>}
           {!!err && <Text style={styles.err}>{err}</Text>}
           {!!clashes.length && (
             <Text style={styles.err}>
@@ -3100,153 +3160,183 @@ function Work({ base, cwd, tabs }) {
               editor, then stage: {clashes.map((c) => c.path).join(', ')}
             </Text>
           )}
-          <View style={[styles.diffWorkspace, narrow && styles.diffWorkspaceNarrow]}>
-            <View style={[styles.diffFiles, narrow && styles.diffFilesNarrow]}>
-              <ScrollView style={narrow ? styles.wkTreeNarrow : undefined} nestedScrollEnabled>
-                {[['staged', staged, true], ['not staged', dirty, false], ['conflicted', clashes, false]].map(
-                  ([name, rows, isStaged]) =>
-                    rows.length ? (
-                      <View key={name}>
-                        <Text style={styles.wkGroup}>{name} · {rows.length}</Text>
-                        {rows.map((row) => (
-                          <WorkFile
-                            key={`${name}:${row.path}`}
-                            row={row}
-                            staged={isStaged}
-                            on={pick?.file === row.path && !!pick?.staged === isStaged}
-                            onOpen={() => setPick({ file: row.path, staged: isStaged })}
-                            onStage={() => stage(row, isStaged)}
-                            onDiscard={() =>
-                              setAsk({
-                                title: `Discard ${row.path}?`,
-                                note: 'The changes in this file are not committed and not stashed. git keeps no copy of them.',
-                                verb: 'discard',
-                                fields: { files: [row.path] },
-                              })
-                            }
-                          />
-                        ))}
-                      </View>
-                    ) : null
+
+          <View style={styles.composer2}>
+            <Text style={styles.composerHead}>COMMIT MESSAGE</Text>
+            <TextInput
+              value={msg}
+              onChangeText={setMsg}
+              multiline
+              editable={drafting !== 'writing'}
+              accessibilityLabel="commit message"
+              placeholder={drafting === 'writing' ? 'writing a message from the diff…'
+                : amend ? 'Amend the last commit (leave empty to keep its message)'
+                : 'Summarise the change — or let Write with AI draft it from the diff'}
+              placeholderTextColor={C.faint}
+              style={styles.composerBox}
+            />
+            {drafting === 'all' && !staged.length && (
+              <Text style={styles.caption}>
+                nothing was staged, so this describes every change — stage all (or
+                the files it covers) to commit it
+              </Text>
+            )}
+            <View style={styles.composerRow2}>
+              {/* drafts into the box, never commits: the message is read and
+                  edited before the commit key is what sends it */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="write the commit message with AI"
+                disabled={busy || drafting === 'writing' || !(staged.length + dirty.length)}
+                onPress={async () => {
+                  setDrafting('writing');
+                  setErr('');
+                  try {
+                    const got = await draftCommit(base, cwd);
+                    setMsg(got.message);
+                    setDrafting(got.scope === 'all' ? 'all' : '');
+                  } catch (e) {
+                    setErr(e.message);
+                    setDrafting('');
+                  }
+                }}
+                style={[styles.ghostKey, !(staged.length + dirty.length) && styles.keyOff]}>
+                <MaterialIcons name="auto-awesome" size={15} color={C.accentText} />
+                <Text style={[styles.syncWord, { color: C.accentText }]}>
+                  {drafting === 'writing' ? 'Writing…' : msg.trim() ? 'Rewrite with AI' : 'Write with AI'}
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: amend }}
+                onPress={() => setAmend((was) => !was)}
+                style={styles.amendKey}>
+                <View style={[styles.grBox, styles.amendBox, amend && styles.grBoxOn]}>
+                  <Text style={styles.grTick}>{amend ? '✓' : ''}</Text>
+                </View>
+                <Text style={styles.syncDim}>Amend last commit</Text>
+              </Pressable>
+              <View style={styles.spacer} />
+              <Text style={styles.syncDim}>
+                {staged.length} file{staged.length === 1 ? '' : 's'} staged
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy || (!amend && (!staged.length || !msg.trim()))}
+                onPress={commit}
+                style={[styles.commitKey, busy || (!amend && (!staged.length || !msg.trim())) ? styles.keyOff : null]}>
+                <Text style={styles.commitWord}>{amend ? 'Amend' : 'Commit'}</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={[styles.diffWorkspace2, narrow && styles.diffWorkspaceNarrow]}>
+            <View style={[styles.fileCard, narrow && styles.diffFilesNarrow]}>
+              <ScrollView style={narrow ? styles.wkTreeNarrow : styles.spacer} nestedScrollEnabled>
+                {!!staged.length && (
+                  <WorkGroup name="STAGED" count={staged.length}>
+                    <Text accessibilityRole="button" onPress={() => !busy && run('unstage')} style={styles.wgLink}>
+                      Unstage all
+                    </Text>
+                  </WorkGroup>
                 )}
+                {staged.map((row) => (
+                  <WorkFile
+                    key={`s:${row.path}`}
+                    row={row}
+                    staged
+                    on={pick?.file === row.path && !!pick?.staged}
+                    onOpen={() => setPick({ file: row.path, staged: true })}
+                    onStage={() => stage(row, true)}
+                  />
+                ))}
+                {!!dirty.length && (
+                  <WorkGroup name="CHANGES" count={dirty.length}>
+                    <Text accessibilityRole="button" onPress={() => !busy && run('stage')} style={styles.wgLink}>
+                      Stage all
+                    </Text>
+                    <Text
+                      accessibilityRole="button"
+                      onPress={() =>
+                        !busy && setAsk({
+                          title: `Discard all ${dirty.length} changed files?`,
+                          note: 'Every uncommitted change in the tree, including new files git is not tracking yet. There is no undo.',
+                          verb: 'discard',
+                          fields: {},
+                        })
+                      }
+                      style={[styles.wgLink, styles.wgDanger]}>
+                      Discard all
+                    </Text>
+                  </WorkGroup>
+                )}
+                {dirty.map((row) => (
+                  <WorkFile
+                    key={`u:${row.path}`}
+                    row={row}
+                    on={pick?.file === row.path && !pick?.staged}
+                    onOpen={() => setPick({ file: row.path, staged: false })}
+                    onStage={() => stage(row, false)}
+                    onDiscard={() =>
+                      setAsk({
+                        title: `Discard ${row.path}?`,
+                        note: 'The changes in this file are not committed and not stashed. git keeps no copy of them.',
+                        verb: 'discard',
+                        fields: { files: [row.path] },
+                      })
+                    }
+                  />
+                ))}
+                {!!clashes.length && <WorkGroup name="CONFLICTED" count={clashes.length} />}
+                {clashes.map((row) => (
+                  <WorkFile
+                    key={`c:${row.path}`}
+                    row={row}
+                    on={pick?.file === row.path && !pick?.staged}
+                    onOpen={() => setPick({ file: row.path, staged: false })}
+                    onStage={() => stage(row, false)}
+                    onDiscard={() =>
+                      setAsk({
+                        title: `Discard ${row.path}?`,
+                        note: 'The changes in this file are not committed and not stashed. git keeps no copy of them.',
+                        verb: 'discard',
+                        fields: { files: [row.path] },
+                      })
+                    }
+                  />
+                ))}
                 {!staged.length && !dirty.length && !clashes.length && (
                   <Empty
                     what={work ? 'the tree is clean' : cwd ? 'reading the tree…' : 'no checkout selected'}
                   />
                 )}
               </ScrollView>
-            </View>
-            {viewer}
-          </View>
-          {!!work?.stashes?.length && (
-            <View style={styles.manageRow}>
-              {work.stashes.map((s) => (
-                <View key={s.ref} style={styles.check}>
-                  <Text numberOfLines={1} style={styles.checkName}>{s.ref} {s.text}</Text>
-                  <Text
-                    accessibilityRole="button"
-                    onPress={() => run('stash-pop', { ref: s.ref })}
-                    style={styles.wkKey}>
-                    pop
+              {(work?.stashes || []).map((st) => (
+                <View key={st.ref} style={styles.stashRow}>
+                  <Icon name="archive" size={14} color={C.dim} />
+                  <Text numberOfLines={1} style={[styles.syncDim, styles.spacer]}>
+                    <Text style={styles.stashRef}>{st.ref}</Text> {st.text}
+                  </Text>
+                  <Text accessibilityRole="button" onPress={() => !busy && run('stash-pop', { ref: st.ref })} style={styles.wgLink}>
+                    Pop
                   </Text>
                   <Text
                     accessibilityRole="button"
                     onPress={() =>
-                      setAsk({
-                        title: `Drop ${s.ref}?`,
+                      !busy && setAsk({
+                        title: `Drop ${st.ref}?`,
                         note: 'A dropped stash is gone; nothing on this screen brings it back.',
                         verb: 'stash-drop',
-                        fields: { ref: s.ref },
+                        fields: { ref: st.ref },
                       })
                     }
-                    style={[styles.wkKey, styles.wkDrop]}>
-                    drop
+                    style={[styles.wgLink, styles.wgDanger]}>
+                    Drop
                   </Text>
                 </View>
               ))}
             </View>
-          )}
-          <TextInput
-            value={msg}
-            onChangeText={setMsg}
-            multiline
-            editable={drafting !== 'writing'}
-            placeholder={drafting === 'writing' ? 'writing a message from the diff…'
-              : amend ? 'Amend the last commit (leave empty to keep its message)' : 'Commit message'}
-            placeholderTextColor={C.faint}
-            style={styles.reviewInput}
-          />
-          {drafting === 'all' && !staged.length && (
-            <Text style={styles.caption}>
-              nothing was staged, so this describes every change — stage all (or
-              the files it covers) to commit it
-            </Text>
-          )}
-          <View style={styles.manageRow}>
-            {/* drafts into the box, never commits: the message is read and
-                edited before the commit key is what sends it */}
-            <PushButton
-              label={drafting === 'writing' ? 'writing…' : msg.trim() ? '✨ rewrite' : '✨ write it'}
-              accessibilityLabel="write the commit message with AI"
-              colour={C.accentText}
-              lit={drafting === 'writing'}
-              disabled={busy || drafting === 'writing' || !(staged.length + dirty.length)}
-              onPress={async () => {
-                setDrafting('writing');
-                setErr('');
-                try {
-                  const got = await draftCommit(base, cwd);
-                  setMsg(got.message);
-                  setDrafting(got.scope === 'all' ? 'all' : '');
-                } catch (e) {
-                  setErr(e.message);
-                  setDrafting('');
-                }
-              }}
-              style={styles.wkBtn}
-            />
-            <PushButton
-              label={amend ? 'amend' : 'commit'}
-              colour="#3cd05a"
-              lit
-              disabled={busy || (!amend && (!staged.length || !msg.trim()))}
-              onPress={commit}
-              style={styles.reviewBtn}
-            />
-            <Text
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: amend }}
-              onPress={() => setAmend((was) => !was)}
-              style={[styles.wkKey, amend && styles.wkKeyOn]}>
-              {amend ? 'amending ✓' : 'amend last'}
-            </Text>
-            <PushButton
-              label="stage all"
-              disabled={busy || !dirty.length}
-              onPress={() => run('stage')}
-              style={styles.wkBtn}
-            />
-            <PushButton
-              label="unstage all"
-              disabled={busy || !staged.length}
-              onPress={() => run('unstage')}
-              style={styles.wkBtn}
-            />
-            <PushButton
-              label="discard all"
-              colour={C.bad}
-              disabled={busy || !dirty.length}
-              onPress={() =>
-                setAsk({
-                  title: `Discard all ${dirty.length} changed files?`,
-                  note: 'Every uncommitted change in the tree, including new files git is not tracking yet. There is no undo.',
-                  verb: 'discard',
-                  fields: {},
-                })
-              }
-              style={styles.wkBtn}
-            />
-            <Text style={styles.caption}>{staged.length} staged</Text>
+            <View style={styles.viewerCard}>{viewer}</View>
           </View>
         </View>
       </View>
@@ -4528,11 +4618,6 @@ const styles = StyleSheet.create({
   // reused as it is; only the things git has and a pull request does not --
   // a state word, a per-row command, a commit graph -- are new here.
   wkGroup: { color: C.faint, fontSize: 10, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', paddingHorizontal: 10, paddingTop: 10, paddingBottom: 4 },
-  wkState: { color: C.faint, fontSize: 10, ...mono },
-  wkKey: { color: C.accentText, fontSize: 10, fontWeight: '600', paddingHorizontal: 7, paddingVertical: 6, borderWidth: 1, borderColor: C.edge, borderRadius: 4, overflow: 'hidden', flexShrink: 0 },
-  wkKeyOn: { color: C.text, borderColor: C.accent, backgroundColor: C.raised },
-  wkDrop: { color: C.bad },
-  wkBtn: { minWidth: 84 },
   // Wider than the file column, because a graph row carries git's own art as
   // well as a subject -- and the art is only readable if nothing reflows it.
   wkTree: { width: 460, borderRightWidth: 1, borderRightColor: C.line, backgroundColor: C.panel },
@@ -4777,6 +4862,47 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  // GIT › Work, right column (direction A)
+  syncBar: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 8, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: C.panel, flexWrap: 'wrap' },
+  branchChip: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 36, paddingHorizontal: 10, borderRadius: 7, backgroundColor: C.raised, maxWidth: 360 },
+  branchName: { color: C.text, fontSize: 13, flexShrink: 1, ...mono },
+  syncDim: { color: C.dim, fontSize: 12 },
+  syncGroup: { flexDirection: 'row', borderWidth: 1, borderColor: C.edge, borderRadius: 8, overflow: 'hidden' },
+  syncKey: { flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 14 },
+  syncKeyRule: { borderLeftWidth: 1, borderLeftColor: C.edge },
+  syncKeyHot: { backgroundColor: '#16301d' },
+  syncWord: { color: '#c8ccd2', fontSize: 13 },
+  syncWordHot: { color: '#9be3a8', fontWeight: '600' },
+  ghostKey: { flexDirection: 'row', alignItems: 'center', gap: 7, height: 38, paddingHorizontal: 12, borderWidth: 1, borderColor: C.edge, borderRadius: 8 },
+  keyOff: { opacity: 0.4 },
+  composer2: { gap: 10, padding: 14, borderWidth: 1, borderColor: C.edge, borderRadius: 10, backgroundColor: C.panel },
+  composerHead: { color: C.dim, fontSize: 11, fontWeight: '600', letterSpacing: 1 },
+  composerBox: { minHeight: 64, maxHeight: 180, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderColor: C.line, borderRadius: 8, backgroundColor: C.bg, color: C.text, fontSize: 14, lineHeight: 20, textAlignVertical: 'top' },
+  composerRow2: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  amendKey: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 38 },
+  amendBox: { width: 18, height: 18 },
+  commitKey: { height: 38, paddingHorizontal: 18, borderRadius: 8, backgroundColor: '#3cd05a', alignItems: 'center', justifyContent: 'center' },
+  commitWord: { color: C.bg, fontSize: 14, fontWeight: '700' },
+  diffWorkspace2: { flex: 1, minHeight: 260, flexDirection: 'row', gap: 14 },
+  fileCard: { width: 430, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: C.panel, overflow: 'hidden' },
+  viewerCard: { flex: 1, minWidth: 0, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: KEYBG(), overflow: 'hidden' },
+  wgHead: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 6 },
+  wgName: { color: C.dim, fontSize: 11, fontWeight: '600', letterSpacing: 1 },
+  wgCount: { color: C.dim, fontSize: 11, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 9, backgroundColor: C.raised, overflow: 'hidden' },
+  wgLink: { color: C.accentText, fontSize: 12, paddingVertical: 4 },
+  wgDanger: { color: C.bad },
+  wfRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 40, paddingLeft: 14, paddingRight: 8, borderLeftWidth: 2, borderLeftColor: 'transparent' },
+  wfRowOn: { backgroundColor: C.raised, borderLeftColor: C.accentText },
+  wfOpen: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 40 },
+  wfState: { width: 18, height: 18, lineHeight: 18, borderRadius: 4, textAlign: 'center', fontSize: 10, fontWeight: '700', overflow: 'hidden', ...mono },
+  wfPath: { flex: 1, minWidth: 0, color: C.text, fontSize: 12.5, ...mono },
+  wfDir: { color: C.dim },
+  wfStats: { fontSize: 11, ...mono },
+  wfUntracked: { color: C.dim, fontSize: 11 },
+  wfKey: { width: 32, height: 32, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
+  wfKeyStage: { backgroundColor: C.raised },
+  stashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 10, borderTopWidth: 1, borderTopColor: C.line, backgroundColor: '#0e0e12' },
+  stashRef: { color: '#c8ccd2', ...mono },
   initCard: { gap: 12, borderWidth: 1, borderColor: '#e0a03c', borderRadius: S.radius, padding: 18, maxWidth: 640 },
   initHead: { color: '#e0a03c', fontSize: 15, fontWeight: '700' },
   initText: { color: C.dim, fontSize: 13, lineHeight: 19, flexShrink: 1 },

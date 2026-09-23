@@ -789,6 +789,19 @@ def commit_message(root, run=None):
     return text, scope
 
 
+def work_numstat(root, cached):
+    """{path: (added, deleted)} for the staged (cached) or unstaged side, so
+    each file row can say how big its change is. A binary file reports "-"
+    and is left out -- no count beats a wrong one."""
+    out = git(root, "diff", "--numstat", "--no-color", *(["--cached"] if cached else []))
+    counts = {}
+    for line in out.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            counts[parts[2]] = (int(parts[0]), int(parts[1]))
+    return counts
+
+
 def work_stashes(root):
     """The stash list for the GIT tab's stash panel. An empty list here means
     either no stashes or git failing outright -- both render the same way in
@@ -2468,6 +2481,11 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self._send(400, err, "text/plain")
         head_line, staged, unstaged, conflicts = work_status(root)
+        for rows, cached in ((staged, True), (unstaged, False)):
+            counts = work_numstat(root, cached)
+            for r in rows:
+                if r["path"] in counts:
+                    r["add"], r["del"] = counts[r["path"]]
         row = {"repo": os.path.basename(root), "root": root,
                **work_head(head_line),
                "staged": staged, "unstaged": unstaged, "conflicts": conflicts,

@@ -155,7 +155,7 @@ switch:
 
 | | |
 |---|---|
-| **changes** | Staged over not-staged over conflicted, each file a row that opens its diff and carries its own `stage` / `discard`. Below it the stashes, the commit box, and stage-all / unstage-all / discard-all. |
+| **changes** | Top to bottom: a sync bar (the branch, which switches it; how far ahead or behind; Fetch · Pull · Push as one group, the one with work to do lit green; Stash), then the commit box where you write -- above what it commits -- with Write with AI, Amend and Commit on one row, then the files beside the diff. Files are Staged over Changes over Conflicted, each a row with git's letter, the path (folder quiet, name bright), its `+/−` from `git diff --numstat`, and icon keys to stage, unstage or discard; each section carries its own Stage all / Unstage all / Discard all, and the stashes sit at the foot of the list. Drawn in Claude Design first, direction A of three. |
 | **tree** | Every branch as a GitKraken-style graph: a coloured lane per branch, a dot per commit (hollow for a merge), and pills for local branches (filled), remotes (☁) and tags. `mapui.graph_lanes` lays the lanes out from `git log --all --topo-order`'s parents and the app only draws lines, as rotated Views, so it needs no SVG library; `python3 test_graph.py` is its gate. Picking one shows its patch in the same viewer a file's changes use — the same question asked of a different range. |
 
 The diff viewer is the pull-request review's, reused whole, and so is the
