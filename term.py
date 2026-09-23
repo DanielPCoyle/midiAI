@@ -343,6 +343,17 @@ def _pane_close(pane_id):
     return _ok({})
 
 
+def _repo_name(cwd):
+    """The repo's own folder name, from the main checkout or any linked
+    worktree of it. basename(cwd) is only right in the main checkout: from a
+    worktree it named the new one after the worktree, <root>/<wt-slug>/<branch>."""
+    out = _run(["git", "-C", cwd, "rev-parse", "--git-common-dir"])
+    common = out.stdout.strip() if out.returncode == 0 else ""
+    if not common:
+        return os.path.basename(cwd)
+    return os.path.basename(os.path.dirname(os.path.normpath(os.path.join(cwd, common))))
+
+
 def _worktree_create(args):
     rest = list(args[2:])
     cwd = _flag(rest, "--cwd")
@@ -365,7 +376,7 @@ def _worktree_create(args):
     # reads feature/thing, and its fallback name is literally push/HHMMSS.
     # Pasted into a path that becomes a stray directory level beside the repo,
     # so the branch keeps its slash and only the path gets flattened.
-    dest = os.path.join(WORKTREE_ROOT, os.path.basename(cwd),
+    dest = os.path.join(WORKTREE_ROOT, _repo_name(cwd),
                         _branch_slug(branch))
     out = _run(["git", "-C", cwd, "worktree", "add", dest, "-b", branch])
     if out.returncode != 0:
@@ -577,7 +588,21 @@ def dispatch(args):
 
 
 if __name__ == "__main__":
+    def demo_repo_name():
+        # a worktree made from a worktree is filed under the repo, not the worktree
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, wt = os.path.join(tmp, "myrepo"), os.path.join(tmp, "elsewhere", "wt-one")
+            _run(["git", "init", "-q", repo])
+            _run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t",
+                  "commit", "-q", "--allow-empty", "-m", "x"])
+            _run(["git", "-C", repo, "worktree", "add", "-q", wt, "-b", "one"])
+            assert _repo_name(repo) == "myrepo", _repo_name(repo)
+            assert _repo_name(wt) == "myrepo", _repo_name(wt)
+            assert _repo_name(tmp) == os.path.basename(tmp), "no repo: the folder's own name"
+
     def demo():
+        demo_repo_name()   # before demo() swaps _run out for fakes
         assert _status("busy") == "working"
         assert _status("waiting") == "blocked"
         assert _status("idle") == "idle"
@@ -659,6 +684,7 @@ if __name__ == "__main__":
         assert _branch_slug("push/123456") == "push-123456"
         assert _branch_slug("Fix--The__Thing") == "fix-the-thing"
         assert _branch_slug("///") == "wt", "a path component is never empty"
+
 
         # agent rename: bad names are rejected on format alone, before any
         # tmux call is made
