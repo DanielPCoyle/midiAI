@@ -220,6 +220,12 @@ exists, and anything that does arrive orphaned still draws, under a section
 saying so. Search reads the validation text too, because "which of these
 mention gitleaks" is the question you actually arrive with.
 
+Guardrails are reordered by dragging a row's grip within its phase: the
+record keeps an `order` of ids, and anything not in it (a new one, or one a
+later build ships) keeps its natural place after those that are. Dragging
+is off while a search is up -- a filtered phase hides the rows you would be
+placing it between. A template keeps its order, and applying one brings it.
+
 **Save as template** puts the list somewhere every project can reach it
 (`~/.midiai/guardrail-templates.json`). A template carries the guardrails and
 the phases, and deliberately **not the ticks** — which controls a team holds

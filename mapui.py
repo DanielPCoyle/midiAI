@@ -538,6 +538,10 @@ def clean_guardrails(got):
         "custom": custom,
         "hidden": [str(i)[:80] for i in (got.get("hidden") or [])[:500]],
         "phases": clean_phases(got.get("phases")),
+        # the order guardrails are listed in, rearranged by dragging; ids not
+        # in it keep the shipped order after the ones that are
+        "order": [str(i)[:80] for i in (got.get("order") or [])[:800]
+                  if isinstance(i, (str, int))],
     }
 
 

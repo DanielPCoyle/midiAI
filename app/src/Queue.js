@@ -32,7 +32,8 @@ export function useQueue(base, tid) {
 // A grip that reports a vertical drag. PanResponder, so no gesture library;
 // it refuses to hand the touch back mid-drag, or the list would scroll away
 // with the row you are holding.
-function DragHandle({ onStart, onMove, onEnd }) {
+// Exported: the guardrail checklist reorders with the same grip.
+export function DragHandle({ onStart, onMove, onEnd, label = 'drag to reorder' }) {
   const cb = useRef();
   cb.current = { onStart, onMove, onEnd };
   const pan = useRef(PanResponder.create({
@@ -45,7 +46,7 @@ function DragHandle({ onStart, onMove, onEnd }) {
     onPanResponderTerminate: () => cb.current.onEnd(null),
   })).current;
   return (
-    <View {...pan.panHandlers} accessibilityLabel="drag to reorder" style={styles.handle}>
+    <View {...pan.panHandlers} accessibilityLabel={label} style={styles.handle}>
       <MaterialIcons name="drag-indicator" size={18} color={C.dim} />
     </View>
   );

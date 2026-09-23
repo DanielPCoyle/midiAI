@@ -69,7 +69,7 @@ import { GOVERN_STARTERS, TEMPLATES, WORKFLOW_NAME_RE } from './workflows';
 import { PHASES, STARTER } from './guardrails';
 import reflow from './reflow';
 import Icon from './Icon';
-import { useQueue } from './Queue';
+import { DragHandle, useQueue } from './Queue';
 import { NAME_HELP, NAME_RE } from './SessionSheet';
 import { SlashMenu, slashCommands, slashMatches, slashQuery } from './Slash';
 // web only -- xterm needs a DOM, and the native build keeps the scraped view
@@ -2066,6 +2066,11 @@ function Overview({ base, cwd }) {
   const [shelf, setShelf] = useState(null);     // saved templates, or null until asked
   const [tplName, setTplName] = useState('');
   const [sure, setSure] = useState('');         // the template `use` is one tap into
+  // Dragging a guardrail within its phase. Rows are as tall as their title,
+  // so where it lands is worked out from each row's measured box (relative
+  // to its phase), the same way the up-next queue does it.
+  const boxes = useRef({});                     // id -> { y, h }
+  const [drag, setDrag] = useState(null);       // { id, phase, dy }
 
   useEffect(() => {
     if (!base || !cwd) return;
@@ -2093,6 +2098,39 @@ function Overview({ base, cwd }) {
   const resolved = new Map(shipped);
   for (const own of state.custom || []) resolved.set(own.id, own);   // ours wins
   const items = [...resolved.values()].filter((it) => !hidden.has(it.id));
+  // the order you dragged them into; anything not in it (new, or shipped
+  // since) keeps its natural place after the ones that are
+  const rank = new Map((state.order || []).map((id, i) => [id, i]));
+  const natural = new Map(items.map((it, i) => [it.id, i]));
+  const place = (it) => rank.get(it.id) ?? 1e6 + natural.get(it.id);
+  items.sort((a, b) => place(a) - place(b));
+  const phaseIds = (key) => items.filter((it) => it.phase === key).map((it) => it.id);
+  // how many of the phase's other rows sit above the dragged row's middle
+  const landing = (key, id, dy) => {
+    const me = boxes.current[id];
+    if (!me) return null;
+    const mid = me.y + me.h / 2 + dy;
+    return phaseIds(key).filter((x) => x !== id && boxes.current[x]
+      && boxes.current[x].y + boxes.current[x].h / 2 < mid).length;
+  };
+  const dropAt = (key, id, dy) => {
+    const to = landing(key, id, dy);
+    if (to == null) return;
+    const before = phaseIds(key);
+    const ids = before.filter((x) => x !== id);
+    ids.splice(to, 0, id);
+    if (ids.join('\n') === before.join('\n')) return;
+    let k = 0;    // this phase's slots take the new sequence; the rest stay put
+    put({ ...state, order: items.map((it) => (it.phase === key ? ids[k++] : it.id)) });
+  };
+  const dropLine = (key) => {
+    if (!drag || drag.phase !== key) return null;
+    const rest = phaseIds(key).filter((x) => x !== drag.id && boxes.current[x]);
+    const to = landing(key, drag.id, drag.dy);
+    if (to == null || !rest.length) return null;
+    const b = boxes.current[rest[Math.min(to, rest.length - 1)]];
+    return to < rest.length ? b.y - 4 : b.y + b.h + 2;
+  };
 
   // Anything filed under a phase that is no longer in the list still has to
   // draw: a guardrail nobody can see is the failure mode this whole screen is
@@ -2175,6 +2213,8 @@ function Overview({ base, cwd }) {
       checked: Object.fromEntries(
         Object.entries(state.checked || {}).filter(([id]) => ids.has(id))),
       custom: tpl.items.filter(differs),
+      // a template is an ordered list: applying it brings its order too
+      order: tpl.items.map((i) => i.id),
       hidden: STARTER.filter((i) => !ids.has(i.id)).map((i) => i.id),
       // a template made before phases were editable carries none; leaving
       // ours alone is right in that case, not blanking them
@@ -2226,13 +2266,19 @@ function Overview({ base, cwd }) {
         placeholderTextColor={C.faint}
         style={styles.find}
       />
-      <ScrollView contentContainerStyle={styles.rows} style={narrow ? styles.rowsNarrow : undefined}>
+      <ScrollView
+        contentContainerStyle={styles.rows}
+        style={narrow ? styles.rowsNarrow : undefined}
+        scrollEnabled={!drag}>
         {/* every phase draws, empty ones too, so each has its own ＋ -- a search
             narrows to the phases with a match, as before */}
         {sections
           .filter((p) => (!phase || p.key === phase) && (!needle || shown.some((it) => it.phase === p.key)))
           .map((p) => (
           <View key={p.key} style={styles.grPhase}>
+            {dropLine(p.key) != null && (
+              <View pointerEvents="none" style={[styles.grDropLine, { top: dropLine(p.key) }]} />
+            )}
             <View style={styles.grPhaseHead}>
               <Text style={styles.grPhaseName}>{p.name}</Text>
               {/* the phase's one-line job: constrain intent, constrain
@@ -2244,12 +2290,35 @@ function Overview({ base, cwd }) {
               const ticked = done(it.id);
               const writing = form && !form.isNew && form.id === it.id;
               return (
-                <View key={it.id} style={[styles.grItem, ticked && styles.grItemOn]}>
+                <View
+                  key={it.id}
+                  onLayout={(e) => {
+                    const { y, height } = e.nativeEvent.layout;
+                    boxes.current[it.id] = { y, h: height };
+                  }}
+                  style={[
+                    styles.grItem,
+                    ticked && styles.grItemOn,
+                    drag?.id === it.id && [styles.grLifted, { transform: [{ translateY: drag.dy }] }],
+                  ]}>
                   <Pressable
                     style={styles.grRow}
                     accessibilityRole="button"
                     accessibilityState={{ expanded: on }}
                     onPress={() => setOpen(on ? '' : it.id)}>
+                    {/* no reordering mid-search: a filtered phase hides the
+                        rows you would be placing it between */}
+                    {!needle && (
+                      <DragHandle
+                        label={`drag to reorder ${it.title}`}
+                        onStart={() => setDrag({ id: it.id, phase: p.key, dy: 0 })}
+                        onMove={(dy) => setDrag({ id: it.id, phase: p.key, dy })}
+                        onEnd={(dy) => {
+                          setDrag(null);
+                          if (dy !== null) dropAt(p.key, it.id, dy);
+                        }}
+                      />
+                    )}
                     <Pressable
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked: ticked }}
@@ -4862,6 +4931,8 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  grLifted: { zIndex: 10, borderColor: C.accentText, opacity: 0.92 },
+  grDropLine: { position: 'absolute', left: 0, right: 0, height: 2, borderRadius: 1, backgroundColor: C.accentText, zIndex: 20 },
   // GIT › Work, right column (direction A)
   syncBar: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 8, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: C.panel, flexWrap: 'wrap' },
   branchChip: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 36, paddingHorizontal: 10, borderRadius: 7, backgroundColor: C.raised, maxWidth: 360 },
