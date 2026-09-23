@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,6 +10,8 @@ import {
   View,
 } from 'react-native';
 import {
+  addProject,
+  chooseDir,
   closeAgent,
   forgetProject,
   listMcps,
@@ -408,6 +411,30 @@ export default function Rail({
     })
     .filter(({ p, rows }) => !find || hitProject(p) || rows.length > 0);
 
+  // Adding a project is picking a folder, so in the browser it is the Mac's
+  // own Finder chooser and nothing else -- chosen is added. The tablet keeps
+  // the sheet with its in-app folder list: the Finder window would open on
+  // the Mac, across the room, where nobody is looking.
+  const [picking, setPicking] = useState(false);
+  const [addErr, setAddErr] = useState('');
+  async function addProjectFolder() {
+    if (Platform.OS !== 'web') return setWsheet({ mode: 'project' });
+    if (picking) return;               // the dialog is already up
+    setPicking(true);
+    setAddErr('');
+    try {
+      const path = await chooseDir(base, '', 'midiAI: add a project');
+      if (path) {                       // null is a cancel: nothing to do
+        await addProject(base, path);
+        refreshProjects();
+      }
+    } catch (e) {
+      setAddErr(String((e && e.message) || e));
+    } finally {
+      setPicking(false);
+    }
+  }
+
   return (
     <View style={styles.rail}>
       {/* Fixed chrome: search, the scope filter and adding a project. Above
@@ -437,9 +464,9 @@ export default function Rail({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="add a project"
-            onPress={() => setWsheet({ mode: 'project' })}
+            onPress={addProjectFolder}
             style={styles.addRow}>
-            <Text style={styles.addText}>＋ add project</Text>
+            <Text style={styles.addText}>{picking ? 'choosing a folder on the Mac…' : '＋ add project'}</Text>
           </Pressable>
         )}
         <View style={styles.spacer} />
@@ -463,6 +490,7 @@ export default function Rail({
             </Text>
           ))}
       </View>
+      {!!addErr && <Text style={styles.addErr}>{addErr}</Text>}
       <TextInput
         value={q}
         onChangeText={setQ}
@@ -1002,6 +1030,7 @@ const styles = StyleSheet.create({
   },
   headRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   closeRow: { flexDirection: 'row', alignItems: 'center' },
+  addErr: { color: C.bad, fontSize: 11 },
   closeTitle: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
   closeKey: { padding: 4, borderRadius: 6 },
   spacer: { flex: 1 },

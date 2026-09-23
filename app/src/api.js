@@ -296,8 +296,12 @@ export const listDirs = (base, path) =>
 
 // Opens the real Finder chooser on that same machine and resolves once it is
 // dismissed -- a long request by design. null means the user cancelled.
-export const chooseDir = async (base, start) =>
-  (await getJSON(base, `/choose-dir${start ? `?start=${encodeURIComponent(start)}` : ''}`)).path;
+// prompt: the line the dialog shows, so it says what the folder is for.
+export const chooseDir = async (base, start, prompt) => {
+  const q = [start && `start=${encodeURIComponent(start)}`, prompt && `prompt=${encodeURIComponent(prompt)}`]
+    .filter(Boolean).join('&');
+  return (await getJSON(base, `/choose-dir${q ? `?${q}` : ''}`)).path;
+};
 
 // The working tree as a person works it: what is staged, what is not, what
 // git would refuse to commit, the stashes, and the commit graph. One call --

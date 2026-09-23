@@ -717,6 +717,14 @@ at whichever seat the Push happened to be on with no sign of what you had just
 emptied. A dirty tree comes back as git's own refusal, with a second key to
 force past it once you have read it.
 
+In the browser, **＋ add project** is the Mac's own Finder folder chooser and
+nothing else: the folder you choose is added, no sheet in between. The
+dialog is brought to the front (`activate` first) -- it used to open behind
+whatever you were looking at, and every nonzero exit was reported as a
+cancel, so the button seemed to do nothing. A real failure now shows under
+the button; only error -128 is a cancel. On the iPad it is still the sheet
+below, because the Finder window would open on the Mac across the room.
+
 **Add project** browses the disk; **new agent** does not. The folder picker
 used to live in the new-agent modal, which put the same question — where is
 this repo — in front of you every single time you started one. Adding the

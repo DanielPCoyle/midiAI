@@ -2668,19 +2668,31 @@ class Handler(BaseHTTPRequestHandler):
         start = os.path.abspath(os.path.expanduser(start))
         if not os.path.isdir(start):
             start = os.path.expanduser("~")
-        script = ('tell application "System Events" to POSIX path of '
-                  '(choose folder with prompt "midiAI: folder for this session" '
-                  f'default location POSIX file {json.dumps(start)})')
+        # activate first: owning the dialog is not the same as fronting it,
+        # and without this it opened behind whatever you were looking at --
+        # the button then seemed to do nothing while a dialog sat waiting
+        prompt = (q.get("prompt") or ["midiAI: folder for this session"])[0][:120]
+        script = ('tell application "System Events"\n'
+                  '  activate\n'
+                  f'  return POSIX path of (choose folder with prompt {json.dumps(prompt)} '
+                  f'default location POSIX file {json.dumps(start)})\n'
+                  'end tell')
         try:
             out = subprocess.run(["osascript", "-e", script],
                                  capture_output=True, text=True, timeout=180)
         except subprocess.TimeoutExpired:
             return self._send(504, "nobody picked a folder", "text/plain")
-        # cancel is a nonzero exit, not an error -- the app just closes the
-        # spinner and leaves the field alone
+        # cancel is error -128, not a failure -- the app just closes the
+        # spinner and leaves the field alone. Anything else used to be
+        # reported as a cancel too, which is how a broken dialog looked
+        # like a button that did nothing.
         if out.returncode != 0:
-            return self._send(200, json.dumps({"path": None}),
-                              "application/json")
+            if "-128" in out.stderr:
+                return self._send(200, json.dumps({"path": None}),
+                                  "application/json")
+            return self._send(502, "the folder dialog failed: "
+                              + (out.stderr.strip() or f"exit {out.returncode}")[-300:],
+                              "text/plain")
         path = out.stdout.strip().rstrip("/") or "/"
         self._send(200, json.dumps({"path": path}), "application/json")
 
