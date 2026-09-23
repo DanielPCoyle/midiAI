@@ -61,7 +61,9 @@ things in there look like bugs and are not:
 
 `python3 push_cc.py --selftest`, `python3 term.py`, `python3 ptybridge.py`,
 `node app/reflow_check.mjs`, `node app/check.js`, `python3 test_queue.py`,
-`python3 test_graph.py` and `python3 smoke_tmux.py` are the gates.
+`python3 test_graph.py`,
+`python3 test_memory.py`, `python3 test_memory_mcp.py`,
+`python3 test_memory_routes.py` and `python3 smoke_tmux.py` are the gates.
 
 **The last one is destructive.** It opens with `kill-server` because its first
 checks are about a cold machine, so running it closes every agent on the box

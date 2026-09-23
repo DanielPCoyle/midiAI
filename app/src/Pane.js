@@ -20,6 +20,7 @@ const PANELS = [
   ['skills', 'skills'],
   ['hooks', 'hooks'],
   ['queue', 'up next'],
+  ['memory', 'memory'],
 ];
 const PANEL_NAME = Object.fromEntries(PANELS);
 import * as ImagePicker from 'expo-image-picker';
@@ -148,6 +149,7 @@ export default function Pane({
   skills,
   place,
   subs,
+  onSub,
 }) {
   const kind = (data || {}).kind;
   // A question takes the glass only where the glass was already about this
@@ -173,6 +175,7 @@ export default function Pane({
         skills={skills}
         place={place}
         subs={subs}
+        onSub={onSub}
       />
     );
   if (kind === 'sessions') return <Sessions cols={cols} current={current} />;
@@ -282,12 +285,14 @@ function Focus({
   skills,
   place,
   subs = [],
+  onSub,
 }) {
   // The focus view has two things to show about one agent: what it is saying,
   // and what it has dispatched. A sub-tab rather than a second view, because
   // both are this agent -- switching views to see its subagents means leaving
   // the agent to look at it.
   const [tab, setTab] = useState('pretty');
+  const running = subs.filter((r) => r.running).length;
   const [receipt, setReceipt] = useState(null);
   const [typing, setTyping] = useState(false);
   const [opened, setOpened] = useState('');
@@ -495,7 +500,15 @@ function Focus({
             {info.status}
           </Text>
         )}
-        {!!sub && <Text style={styles.subTag}>subagent</Text>}
+        {!!sub && (
+          <Text
+            accessibilityRole="button"
+            accessibilityLabel="back to the session that spawned this subagent"
+            onPress={() => onSub?.(-1)}
+            style={styles.subTag}>
+            subagent · ‹ back
+          </Text>
+        )}
         <Text style={styles.model}>{info.model}</Text>
         <View style={styles.spacer} />
         {/* The progress line lives at the foot of the conversation now, beside
@@ -618,7 +631,15 @@ function Focus({
           </View>
           <ScrollView contentContainerStyle={styles.rows}>
             {subs.map((r, i) => (
-              <View key={i} style={styles.row}>
+              <Pressable
+                key={i}
+                accessibilityRole="button"
+                accessibilityLabel={`focus subagent ${r.label}`}
+                onPress={() => {
+                  onSub?.(i);
+                  setTab('pretty');
+                }}
+                style={styles.row}>
                 <View
                   style={[
                     styles.dot,
@@ -632,7 +653,7 @@ function Focus({
                   </Text>
                 </View>
                 {!!r.focused && <Text style={styles.tag}>focused</Text>}
-              </View>
+              </Pressable>
             ))}
             {!subs.length && <Empty what="no subagents spawned yet" />}
           </ScrollView>
@@ -700,6 +721,24 @@ function Focus({
           ) : working && <Working act={info.act} doing={doing} name={info.name} />}
           {!chat.length && !working && !compactAsked && !compactingNow && <Empty what="Send a prompt to begin" />}
         </ScrollView>
+        {/* Outside the scroll so it stays put at the foot of the conversation:
+            work dispatched elsewhere is invisible from here otherwise. Only
+            while one is running -- returned ones are history, and the tab
+            count already says how many there have been. */}
+        {running > 0 && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="show running subagents"
+            onPress={() => setTab('subagents')}
+            style={styles.subsBanner}>
+            <View style={[styles.dot, { backgroundColor: '#f0c828' }]} />
+            <Text style={styles.subsBannerText}>
+              {running} subagent{running === 1 ? '' : 's'} running
+            </Text>
+            <View style={styles.spacer} />
+            <Text style={styles.subsBannerText}>view ›</Text>
+          </Pressable>
+        )}
       </View>
       )}
 
@@ -3888,8 +3927,30 @@ function Bar({ bar }) {
           style={[styles.barFill, { width: `${pct * 100}%`, backgroundColor: hue }]}
         />
       </View>
+      {!!resetWords(bar.resets) && (
+        <Text style={styles.rowSub}>{resetWords(bar.resets)}</Text>
+      )}
     </View>
   );
+}
+
+// 'resets in 2h 14m · 4:09 PM', or the day when it is not today. Both, because
+// the countdown answers "can I keep going" and the clock answers "when do I
+// come back". Unparseable or already past -> nothing, the bar stands alone.
+function resetWords(iso) {
+  // microseconds trimmed: Claude sends six digits, and Hermes will not parse past three
+  const at = typeof iso === 'string' ? new Date(iso.replace(/(\.\d{3})\d+/, '$1')) : null;
+  const left = at ? at.getTime() - Date.now() : NaN;
+  if (!(left > 0)) return '';
+  const m = Math.round(left / 60000);
+  const d = Math.floor(m / 1440);
+  const h = Math.floor((m % 1440) / 60);
+  const span = d ? `${d}d ${h}h` : h ? `${h}h ${m % 60}m` : `${m}m`;
+  const today = at.toDateString() === new Date().toDateString();
+  const when = today
+    ? at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : at.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  return `resets in ${span} · ${when}`;
 }
 
 const styles = StyleSheet.create({
@@ -4142,6 +4203,8 @@ const styles = StyleSheet.create({
   receiptKey: { alignSelf: 'flex-start', paddingVertical: 5, paddingHorizontal: 8 },
   turnActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   receiptKeyText: { color: C.faint, fontSize: 11 },
+  subsBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.raised },
+  subsBannerText: { color: C.warn, fontSize: 12 },
   modalBack: { flex: 1, backgroundColor: 'rgba(0,0,0,.72)', alignItems: 'center', justifyContent: 'center', padding: 24 },
   receipt: { width: '100%', maxWidth: 760, maxHeight: '82%', backgroundColor: C.panel, borderWidth: 1, borderColor: C.edge, borderRadius: S.radius, padding: 18, gap: 14 },
   receiptTitle: { color: C.text, fontSize: 18, fontWeight: '600' },

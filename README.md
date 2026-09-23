@@ -658,7 +658,17 @@ drawn, so an agent's subagent count no longer rides along on its own row —
 reading it per seat would mean globbing and parsing every agent's transcript
 on every 400ms poll regardless of whether anyone is looking. It reads now
 under the agent itself, in the focus view's own `subagents · N` sub-tab, for
-whichever agent you are currently looking at.
+whichever agent you are currently looking at. Tapping a row there does what
+yes does on the Push — points focus at that subagent's transcript — without
+the question, since a tap is not a brushed pad; `subagent · ‹ back` in the
+header returns to the agent. While any are running, a banner at the foot of
+the pretty view says how many and opens that tab.
+
+The usage view's Codex bars come from the newest `~/.codex/sessions`
+snapshot, which is only as recent as the last Codex run. A window whose
+`resets_at` has passed is dropped rather than drawn, so an account untouched
+for weeks shows no bars instead of its last session's percent. Every bar with
+a reset time says when, as a countdown and a clock.
 
 Eight seats is few enough to read at a glance and too many to read while you
 are working in one repo of three, so the rail's own header row carries
@@ -809,6 +819,35 @@ server can be bound to the LAN.
 Web only, and on purpose: iOS hands React Native no paste event and no
 clipboard image without another dependency. In Expo Go the composer still
 takes typed paths.
+
+## Memory
+
+midiAI keeps its own memory of every session, in place of the claude-mem
+plugin: `~/.midiai/memory.db`, SQLite with FTS5, stdlib only (`memory.py`).
+
+- **Capture needs no hooks.** Claude Code's transcripts already hold every
+  prompt, reply and tool call, so `mapui`'s memory loop sweeps
+  `~/.claude/projects` once a minute and indexes whatever grew since the byte
+  offset it last stopped at. claude-mem's own worker transcripts
+  (`*claude-mem-observer*`) are skipped.
+- **Summaries** are one per session, written by Haiku once a session has sat
+  idle for ten minutes -- at most one per tick, and only for sessions active in
+  the last two days. The call is `claude -p --no-session-persistence
+  --setting-sources "" --strict-mcp-config --tools ""`: no transcript, so a
+  summary never gets summarised, and none of your hooks or plugins fire.
+  `MIDIAI_MEMORY_SUMMARIES=0` turns them off.
+- **claude-mem's history** was imported once (`python3 memory.py
+  import-claude-mem`, read-only on its db, safe to re-run) as `observation`
+  and `summary` entries tagged `claude-mem`. The 2.2 GB vector store was not
+  -- search here is full-text.
+- **Agents get it back two ways.** A SessionStart hook (`memory.py context`)
+  injects a short digest of the project's recent summaries, and the
+  `midiai-memory` MCP server (`memory_mcp.py`, user scope) gives them
+  `memory_search`, `memory_recent`, `memory_get` and `memory_session`.
+- **You get it** in the right-hand column's **memory** tab: search this
+  project or everywhere, tap a row for the whole entry.
+
+Gates: `test_memory.py`, `test_memory_mcp.py`, `test_memory_routes.py`.
 
 ## Slash commands
 

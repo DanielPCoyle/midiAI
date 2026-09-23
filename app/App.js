@@ -810,12 +810,15 @@ export default function App() {
                 skills={catalog.skills}
                 place={place}
                 subs={subs}
+                onSub={(i) => press({ sub: i })}
               />
           )}
           {showPads &&
             (ready ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <Pads
+                base={base}
+                cwd={hereCwd}
                 kind={data.kind}
                 data={data}
                 opts={opts}
@@ -888,6 +891,7 @@ export default function App() {
                 skills={catalog.skills}
                 place={place}
                 subs={subs}
+                onSub={(i) => press({ sub: i })}
               />
             )}
           </View>
@@ -906,6 +910,8 @@ export default function App() {
               </View>
             ) : padsOpen ? (
               <Pads
+                base={base}
+                cwd={hereCwd}
                 kind={data.kind}
                 data={data}
                 opts={opts}
@@ -940,7 +946,7 @@ export default function App() {
                   <Pressable
                     key={key}
                     accessibilityRole="button"
-                    accessibilityLabel={`${word} · ${panelCounts[key]}`}
+                    accessibilityLabel={panelCounts[key] == null ? word : `${word} · ${panelCounts[key]}`}
                     accessibilityState={{ selected: panel === key }}
                     onPress={() => showPanel(key, true)}
                     style={[styles.stripKey, panel === key && styles.stripKeyOn]}>
@@ -1031,6 +1037,7 @@ const PANELS = [
   ['skills', 'skills'],
   ['hooks', 'hooks'],
   ['queue', 'up next'],
+  ['memory', 'memory'],
 ];
 
 // One tab. The caller decides the label, the count and what "on" means; this

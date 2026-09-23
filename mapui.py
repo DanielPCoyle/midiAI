@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import memory
 import ptybridge
 import push_cc
 
@@ -309,6 +311,101 @@ def queue_loop():
         except Exception as e:   # one bad tick must not stop every later one
             print(f"queue: {e}", file=sys.stderr)
         time.sleep(QUEUE_TICK_S)
+
+
+# Keeps memory.py's store fed without this file knowing anything about
+# transcripts or summarising -- that is all memory.sweep()/summarize()'s job.
+MEMORY_TICK_S = 60
+# indexing: whether memory_loop's first sweep has completed yet, for
+# /memory/stats -- read by _memory_get, written only by memory_tick.
+_memory_first_sweep_done = False
+
+
+def memory_tick():
+    """One pass: reindex every transcript, then summarise at most one idle
+    session -- one per tick, on purpose, so a backlog of idle sessions never
+    turns into a burst of `claude -p` calls. MIDIAI_MEMORY_SUMMARIES=0 turns
+    the summarising half off entirely (for a machine where a model call in
+    the background is unwelcome); sweeping still runs either way."""
+    global _memory_first_sweep_done
+    conn = memory.connect()
+    try:
+        memory.sweep(conn)
+        _memory_first_sweep_done = True
+        if os.environ.get("MIDIAI_MEMORY_SUMMARIES") != "0":
+            due = memory.due_for_summary(conn)
+            if due:
+                memory.summarize(conn, due[0])
+    finally:
+        conn.close()
+
+
+def memory_loop():
+    while True:
+        try:
+            memory_tick()
+        except Exception as e:   # one bad tick must not stop every later one
+            print(f"memory: {e}", file=sys.stderr)
+        time.sleep(MEMORY_TICK_S)
+
+
+def _memory_limit(qs, default=30):
+    """(limit, error) from a parsed query string -- clamped to 1-100, or an
+    error if the caller sent something that is not an integer at all."""
+    raw = (qs.get("limit") or [None])[0]
+    if raw is None:
+        return default, None
+    try:
+        n = int(raw)
+    except ValueError:
+        return None, "bad request"
+    return max(1, min(100, n)), None
+
+
+def memory_query(path):
+    """The pure half of /memory/*: parse the query, call into memory.py, and
+    return (status, body, content_type). No self, no socket -- _memory_get
+    calls this from a live request and test_memory_routes.py calls it
+    directly, so the routing logic is exercised without binding a port."""
+    split = urllib.parse.urlsplit(path)
+    qs = urllib.parse.parse_qs(split.query)
+    cwd = (qs.get("cwd") or [""])[0]
+    project = memory.project_for(cwd) if cwd else None
+
+    conn = memory.connect()
+    try:
+        if split.path == "/memory/search":
+            limit, err = _memory_limit(qs)
+            if err:
+                return 400, err, "text/plain"
+            q = (qs.get("q") or [""])[0]
+            items = memory.search(conn, q, project=project, limit=limit)
+            return 200, json.dumps({"items": items}), "application/json"
+        if split.path == "/memory/recent":
+            limit, err = _memory_limit(qs)
+            if err:
+                return 400, err, "text/plain"
+            items = memory.recent(conn, project=project, limit=limit)
+            return 200, json.dumps({"items": items}), "application/json"
+        if split.path == "/memory/entry":
+            raw_id = (qs.get("id") or [None])[0]
+            try:
+                entry_id = int(raw_id)
+            except (TypeError, ValueError):
+                return 400, "bad request", "text/plain"
+            item = memory.get(conn, entry_id)
+            if item is None:
+                return 404, "not found", "text/plain"
+            return 200, json.dumps({"item": item}), "application/json"
+        if split.path == "/memory/stats":
+            st = memory.stats(conn)
+            st["indexing"] = not _memory_first_sweep_done
+            return 200, json.dumps(st), "application/json"
+        return 404, "not found", "text/plain"
+    except sqlite3.Error as e:
+        return 500, str(e), "text/plain"
+    finally:
+        conn.close()
 
 
 # What one checkout's record may contain. Anything else a client sends is
@@ -1358,6 +1455,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._work_read()
         if self.path == "/work/diff" or self.path.startswith("/work/diff?"):
             return self._work_diff()
+        if self.path.startswith("/memory/"):
+            return self._memory_get()
         if self.path.startswith("/dirs"):
             return self._dirs()
         if self.path.startswith("/choose-dir"):
@@ -1552,7 +1651,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(cmd, dict):
                 raise TypeError
             keep = {k: int(cmd[k])
-                    for k in ("tab", "seat", "page", "answer") if k in cmd}
+                    for k in ("tab", "seat", "sub", "page", "answer") if k in cmd}
             if "answer_text" in cmd:
                 answer_text = cmd["answer_text"]
                 if (not isinstance(answer_text, str) or not answer_text.strip()
@@ -2058,6 +2157,12 @@ class Handler(BaseHTTPRequestHandler):
             return body if isinstance(body, dict) else None
         except json.JSONDecodeError:
             return None
+
+    def _memory_get(self):
+        """/memory/search, /memory/recent, /memory/entry, /memory/stats --
+        routing lives in memory_query so it can be tested without a socket."""
+        status, body, ctype = memory_query(self.path)
+        self._send(status, body, ctype)
 
     def _pr_review(self):
         body = self._read_json_body()
@@ -3592,4 +3697,5 @@ if __name__ == "__main__":
     # threaded: /choose-dir blocks for as long as the Finder dialog is open,
     # and the app polls /agents and /target the whole time it is up
     threading.Thread(target=queue_loop, daemon=True).start()
+    threading.Thread(target=memory_loop, daemon=True).start()
     ThreadingHTTPServer((host, PORT), Handler).serve_forever()

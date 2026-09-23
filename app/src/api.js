@@ -321,3 +321,22 @@ export const getWorkDiff = (base, cwd, { file = '', staged = false, sha = '' } =
 // code of ours would.
 export const doWork = (base, cwd, verb, fields = {}) =>
   post(base, '/work/do', { cwd, verb, ...fields });
+
+// midiAI's own memory: what an agent decided, tried and learned, mined from
+// transcripts and (where imported) claude-mem. `cwd` scopes a call to that
+// checkout's project; omitted, it reads every project. GET and JSON, like the
+// rest of this file -- the store is read-only from here.
+export const searchMemory = (base, q, cwd) =>
+  getJSON(
+    base,
+    `/memory/search?q=${encodeURIComponent(q || '')}` +
+      (cwd ? `&cwd=${encodeURIComponent(cwd)}` : '')
+  );
+
+export const recentMemory = (base, cwd) =>
+  getJSON(base, `/memory/recent${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`);
+
+export const getMemoryEntry = (base, id) =>
+  getJSON(base, `/memory/entry?id=${encodeURIComponent(id)}`);
+
+export const memoryStats = (base) => getJSON(base, '/memory/stats');

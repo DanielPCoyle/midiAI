@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Icon from './Icon';
 import Inspector from './Inspector';
+import { MemoryPanel } from './Memory';
 import PushButton from './PushButton';
 import { QueuePanel } from './Queue';
 import { ANSWER_HEX, C, S, hexFor, mono } from './theme';
@@ -48,6 +49,8 @@ export default function Pads({
   queue = [],
   onQueueChange,
   queueErr,
+  base,
+  cwd,
 }) {
   const [q, setQ] = useState('');
   const [masterScope, setMasterScope] = useState('global');
@@ -179,13 +182,15 @@ export default function Pads({
   const at = panel || 'prompts';
   const placeholder =
     at === 'prompts' ? 'search prompts' : at === 'skills' ? 'search skills' : 'search hooks';
+  // the queue and memory are each their own thing, not the catalog: the
+  // queue is this agent's own list, memory is a search over a different
+  // store entirely, so neither wants the scope tabs, the catalog search or ＋
+  const catalogTab = at !== 'queue' && at !== 'memory';
 
   return (
     <View style={styles.rail}>
       <View style={styles.headCol}>
-        {/* scope, search and ＋ are about the catalog; the queue is this
-            agent's, in the order it will go, so none of them apply to it */}
-        {at !== 'queue' && (
+        {catalogTab && (
         <View style={styles.masterTabs}>
           {[
             ['global', 'global'],
@@ -205,14 +210,14 @@ export default function Pads({
         </View>
         )}
         <View style={styles.tabs}>
-          {['prompts', 'skills', 'hooks', 'queue'].map((k) => (
+          {['prompts', 'skills', 'hooks', 'queue', 'memory'].map((k) => (
             <Text
               key={k}
               accessibilityRole="tab"
               accessibilityState={{ selected: at === k }}
               onPress={() => onPanel && onPanel(k, true)}
               style={[styles.tab, at === k && styles.tabOn]}>
-              {k} · {counts[k]}
+              {counts[k] == null ? k : `${k} · ${counts[k]}`}
             </Text>
           ))}
           {/* the pane's title row used to own open/close for this panel;
@@ -227,7 +232,7 @@ export default function Pads({
             </Pressable>
           )}
         </View>
-        {at !== 'queue' && (
+        {catalogTab && (
         <TextInput
           value={q}
           onChangeText={setQ}
@@ -245,7 +250,7 @@ export default function Pads({
           shelf with three things on it, and a ＋ that moves or vanishes
           between them would read as three panels that happen to share a
           column. */}
-      {at !== 'queue' && (
+      {catalogTab && (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`new ${at === 'prompts' ? 'prompt' : at.slice(0, -1)}`}
@@ -276,6 +281,7 @@ export default function Pads({
       {at === 'skills' && <Scoped rows={skills} labels={labels} q={q} kind="skills" masterScope={masterScope} onEntry={onEntry} />}
       {at === 'queue' && <QueuePanel queue={queue} onChange={onQueueChange} err={queueErr} />}
       {at === 'hooks' && <Scoped rows={hooks} labels={labels} q={q} kind="hooks" masterScope={masterScope} onEntry={onEntry} />}
+      {at === 'memory' && <MemoryPanel base={base} cwd={cwd} />}
     </View>
   );
 }
