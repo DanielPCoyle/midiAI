@@ -19,7 +19,7 @@ import {
   mcpDo,
   mcpHealth,
   openWorktree,
-  promptAgent,
+  addToQueue,
   removeWorktree,
 } from './api';
 import Icon from './Icon';
@@ -338,9 +338,9 @@ export default function Rail({
   // than a tap, a read and a tap.
   //
   // compact and clear are typed, not called -- /compact and /clear are Claude
-  // Code's own commands and there is no API behind them, so this sends the
-  // words down the same pty a pad fires into.
-  const say = (col, text) => promptAgent(base, text, true, col.tid).catch(() => {});
+  // Code's own commands and there is no API behind them. They go through the
+  // up-next queue, which types them when the agent is free, never mid-turn.
+  const say = (col, text) => addToQueue(base, col.tid, text).catch(() => {});
   // clear throws away everything the agent knows, and it is a 20px target in a
   // 268px column. So it arms first: one tap reddens it, the next does it, and
   // three seconds of not meaning it puts it back.

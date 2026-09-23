@@ -516,8 +516,10 @@ function Focus({
   const working = (seat?.status || info.status) === 'working' || (!!info.act && !!doing.length);
   const currentModel = seat?.model || info.model || '';
   const currentEffort = seat?.effort || info.effort || '';
+  // queued, not typed: the up-next queue sends it when the agent is free, so
+  // a /compact or /clear never lands in the middle of a turn
   const runContextCommand = (command) =>
-    promptAgent(base, command, true, info.tid).then(() => onSent && onSent()).catch(() => {});
+    addToQueue(base, info.tid, command).then(() => onSent && onSent()).catch(() => {});
   const clearContext = () => {
     if (clearArmed) {
       clearTimeout(clearTimer.current);

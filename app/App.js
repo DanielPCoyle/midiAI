@@ -15,7 +15,7 @@ import {
 
 import {
   listPrs,
-  getDirty, baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+  getDirty, addToQueue, baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
 import EntrySheet from './src/EntrySheet';
 import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
@@ -510,12 +510,10 @@ export default function App() {
     (i, renderedText) => {
       const prompt = macros[i];
       if (!prompt || !here?.tid) return Promise.resolve(say('nothing there, or no agent selected'));
-      return post(base, '/prompt', {
-        text: renderedText || prompt.text,
-        submit: false,
-        terminal_id: here.tid,
-      })
-        .then((r) => say(r))
+      // into the up-next queue, where it can be read, edited and reordered;
+      // the queue sends it once the agent is free
+      return addToQueue(base, here.tid, renderedText || prompt.text)
+        .then((q) => say(`queued · ${q.length} up next`))
         .catch(() => say('nothing there, or no agent selected'));
     },
     [base, here?.tid, macros, say]
