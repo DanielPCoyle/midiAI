@@ -860,7 +860,9 @@ gate.
 ## Subagents
 
 The focus view's **subagents** tab lists what the agent in focus has
-dispatched, each with the model it ran on. **view ›** opens one in the
+dispatched and is still running, each with the model it ran on -- a
+subagent that has returned leaves the list and the tab's count, folded into
+one "N finished · show" line so its conversation can still be opened. **view ›** opens one in the
 focus view itself: its own conversation (read from
 `<session>/subagents/agent-<id>.jsonl` through the parent -- every line of
 that log is `isSidechain`, which `history(path, sidechain=True)` reads

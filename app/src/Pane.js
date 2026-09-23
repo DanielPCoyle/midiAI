@@ -570,7 +570,9 @@ function Focus({
         {[
           ['pretty', 'pretty'],
           ['terminal', 'terminal'],
-          ['subagents', `subagents · ${subs.length}`],
+          // running ones only: a returned subagent has done its job and is
+          // folded away in the list below, so it no longer counts here
+          ['subagents', `subagents · ${running}`],
         ].map(([key, word]) => (
           <Text
             key={key}
@@ -1206,6 +1208,8 @@ function SubagentList({ subs, base, cwd, onFocus }) {
   const [defs, setDefs] = useState({});      // type -> /agent-def row
   const [picking, setPicking] = useState(''); // the type whose picker is open
   const [err, setErr] = useState('');
+  const [showDone, setShowDone] = useState(false);
+  const done = subs.filter((r) => !r.running).length;
   const types = [...new Set(subs.map((r) => r.type).filter(Boolean))];
   useEffect(() => {
     let live = true;
@@ -1268,9 +1272,13 @@ function SubagentList({ subs, base, cwd, onFocus }) {
           })}
         </View>
       )}
-      {subs.map((r, i) => {
+      {/* A returned subagent has done its job, so it leaves the list. Its
+          conversation is still worth reading now and then, so the finished
+          ones fold into one line rather than vanishing. The index stays the
+          server's: onFocus(i) is a position in the full list. */}
+      {subs.map((r, i) => ({ r, i })).filter(({ r }) => r.running || showDone).map(({ r, i }) => {
         return (
-          <View key={i} style={styles.subRow}>
+          <View key={i} style={[styles.subRow, !r.running && styles.subDone]}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`focus subagent ${r.label}`}
@@ -1290,7 +1298,19 @@ function SubagentList({ subs, base, cwd, onFocus }) {
           </View>
         );
       })}
+      {done > 0 && (
+        <Text
+          accessibilityRole="button"
+          accessibilityState={{ expanded: showDone }}
+          onPress={() => setShowDone((v) => !v)}
+          style={styles.subDoneKey}>
+          {done} finished · {showDone ? 'hide' : 'show'}
+        </Text>
+      )}
       {!subs.length && <Empty what="no subagents spawned yet" />}
+      {subs.length > 0 && done === subs.length && !showDone && (
+        <Empty what="nothing running — every subagent has returned" />
+      )}
     </ScrollView>
   );
 }
@@ -4584,6 +4604,8 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  subDone: { opacity: 0.6 },
+  subDoneKey: { color: C.faint, fontSize: 12, paddingVertical: 8 },
   fillStrip: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 18, paddingVertical: 10, paddingHorizontal: 2 },
   fillAgent: { flexDirection: 'row', alignItems: 'flex-end', gap: 7 },
   fillName: { color: C.text, fontSize: 13, maxWidth: 160 },
