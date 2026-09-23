@@ -18,6 +18,7 @@ import EntrySheet from './src/EntrySheet';
 import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
 import Pads from './src/Pads';
+import { useQueue } from './src/Queue';
 import Pane from './src/Pane';
 import { inside } from './src/Projects';
 import PushButton from './src/PushButton';
@@ -285,6 +286,8 @@ export default function App() {
   // Read once per agent you land on, and again whenever a rail operation says
   // something changed.
   const hereCwd = here?.cwd || '';
+  // the current agent's up-next queue, for the right-hand column's queue tab
+  const [queue, changeQueue, , queueErr] = useQueue(base, here?.tid);
   useEffect(() => {
     let live = true;
     listCatalog(base, hereCwd)
@@ -585,6 +588,7 @@ export default function App() {
     prompts: filled,
     skills: catalog.skills.length,
     hooks: catalog.hooks.length,
+    queue: queue.length,
   };
 
   // An empty worktree has no transcript to show and no one to send to, which
@@ -802,6 +806,7 @@ export default function App() {
                 onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
                 reachable={reachable}
                 onComposerFocus={composerFocus}
+                onQueue={() => showPanel('queue', true)}
                 place={place}
                 subs={subs}
               />
@@ -834,6 +839,9 @@ export default function App() {
                 onDelLabel={delLabel}
                 onClose={() => setEditing(false)}
                 onCollapse={collapsePads}
+                queue={queue}
+                onQueueChange={changeQueue}
+                queueErr={queueErr}
               />
               </ScrollView>
             ) : (
@@ -875,6 +883,7 @@ export default function App() {
                 onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
                 reachable={reachable}
                 onComposerFocus={composerFocus}
+                onQueue={() => showPanel('queue', true)}
                 place={place}
                 subs={subs}
               />
@@ -919,6 +928,9 @@ export default function App() {
                 onDelLabel={delLabel}
                 onClose={() => setEditing(false)}
                 onCollapse={collapsePads}
+                queue={queue}
+                onQueueChange={changeQueue}
+                queueErr={queueErr}
               />
             ) : (
               <View style={styles.strip}>
@@ -1010,12 +1022,13 @@ export default function App() {
 // Paths read from home, the way they are said out loud.
 const HOME_RE = /^\/Users\/[^/]+/;
 
-// The three panels the collapsed strip offers, in the order they sit in it.
+// The panels the collapsed strip offers, in the order they sit in it.
 // The word is the accessible name; the strip itself draws only the glyph.
 const PANELS = [
   ['prompts', 'prompts'],
   ['skills', 'skills'],
   ['hooks', 'hooks'],
+  ['queue', 'up next'],
 ];
 
 // One tab. The caller decides the label, the count and what "on" means; this

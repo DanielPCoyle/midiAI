@@ -19,6 +19,7 @@ const PANELS = [
   ['prompts', 'prompts'],
   ['skills', 'skills'],
   ['hooks', 'hooks'],
+  ['queue', 'up next'],
 ];
 const PANEL_NAME = Object.fromEntries(PANELS);
 import * as ImagePicker from 'expo-image-picker';
@@ -48,9 +49,7 @@ import {
   switchBranch,
   pasteImage,
   promptAgent,
-  getQueue,
   addToQueue,
-  setQueue,
   reviewPr,
   runTests,
   sendKeys,
@@ -61,6 +60,7 @@ import {
 import { GOVERN_STARTERS, TEMPLATES, WORKFLOW_NAME_RE } from './workflows';
 import { PHASES, STARTER } from './guardrails';
 import reflow from './reflow';
+import { useQueue } from './Queue';
 // web only -- xterm needs a DOM, and the native build keeps the scraped view
 // rather than being shown an empty box
 const Term = Platform.OS === 'web' ? require('./Term').default : null;
@@ -121,6 +121,8 @@ const CI_HEX = { pass: '#3cd05a', fail: '#e03c3c', pending: '#e0d02c', none: C.e
 //                whether this particular view happens to have data yet.
 //                Only the former earns the "waiting for push_cc" text --
 //                conflating the two was the dead-tab bug.
+//   onQueue    - optional (): void, opens the up-next queue in the
+//                right-hand column.
 //   onComposerFocus - optional (): void, called when the composer's own text
 //                box takes focus. The prompt library collapses by default
 //                now (App.js), and focusing the box to type is as clear a
@@ -140,6 +142,7 @@ export default function Pane({
   onMode,
   reachable = true,
   onComposerFocus,
+  onQueue,
   place,
   subs,
 }) {
@@ -163,6 +166,7 @@ export default function Pane({
         base={base}
         onSent={onSent}
         onComposerFocus={onComposerFocus}
+        onQueue={onQueue}
         place={place}
         subs={subs}
       />
@@ -270,6 +274,7 @@ function Focus({
   base,
   onSent,
   onComposerFocus,
+  onQueue,
   place,
   subs = [],
 }) {
@@ -837,6 +842,7 @@ function Focus({
           onSent={onSent}
           onPromptSent={(text) => setSentPrompts((items) => [...items, text])}
           onComposerFocus={onComposerFocus}
+          onQueue={onQueue}
         />
       )}
     </View>
@@ -1054,7 +1060,7 @@ function Markdown({ text }) {
 // ponytail: memory only -- a reload still loses it; localStorage if that bites
 const drafts = new Map();
 
-function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
+function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue }) {
   const [text, setTextState] = useState(() => drafts.get(info.tid) || '');
   const tidRef = useRef(info.tid);
   const setText = (next) =>
@@ -1086,20 +1092,7 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
   // Up next: prompts the server holds until this agent is free, then sends
   // one at a time -- editable, reorderable and removable until the moment
   // each one goes. Polled, because the server drains it on its own.
-  const [queue, setQ] = useState([]);
-  const [queueOpen, setQueueOpen] = useState(false);
-  useEffect(() => {
-    if (!info.tid) return undefined;   // a subagent has no pane to queue into
-    let live = true;
-    const pull = () => getQueue(base, info.tid).then((q) => live && setQ(q)).catch(() => {});
-    pull();
-    const timer = setInterval(pull, 2000);
-    return () => { live = false; clearInterval(timer); };
-  }, [base, info.tid]);
-  function changeQueue(next) {
-    setQ(next);
-    setQueue(base, info.tid, next).then(setQ).catch((e) => setErr(String((e && e.message) || e)));
-  }
+  const [queue, , setQ] = useQueue(base, info.tid);
   // What attachFile/attach have actually saved so far: the path is what the
   // agent reads (it's what lives in text, below), the url is the whole data
   // URL or local uri -- kept only so the thumbnail has something to draw,
@@ -1396,7 +1389,7 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`open queue, ${queue.length} waiting`}
-          onPress={() => setQueueOpen(true)}
+          onPress={() => onQueue && onQueue()}
           style={styles.upNext}>
           <MaterialIcons name="queue-music" size={16} color="#e0a03c" />
           <Text style={styles.queued} numberOfLines={1}>
@@ -1404,88 +1397,7 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
           </Text>
         </Pressable>
       )}
-      <QueueSheet
-        visible={queueOpen}
-        name={info.name}
-        queue={queue}
-        onChange={changeQueue}
-        onClose={() => setQueueOpen(false)}
-      />
     </View>
-  );
-}
-
-// The queue, Spotify-style: what goes next is on top. Tap a message to edit
-// it in place (saved when you leave the box), arrows to move it, the top
-// arrow to play it next, x to drop it.
-// ponytail: arrows, not drag -- a drag handle needs a gesture library or a
-// PanResponder; add one if reordering long queues gets tedious.
-function QueueSheet({ visible, name, queue, onChange, onClose }) {
-  const [editing, setEditing] = useState({});   // id -> text being typed
-  const move = (i, to) => {
-    const next = [...queue];
-    const [item] = next.splice(i, 1);
-    next.splice(Math.max(0, Math.min(to, next.length)), 0, item);
-    onChange(next);
-  };
-  const commit = (id) => {
-    const text = editing[id];
-    setEditing(({ [id]: _, ...rest }) => rest);
-    if (text === undefined) return;
-    onChange(text.trim()
-      ? queue.map((q) => (q.id === id ? { ...q, text } : q))
-      : queue.filter((q) => q.id !== id));   // emptied is removed
-  };
-  const key = (label, icon, onPress, off) => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={off}
-      onPress={onPress}
-      style={[styles.queueKey, off && styles.queueKeyOff]}>
-      <MaterialIcons name={icon} size={18} color={C.dim} />
-    </Pressable>
-  );
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalBack} onPress={onClose}>
-        <Pressable style={styles.receipt} onPress={() => {}}>
-          <View style={styles.title}>
-            <Text style={styles.receiptTitle}>Up next for {name || 'this agent'}</Text>
-            <View style={styles.spacer} />
-            {queue.length > 0 && (
-              <Text accessibilityRole="button" onPress={() => onChange([])} style={styles.receiptClose}>clear</Text>
-            )}
-            <Text accessibilityRole="button" onPress={onClose} style={styles.receiptClose}>close</Text>
-          </View>
-          {queue.length === 0 && (
-            <Text style={styles.receiptLine}>Nothing queued — everything has gone.</Text>
-          )}
-          <ScrollView contentContainerStyle={styles.receiptLines} keyboardShouldPersistTaps="handled">
-            {queue.map((q, i) => (
-              <View key={q.id} style={styles.queueRow}>
-                <Text style={styles.queueNum}>{i + 1}</Text>
-                <TextInput
-                  style={styles.queueText}
-                  value={editing[q.id] ?? q.text}
-                  onChangeText={(t) => setEditing((e) => ({ ...e, [q.id]: t }))}
-                  onBlur={() => commit(q.id)}
-                  multiline
-                  accessibilityLabel={`queued message ${i + 1}`}
-                />
-                {key('play next', 'vertical-align-top', () => move(i, 0), i === 0)}
-                {key('move up', 'arrow-upward', () => move(i, i - 1), i === 0)}
-                {key('move down', 'arrow-downward', () => move(i, i + 1), i === queue.length - 1)}
-                {key('remove', 'close', () => onChange(queue.filter((x) => x.id !== q.id)))}
-              </View>
-            ))}
-          </ScrollView>
-          <Text style={styles.queued}>
-            Each goes when the agent is idle, top first — and stays editable until then.
-          </Text>
-        </Pressable>
-      </Pressable>
-    </Modal>
   );
 }
 
@@ -4186,11 +4098,6 @@ const styles = StyleSheet.create({
   queued: { color: '#e0a03c', fontSize: 11, lineHeight: 16 },
   queuedLine: { color: '#e0a03c', fontSize: 13, lineHeight: 19 },
   upNext: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
-  queueRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, borderBottomWidth: 1, borderBottomColor: C.line, paddingVertical: 6 },
-  queueNum: { color: C.faint, fontSize: 12, width: 18, paddingTop: 8 },
-  queueText: { flex: 1, color: C.text, fontSize: 13, lineHeight: 19, padding: 6, borderRadius: S.radius, backgroundColor: C.bg },
-  queueKey: { padding: 6 },
-  queueKeyOff: { opacity: 0.3 },
   composerRow: { flexDirection: 'row', gap: 8 },
   composerBtn: { flex: 1, paddingHorizontal: 16 },
   rows: { gap: 5, paddingBottom: 8 },

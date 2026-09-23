@@ -816,9 +816,11 @@ Send to a working agent and the prompt goes into its queue rather than into
 Claude Code: the send key turns into *add to queue*. The queue is held by
 `mapui` (`~/.midiai/queue.json`, `/queue`), which sends the top one each time
 the agent goes idle -- whichever agent the app is showing, or with the app
-closed. Until one goes it is still yours: **UP NEXT** under the composer opens
-the list, where a message is edited in place, moved up or down, played next,
-or removed.
+closed. Until one goes it is still yours: it is the fourth tab of the
+right-hand column, beside prompts, skills and hooks (**UP NEXT** under the
+composer opens it), where a message is edited in place, moved up or down,
+played next, or removed. A sidebar and not a modal, so the conversation stays
+readable while you rearrange what comes after it.
 
 It holds back while a question is on screen or something is half-typed on the
 agent's input line, and waits `QUEUE_GAP_S` between sends, because herdr still

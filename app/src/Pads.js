@@ -3,6 +3,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import Icon from './Icon';
 import Inspector from './Inspector';
 import PushButton from './PushButton';
+import { QueuePanel } from './Queue';
 import { ANSWER_HEX, C, S, hexFor, mono } from './theme';
 
 const TEST_HEX = { pass: '#3cd05a', fail: '#e03c3c', run: '#f0c828', '': C.edge };
@@ -44,6 +45,9 @@ export default function Pads({
   onClose,
   onAnswer,
   onCollapse,
+  queue = [],
+  onQueueChange,
+  queueErr,
 }) {
   const [q, setQ] = useState('');
   const [masterScope, setMasterScope] = useState('global');
@@ -170,6 +174,7 @@ export default function Pads({
     prompts: macros.filter((prompt) => prompt && promptInMasterScope(prompt)).length,
     skills: skills.filter(inMasterScope).length,
     hooks: hooks.filter(inMasterScope).length,
+    queue: queue.length,
   };
   const at = panel || 'prompts';
   const placeholder =
@@ -178,6 +183,9 @@ export default function Pads({
   return (
     <View style={styles.rail}>
       <View style={styles.headCol}>
+        {/* scope, search and ＋ are about the catalog; the queue is this
+            agent's, in the order it will go, so none of them apply to it */}
+        {at !== 'queue' && (
         <View style={styles.masterTabs}>
           {[
             ['global', 'global'],
@@ -195,8 +203,9 @@ export default function Pads({
             </Pressable>
           ))}
         </View>
+        )}
         <View style={styles.tabs}>
-          {['prompts', 'skills', 'hooks'].map((k) => (
+          {['prompts', 'skills', 'hooks', 'queue'].map((k) => (
             <Text
               key={k}
               accessibilityRole="tab"
@@ -218,6 +227,7 @@ export default function Pads({
             </Pressable>
           )}
         </View>
+        {at !== 'queue' && (
         <TextInput
           value={q}
           onChangeText={setQ}
@@ -228,12 +238,14 @@ export default function Pads({
           placeholder={placeholder}
           placeholderTextColor={C.faint}
         />
+        )}
       </View>
 
       {/* Every tab gets the same key, in the same place: the panel is one
           shelf with three things on it, and a ＋ that moves or vanishes
           between them would read as three panels that happen to share a
           column. */}
+      {at !== 'queue' && (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`new ${at === 'prompts' ? 'prompt' : at.slice(0, -1)}`}
@@ -245,6 +257,7 @@ export default function Pads({
           ＋ {at === 'prompts' ? 'prompt' : at.slice(0, -1)}
         </Text>
       </Pressable>
+      )}
 
       {at === 'prompts' && (
         <Library
@@ -261,6 +274,7 @@ export default function Pads({
         />
       )}
       {at === 'skills' && <Scoped rows={skills} labels={labels} q={q} kind="skills" masterScope={masterScope} onEntry={onEntry} />}
+      {at === 'queue' && <QueuePanel queue={queue} onChange={onQueueChange} err={queueErr} />}
       {at === 'hooks' && <Scoped rows={hooks} labels={labels} q={q} kind="hooks" masterScope={masterScope} onEntry={onEntry} />}
     </View>
   );

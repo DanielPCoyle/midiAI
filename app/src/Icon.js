@@ -16,6 +16,7 @@ const GLYPH = {
   prompts: 'grid',
   skills: 'star',
   hooks: 'link',
+  queue: 'list',
   shell: 'terminal',
   prompt: 'command',
   send: 'send',
