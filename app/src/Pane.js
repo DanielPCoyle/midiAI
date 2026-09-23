@@ -53,6 +53,7 @@ import {
   getAgentDef,
   summarizePrompt,
   draftCommit,
+  renameAgent,
   setAgentModel,
   addToQueue,
   reviewPr,
@@ -66,6 +67,7 @@ import { GOVERN_STARTERS, TEMPLATES, WORKFLOW_NAME_RE } from './workflows';
 import { PHASES, STARTER } from './guardrails';
 import reflow from './reflow';
 import { useQueue } from './Queue';
+import { NAME_HELP, NAME_RE } from './SessionSheet';
 import { SlashMenu, slashCommands, slashMatches, slashQuery } from './Slash';
 // web only -- xterm needs a DOM, and the native build keeps the scraped view
 // rather than being shown an empty box
@@ -530,7 +532,11 @@ function Focus({
       )}
 
       <View style={styles.title}>
-        <Text style={styles.h1}>{info.name}</Text>
+        {sub || !info.tid ? (
+          <Text style={styles.h1}>{info.name}</Text>
+        ) : (
+          <AgentName base={base} tid={info.tid} name={info.name} onRenamed={onSent} />
+        )}
         {railHidden && !!info.status && (
           <Text style={[styles.model, { color: SEAT_HEX[info.status] || C.faint }]}>
             {info.status}
@@ -1178,6 +1184,67 @@ function Markdown({ text }) {
 // one agent's half-written prompt never lands in another's box.
 // ponytail: memory only -- a reload still loses it; localStorage if that bites
 const drafts = new Map();
+
+// The agent's name in the conversation header, renamed in place: tap it (or
+// the pencil), type, Enter or leaving the box saves, Esc puts it back. Same
+// rule and same call as the sidebar's rename sheet -- one name, two doors.
+function AgentName({ base, tid, name, onRenamed }) {
+  const [draft, setDraft] = useState(null);   // null: not editing
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    if (draft == null || busy) return;
+    const next = draft.trim();
+    if (!next || next === name) { setDraft(null); setErr(''); return; }
+    if (!NAME_RE.test(next)) { setErr(NAME_HELP); return; }
+    setBusy(true);
+    try {
+      await renameAgent(base, tid, next);
+      setDraft(null);
+      setErr('');
+      onRenamed && onRenamed();
+    } catch (e) {
+      setErr(String((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (draft == null) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`rename this agent, ${name}`}
+        onPress={() => { setDraft(name || ''); setErr(''); }}
+        style={styles.nameKey}>
+        <Text style={styles.h1}>{name}</Text>
+        <MaterialIcons name="edit" size={15} color={C.faint} />
+      </Pressable>
+    );
+  }
+  return (
+    <View style={styles.nameEdit}>
+      <TextInput
+        value={draft}
+        onChangeText={(t) => { setDraft(t.toLowerCase()); setErr(''); }}
+        autoFocus
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!busy}
+        maxLength={32}
+        accessibilityLabel="agent name"
+        onSubmitEditing={save}
+        onBlur={save}
+        onKeyPress={(e) => {
+          if (e.nativeEvent.key === 'Escape') { setDraft(null); setErr(''); }
+        }}
+        style={[styles.h1, styles.nameInput]}
+      />
+      {!!err && <Text style={styles.nameErr}>{err}</Text>}
+    </View>
+  );
+}
 
 // The prompt the conversation in view answers -- the latest while you follow
 // along at the foot, whichever one the top of the view is inside once you
@@ -4625,6 +4692,10 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  nameKey: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  nameEdit: { gap: 2 },
+  nameInput: { minWidth: 180, paddingVertical: 0, paddingHorizontal: 6, borderWidth: 1, borderColor: C.accentText, borderRadius: S.radius, backgroundColor: C.bg },
+  nameErr: { color: C.bad, fontSize: 11 },
   jumpDown: { position: 'absolute', right: 16, bottom: 16, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: C.edge, backgroundColor: C.panel, zIndex: 5 },
   jumpDownText: { color: C.text, fontSize: 12 },
   jumpDownHigh: { bottom: 60 },   // clear of the running-subagents banner

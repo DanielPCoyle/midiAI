@@ -26,8 +26,9 @@ import {
 
 // The same rule mapui.py enforces server-side -- checked here too so a typo
 // is caught before the round trip rather than after a 400 comes back.
-const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-const NAME_HELP = 'lowercase letters, digits, _ or - only, must start with a letter, 32 chars max';
+// exported: the conversation header renames by the same rule, not a copy
+export const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+export const NAME_HELP = 'lowercase letters, digits, _ or - only, must start with a letter, 32 chars max';
 
 // Folders come from the server, not the tablet: a file picker here would
 // browse the iPad, and the repos are on the machine running the agents.
