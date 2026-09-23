@@ -3038,6 +3038,9 @@ function Work({ base, cwd, tabs }) {
   // the model's draft: '' idle, 'writing' while it thinks, and after it
   // lands, 'all' when it had to describe unstaged changes too
   const [drafting, setDrafting] = useState('');
+  // the diff, opened out over the whole screen -- the column is a glance,
+  // this is for reading
+  const [bigDiff, setBigDiff] = useState(false);
   const [amend, setAmend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -3481,10 +3484,41 @@ function Work({ base, cwd, tabs }) {
                 </View>
               ))}
             </View>
-            <View style={styles.viewerCard}>{viewer}</View>
+            <View style={styles.viewerCard}>
+              {viewer}
+              {files.length > 0 && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="open the diff in a larger view"
+                  onPress={() => setBigDiff(true)}
+                  style={styles.diffExpand}>
+                  <Icon name="maximize-2" size={15} color={C.dim} />
+                </Pressable>
+              )}
+            </View>
           </View>
         </View>
       </View>
+      <Modal visible={bigDiff && files.length > 0} transparent animationType="fade" onRequestClose={() => setBigDiff(false)}>
+        <Pressable style={styles.modalBack} onPress={() => setBigDiff(false)}>
+          <Pressable style={styles.diffModal} onPress={() => {}}>
+            <View style={styles.diffModalHead}>
+              <Text numberOfLines={1} style={[styles.receiptTitle, styles.spacer, mono]}>
+                {pick?.file || (pick?.sha && (log.find((r) => r.sha === pick.sha)?.short || pick.sha.slice(0, 7))) || 'diff'}
+              </Text>
+              {files.length > 1 && <Text style={styles.syncDim}>{files.length} files</Text>}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="close the larger diff"
+                onPress={() => setBigDiff(false)}
+                style={styles.treeFoldKey}>
+                <Icon name="x" size={18} color={C.dim} />
+              </Pressable>
+            </View>
+            {viewer}
+          </Pressable>
+        </Pressable>
+      </Modal>
       <Modal visible={!!ask} transparent animationType="fade" onRequestClose={() => setAsk(null)}>
         <View style={styles.modalBack}>
           <View style={styles.receipt}>
@@ -5039,6 +5073,9 @@ const styles = StyleSheet.create({
   diffWorkspace2: { flex: 1, minHeight: 260, flexDirection: 'row', gap: 14 },
   fileCard: { width: 430, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: C.panel, overflow: 'hidden' },
   viewerCard: { flex: 1, minWidth: 0, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: KEYBG(), overflow: 'hidden' },
+  diffExpand: { position: 'absolute', top: 6, right: 8, width: 34, height: 34, borderRadius: 7, alignItems: 'center', justifyContent: 'center', backgroundColor: C.raised, borderWidth: 1, borderColor: C.edge },
+  diffModal: { width: '95%', height: '92%', backgroundColor: KEYBG(), borderWidth: 1, borderColor: C.edge, borderRadius: S.radius, overflow: 'hidden' },
+  diffModalHead: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: C.panel },
   wgHead: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 6 },
   wgName: { color: C.dim, fontSize: 11, fontWeight: '600', letterSpacing: 1 },
   wgCount: { color: C.dim, fontSize: 11, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 9, backgroundColor: C.raised, overflow: 'hidden' },
