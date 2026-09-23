@@ -874,11 +874,17 @@ function chatFromTerminal(lines, summary, sentPrompts) {
   const final = reflow(summary.filter((line) => !CHROME.test(String(line).trim())))
     .replace(/^\s*[-*•]\s+/gm, '')
     .trim();
-  if (final) {
-    const at = summaryAt < 0 ? turns.length : summaryAt;
+  // No heading on screen means push_cc fell back to "the last ⏺ block",
+  // which the turns above already are -- or, mid-turn, the running tool
+  // call, which then showed up as a message of its own.
+  if (final && summaryAt >= 0) {
+    const at = summaryAt;
     const owner = turns.slice(0, at).reverse().find((turn) => turn.role === 'agent');
-    if (!owner || !owner.text.includes(final))
-      turns.splice(at, 0, { role: 'agent', rows: [final], text: final, work: summaryAt < 0 ? [...work] : [] });
+    // compared bare: the answer keeps its "- " bullets and the summary has
+    // them stripped, so a plain includes() never matched and showed it twice
+    const bare = (t) => String(t).replace(/^\s*[-*•]\s+/gm, '').split(/\s+/).join(' ').trim();
+    if (!owner || !bare(owner.text).includes(bare(final)))
+      turns.splice(at, 0, { role: 'agent', rows: [final], text: final, work: [] });
   }
   // Work collected after the last finished answer is the work happening NOW --
   // the tool call the agent is inside. It used to be dropped on the floor
