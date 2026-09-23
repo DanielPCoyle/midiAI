@@ -21,7 +21,7 @@ import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
 import Pads from './src/Pads';
 import { useQueue } from './src/Queue';
-import Pane from './src/Pane';
+import Pane, { SignalBars, fillHue } from './src/Pane';
 import { inside } from './src/Projects';
 import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
@@ -212,7 +212,9 @@ export default function App() {
   // group is a better answer to "who is running" than a tab that had to be
   // clicked to find out, and it is on screen the whole time. The view itself
   // is untouched on the wire -- the Push still has it.
-  const TAB_HIDE = new Set(['sessions']);
+  // usage is not a tab either: it is the indicator at the right of the bar,
+  // so how full the context is can be read from anywhere in the app
+  const TAB_HIDE = new Set(['sessions', 'usage']);
   // tests and git are the tabs worth a glance without a click for a
   // single-repo user -- usually zero, and "zero" is itself the useful fact.
   // focus and usage have no one number that sums them up, so they stay bare.
@@ -717,6 +719,41 @@ export default function App() {
 
         <View style={styles.spacer} />
 
+        {/* USAGE, apart from the tabs: the focused agent's context as phone
+            bars (the fullest agent's when none is focused), on every view.
+            Pressing it still opens the usage view, like the tab it was. */}
+        {(() => {
+          const ui = views.indexOf('usage');
+          const fill = surface.views_data?.usage?.[0]?.fill || [];
+          if (ui < 0) return null;
+          const f = fill.find((x) => here && x.name === here.name)
+            || [...fill].sort((a, b) => b.frac - a.frac)[0];
+          const on = ui === viewIdx;
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={f
+                ? `usage · ${f.name} context ${Math.round(f.frac * 100)}% full`
+                : 'usage'}
+              accessibilityState={{ selected: on }}
+              onPress={() => {
+                setLocalView(ui);
+                if (effectiveFollow) press({ tab: ui });
+              }}
+              style={[styles.usageKey, on && styles.usageKeyOn]}>
+              <Text style={[styles.usageWord, on && styles.usageWordOn]}>usage</Text>
+              {!!f && (
+                <>
+                  <SignalBars frac={f.frac} size={14} />
+                  <Text style={[styles.usagePct, { color: fillHue(f.frac) }]}>
+                    {Math.round(f.frac * 100)}%
+                  </Text>
+                </>
+              )}
+            </Pressable>
+          );
+        })()}
+
         {/* The status pill's whole content was this sentence -- why push_cc is
             not answering. A red dot that cannot say why is worse than no light,
             so the sentence outlived the pill; the dot beside the brand is the
@@ -1176,6 +1213,11 @@ const styles = StyleSheet.create({
   // Half of `tabs`' own gap, padded on and pulled back off. Purely a hit-area
   // move: nothing here is visible.
   tabHit: { paddingHorizontal: 9, marginHorizontal: -9 },
+  usageKey: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 4, borderRadius: S.radius, borderWidth: 1, borderColor: C.line },
+  usageKeyOn: { borderColor: C.accentText },
+  usageWord: { color: C.dim, fontSize: 11, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' },
+  usageWordOn: { color: C.text },
+  usagePct: { fontSize: 11, fontWeight: '700' },
   tab: {
     fontSize: 13,
     // uppercase and tracked out: the tabs are the one row of chrome that has

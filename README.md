@@ -490,7 +490,10 @@ the one fact that is about this agent rather than its checkout — which of its
 faces (pretty, terminal, subagents) you are looking at.
 
 The tabs are the views, uppercased so the one row of chrome reads as chrome:
-**FOCUS · GUARDRAILS · GIT · USAGE**. `tests` reads GUARDRAILS because the
+**FOCUS · GUARDRAILS · GIT**. USAGE left the row for the right-hand end of
+the bar, where it is an indicator first -- the focused agent's context as
+phone bars and a percentage (the fullest agent's when nobody is focused), on
+every view -- and still opens the usage view when pressed. `tests` reads GUARDRAILS because the
 view is everything meant to stand between a change and main, not the test
 files it lists today, and `prs` reads GIT because the view is the repo's
 state and PRS was the one label that had to be decoded. `sessions` and its
@@ -927,6 +930,8 @@ full its context window is right now (`push_cc.usage_fill`, the same
 bars is worse here, so the colour says so -- the plan bars' ramp, green to
 red at 60% and 85%. It rides beside the usage rows rather than inside them:
 `display.py` unpacks those as exactly five fields for the Push's own screen.
+The same bars (`SignalBars`, exported from Pane.js) are the top bar's USAGE
+indicator, so the one number worth watching is on screen everywhere.
 
 ## Commit messages from the diff
 

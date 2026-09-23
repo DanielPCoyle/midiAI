@@ -4889,9 +4889,10 @@ const SEVERITY_FLOOR = { warning: 1, critical: 2 };
 // Context as a phone's signal: five bars rising left to right, lit from the
 // left in proportion to how full it is. Unlike a phone, more is worse, so
 // the colour carries that -- the plan bars' own ramp, same thresholds.
-const fillHue = (frac) => PLAN_RAMP[frac < 0.6 ? 0 : frac < 0.85 ? 1 : 2];
+export const fillHue = (frac) => PLAN_RAMP[frac < 0.6 ? 0 : frac < 0.85 ? 1 : 2];
 
-function SignalBars({ frac, size = 18 }) {
+// Exported: the top bar's usage indicator draws the same bars app-wide.
+export function SignalBars({ frac, size = 18 }) {
   const lit = frac > 0 ? Math.max(1, Math.ceil(Math.min(1, frac) * 5)) : 0;
   const hue = fillHue(frac);
   return (
