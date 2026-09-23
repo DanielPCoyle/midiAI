@@ -843,6 +843,12 @@ gate.
 
 ## Notes
 
+- `tmux list-panes -a` lists a pane once per session that can see it, and
+  ptybridge's `midiai-<session>` view is a grouped session sharing every
+  window. So with the terminal tab open, every agent came back twice -- two
+  of each in the rail and the seat tabs. `term._match_agents` keeps one per
+  pane. Anything else that walks `list-panes -a` and counts what it finds
+  has to do the same.
 - The view (focus, guardrails, git, usage) is push_cc's, not the page's. A
   test browser that clicks a top tab moves the Push and every other open
   app with it -- so a check that visits GIT should switch back to focus

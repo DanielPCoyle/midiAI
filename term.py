@@ -126,10 +126,22 @@ def _match_agents(rows, by_pid, table=None):
     session_attached narrows that to the one thing an attached human could
     actually be looking at -- herdr returns exactly one focused pane, and
     push_cc takes the first match, so a second one points the Push at the
-    wrong seat."""
+    wrong seat.
+
+    One agent per pane, though a pane can come back more than once: a
+    grouped session shares its windows, so `list-panes -a` lists each pane
+    once per session in the group. ptybridge's `midiai-push` view is one --
+    with the terminal tab open, every agent showed up twice in the rail and
+    the seat tabs. Its rows differ only in the per-session flags, so the
+    pane is focused if any of them says so."""
     agents = []
+    seen = {}
     table = _proc_table() if table is None else table   # injectable for demo()
     for pane_id, pane_pid, cwd, pa, wa, sattach, name in rows:
+        focused = pa == "1" and wa == "1" and sattach == "1"
+        if pane_id in seen:
+            seen[pane_id]["focused"] = seen[pane_id]["focused"] or focused
+            continue
         cpid, running = _find_claude_pid(int(pane_pid), by_pid, table)
         if cpid is None and not running:
             continue                    # no agent here, just a shell
@@ -141,10 +153,11 @@ def _match_agents(rows, by_pid, table=None):
             # a claude with no session yet is present but unclassified, which
             # is what `unknown` is for. idle would be a claim we cannot make.
             "agent_status": _status(info.get("status")) if info else "unknown",
-            "focused": pa == "1" and wa == "1" and sattach == "1",
+            "focused": focused,
             "agent_session": {"value": info.get("sessionId")},
             "name": name or None,
         })
+        seen[pane_id] = agents[-1]
     return agents
 
 
@@ -589,6 +602,13 @@ if __name__ == "__main__":
         rows3 = [("%0", "111", "/a", "1", "1", "0", ""),
                  ("%1", "222", "/b", "1", "1", "0", "")]
         assert not any(a["focused"] for a in _match_agents(rows3, by_pid2))
+
+        # a grouped session (ptybridge's midiai-push view) lists every pane
+        # once per session: still one agent, focused if any copy is
+        rows5 = [("%0", "111", "/a", "1", "1", "0", "abc"),   # push
+                 ("%0", "111", "/a", "1", "1", "1", "abc")]   # midiai-push
+        dup = _match_agents(rows5, by_pid2)
+        assert len(dup) == 1 and dup[0]["focused"], dup
 
         # a claude that has not started a session yet: no entry in
         # `claude agents --json`, but the process is right there. herdr shows
