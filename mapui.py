@@ -585,6 +585,26 @@ def repo_worktrees(cwd):
     return rows or None
 
 
+SKIP_WALK = {"node_modules", ".venv", ".git", "__pycache__"}
+
+
+def plugin_skill_files(where):
+    """Every SKILL.md under a `skills/` directory at any depth in one
+    plugin -- mattpocock files its as skills/<category>/<skill>/, so a fixed
+    depth drops them. Walked with node_modules and friends pruned before
+    they are entered: the old `**/skills/**/SKILL.md` glob read every one of
+    them and filtered after, 11,500 directories and ~2.2s of /catalog's
+    2.35s, which at page load held up every request behind it."""
+    out = []
+    for top, dirs, files in os.walk(where):
+        # hidden folders too, as the glob did: .openclaw/skills and the like
+        # are a plugin's copies for other tools, not Claude Code skills
+        dirs[:] = [d for d in dirs if d not in SKIP_WALK and not d.startswith(".")]
+        if "SKILL.md" in files and "skills" in os.path.relpath(top, where).split(os.sep):
+            out.append(os.path.join(top, "SKILL.md"))
+    return out
+
+
 def plain_checkout(path):
     """A folder with no repo, shaped like a worktree row so the rail draws it
     the same way: its one checkout, on no branch."""
@@ -3493,10 +3513,7 @@ class Handler(BaseHTTPRequestHandler):
             # a fixed depth silently dropped every one of them. Anchored on a
             # `skills` ancestor so a vendored SKILL.md inside node_modules --
             # playwright ships two -- is not mistaken for a plugin's own.
-            plugin_skills += [
-                f for f in glob.glob(os.path.join(where, "**", "skills", "**",
-                                                  "SKILL.md"), recursive=True)
-                if "/node_modules/" not in f and "/.venv/" not in f]
+            plugin_skills += plugin_skill_files(where)
         if not plugin_skills:
             # nothing installed, or a manifest we could not read -- an empty
             # catalogue would be a worse answer than a duplicated one
