@@ -813,6 +813,7 @@ function chatFromTerminal(lines, summary, sentPrompts) {
   // It is the last TLDR on screen, which mid-turn is the previous answer's --
   // appended at the end it sat under the prompt you had just sent.
   let summaryAt = -1;
+  let inBox = false;
   for (let i = 0; i < lines.length; i += 1) {
     const raw = String(lines[i] || '');
     const clean = raw.trim();
@@ -824,10 +825,18 @@ function chatFromTerminal(lines, summary, sentPrompts) {
       if (!clean && open && !work.length) open.rows.push('');
       continue;
     }
+    // The live input box is "❯" + a no-break space; a sent prompt in the
+    // history is "❯" + a plain one. The box is never a turn: whatever sits
+    // in it -- a draft, or Claude Code's dim suggestion -- read as a message
+    // you had sent, and an empty one threw away the tool call in progress.
+    if (clean.startsWith('❯\u00a0') || clean === '❯') {
+      inBox = true;
+      continue;
+    }
+    if (inBox && raw.startsWith(' ')) continue; // the draft's wrapped rows
+    inBox = false;
     if (clean.startsWith('❯')) {
       const text = clean.slice(1).trim();
-      // the bare ❯ is the empty input box under the spinner, not a turn --
-      // resetting on it threw away the tool call the agent is inside
       if (!text) continue;
       turns.push({ role: 'user', rows: [text], work: [] });
       work = [];
@@ -959,8 +968,27 @@ function Markdown({ text }) {
 // box started mirroring the pane's own input line: staging now writes text
 // the composer immediately reads back, so the button that did it looked like
 // it had done nothing.
+// Drafts outlive the composer. Switching to guardrails, git or usage
+// unmounts it, and a draft held only in its state came back empty -- or as
+// the suggestion, which then looked like what you had typed. Per agent, so
+// one agent's half-written prompt never lands in another's box.
+// ponytail: memory only -- a reload still loses it; localStorage if that bites
+const drafts = new Map();
+
 function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
-  const [text, setText] = useState('');
+  const [text, setTextState] = useState(() => drafts.get(info.tid) || '');
+  const tidRef = useRef(info.tid);
+  const setText = (next) =>
+    setTextState((was) => {
+      const value = typeof next === 'function' ? next(was) : next;
+      drafts.set(tidRef.current, value);
+      return value;
+    });
+  useEffect(() => {
+    if (tidRef.current === info.tid) return;
+    tidRef.current = info.tid;
+    setTextState(drafts.get(info.tid) || '');
+  }, [info.tid]);
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState('');
 
@@ -996,7 +1024,12 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
   // steps back rather than competing with it.
   if (info.opts && info.opts.length) return null;
 
-  const empty = !text.trim();
+  // Claude Code's own guess at your next prompt. It stays a placeholder --
+  // typing replaces it, an empty box sends it as it stands, "edit" takes it
+  // into the box to change. Adopting it as text made a guess look typed and
+  // meant clearing it before you could say anything else.
+  const ghost = !text && !info.pending ? (info.suggestion || '').trim() : '';
+  const empty = !text.trim() && !ghost;
   // unknown is not idle: an agent with no session yet has nothing to send to
   const busy = info.status !== 'idle';
   const disabled = empty || sending;
@@ -1006,8 +1039,9 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
     setSending(true);
     setErr('');
     try {
-      const sent = text.trim();
-      await promptAgent(base, text, submit, info.tid, true);
+      const body = text.trim() ? text : ghost;
+      const sent = body.trim();
+      await promptAgent(base, body, submit, info.tid, true);
       onPromptSent && onPromptSent(sent);
       setText(''); // only on success -- a failed send keeps what you typed
       setAttachments([]); // their paths just left in that text
@@ -1187,13 +1221,25 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus }) {
       {!!info.suggested && (
         <Text style={styles.head}>PROPOSED — A PROMPT PUT THIS THERE</Text>
       )}
+      {!!ghost && (
+        <View style={styles.ghostRow}>
+          <Text style={styles.head}>SUGGESTED — SEND AS IS, OR TYPE TO REPLACE</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="edit the suggested prompt"
+            onPress={() => setText(ghost)}
+            style={styles.receiptKey}>
+            <Text style={styles.receiptKeyText}>edit</Text>
+          </Pressable>
+        </View>
+      )}
       <TextInput
-        style={styles.composerInput}
+        style={[styles.composerInput, !!ghost && styles.composerGhost]}
         value={text}
         onChangeText={setText}
         onFocus={onComposerFocus}
-        placeholder="type to the agent"
-        placeholderTextColor={C.faint}
+        placeholder={ghost || 'type to the agent'}
+        placeholderTextColor={ghost ? C.dim : C.faint}
         multiline
         editable={!sending}
       />
@@ -3845,6 +3891,8 @@ const styles = StyleSheet.create({
   contextSettingRule: { width: 1, height: 16, backgroundColor: C.line, marginHorizontal: 4 },
   contextSelect: { minHeight: 28, justifyContent: 'center', paddingHorizontal: 5 },
   contextSelectText: { color: C.text, fontSize: 11, fontWeight: '500' },
+  ghostRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  composerGhost: { borderStyle: 'dashed', fontStyle: 'italic' },
   pretty: { backgroundColor: C.bg, padding: 0, overflow: 'hidden' },
   // A conversation is prose, so it gets prose spacing: turns far enough
   // apart to be separate thoughts, and a measure that stops the eye having

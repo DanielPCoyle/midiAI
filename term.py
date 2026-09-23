@@ -167,11 +167,25 @@ def _agent_list():
     return _ok({"agents": _match_agents(rows, by_pid), "type": "agent_list"})
 
 
+# Claude Code's suggested next prompt is drawn dim on an otherwise empty
+# input line: "❯\xa0" then SGR 2. A plain capture drops the styling, so a
+# suggestion read exactly like text you had typed and the app adopted it as
+# yours. Only the bottom of the pane is captured styled -- the input box.
+_GHOST_RE = re.compile(r"❯\xa0(?:\x1b\[[0-9;]*m)*\x1b\[2m")
+
+
+def _is_ghost(styled):
+    rows = [r for r in styled.splitlines() if "❯" in r]
+    return bool(rows) and bool(_GHOST_RE.search(rows[-1]))
+
+
 def _agent_read(target, n):
     out = _run(["tmux", "capture-pane", "-p", "-t", target, "-S", "-0"])
     if out.returncode != 0:
         return _err("tmux_capture_pane", out.stderr)
-    return _ok({"read": {"text": _tail(out.stdout, n)}})
+    styled = _run(["tmux", "capture-pane", "-e", "-p", "-t", target, "-S", "-12"])
+    return _ok({"read": {"text": _tail(out.stdout, n),
+                         "ghost": styled.returncode == 0 and _is_ghost(styled.stdout)}})
 
 
 def _agent_send(target, text):
@@ -539,6 +553,11 @@ if __name__ == "__main__":
         tail40 = _tail(capture, 40).splitlines()
         assert tail40 == [f"line{i}" for i in range(17, 57)], tail40
         assert len(tail40) == 40
+        # the real bytes of a suggestion, and of the same words typed
+        assert _is_ghost("\x1b[39m❯\xa0\x1b[2mgo ahead\x1b[0m\n  footer")
+        assert not _is_ghost("\x1b[39m❯\xa0go ahead\n  footer")
+        assert not _is_ghost("\x1b[39m❯\xa0\n"), "empty box is no suggestion"
+        assert not _is_ghost("❯ \x1b[2mold dim prompt\n❯\xa0typed"), "last ❯ wins"
 
         # pid join: two panes sharing a cwd stay two agents -- cwd never
         # decides identity, pid does

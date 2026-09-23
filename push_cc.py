@@ -1047,7 +1047,7 @@ def sub_info(sub, slot=0, scroll=0):
             # show, and its type is the thing you actually want named there
             "effort": sub["type"],
             "status": "working" if sub["running"] else "idle",
-            "act": "", "say": said[-1] if said else "", "pending": "",
+            "act": "", "say": said[-1] if said else "", "pending": "", "suggestion": "",
             # a subagent has no input line of its own, so nothing can be
             # waiting on one -- but the key has to exist, the view is shared
             "queued": [],
@@ -2105,14 +2105,18 @@ def pane_summary(agent, depth=SCRAPE_LINES):
         raw = json.loads(herdr("agent", "read", agent["terminal_id"],
                                "--lines", depth))
         lines = raw["result"]["read"]["text"].splitlines()
+        ghost = bool(raw["result"]["read"].get("ghost"))
     except (json.JSONDecodeError, KeyError, OSError, subprocess.SubprocessError):
         return {}
     body = [l for l in lines if not set(l.strip()) <= set("─━ ")]   # drop rules
     scan = read_pane(lines)
-    pending = prompt_text(lines)
+    pending = "" if scan["opts"] else prompt_text(lines)
+    # Claude Code's own dim suggestion is not typed text: nothing to clear,
+    # slug or adopt. It travels apart so the app can offer it as a placeholder.
     return {**scan, "lines": body, "tldr": tldr(body),
             "queued": queued_blocks(agent, lines),
-            "pending": "" if scan["opts"] else pending}
+            "pending": "" if ghost else pending,
+            "suggestion": pending if ghost else ""}
 
 
 def sweep_panes(slots, by_id, current):
@@ -2141,7 +2145,7 @@ def focus_info(slot, agent, summary, scroll=0, suggested=False):
             "model": model_for(agent),
             "effort": effort_for(agent),
             "status": agent.get("agent_status"),
-            **{k: summary.get(k, "") for k in ("act", "say", "pending")},
+            **{k: summary.get(k, "") for k in ("act", "say", "pending", "suggestion")},
             "queued": summary.get("queued") or [],
             "tldr": summary.get("tldr") or [],
             # a macro put this there and you have not touched it yet, so it is

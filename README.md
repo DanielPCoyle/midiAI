@@ -816,6 +816,14 @@ takes typed paths.
   newline in the input, so a prompt from the app sat in the agent's box,
   typed and never sent, with nothing reporting an error. `term.py` sends each
   `\r` as tmux's named `Enter` key and keeps the text around it literal.
+- Claude Code's suggested next prompt sits on the input line looking exactly
+  like typed text once the styling is gone: `❯\xa0` then the words, dim
+  (SGR 2). A plain `capture-pane` drops the dim, so the app adopted every
+  suggestion as if you had typed it. `term.py` captures the bottom of the pane
+  a second time with `-e` to spot it, and `push_cc` sends it as `suggestion`,
+  never `pending`. The composer shows it as a placeholder: type to replace it,
+  send an empty box to use it. The herdr backend has no styled read, so there
+  a suggestion still arrives as `pending`.
 - A question is only a question if the pane draws a **caret** on one of its
   options. The pattern that finds them matches anything opening with `1.`, and
   Claude writes numbered lists in prose constantly — a two-bullet recap read as
