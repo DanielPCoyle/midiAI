@@ -807,6 +807,7 @@ export default function App() {
                 reachable={reachable}
                 onComposerFocus={composerFocus}
                 onQueue={() => showPanel('queue', true)}
+                skills={catalog.skills}
                 place={place}
                 subs={subs}
               />
@@ -884,6 +885,7 @@ export default function App() {
                 reachable={reachable}
                 onComposerFocus={composerFocus}
                 onQueue={() => showPanel('queue', true)}
+                skills={catalog.skills}
                 place={place}
                 subs={subs}
               />

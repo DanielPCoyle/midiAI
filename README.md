@@ -810,6 +810,17 @@ Web only, and on purpose: iOS hands React Native no paste event and no
 clipboard image without another dependency. In Expo Go the composer still
 takes typed paths.
 
+## Slash commands
+
+Start the composer with `/` and a menu opens above it: Claude Code's own
+commands, then every skill the catalog can see for this checkout, filtered as
+you type (a plugin skill matches on its bare name and is filled in as
+`plugin:skill`). ↑/↓ choose, Enter runs the highlighted one, Tab or a tap
+fills it in so arguments can follow, Esc closes it. The built-ins are a
+hand-kept list in `app/src/Slash.js` -- nothing readable lists them -- and a
+stale one costs nothing, since Claude Code answers an unknown command
+itself. A command sent to a busy agent queues like any other prompt.
+
 ## Up next
 
 Send to a working agent and the prompt goes into its queue rather than into

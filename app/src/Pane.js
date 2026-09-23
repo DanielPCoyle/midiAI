@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   Linking,
@@ -61,6 +61,7 @@ import { GOVERN_STARTERS, TEMPLATES, WORKFLOW_NAME_RE } from './workflows';
 import { PHASES, STARTER } from './guardrails';
 import reflow from './reflow';
 import { useQueue } from './Queue';
+import { SlashMenu, slashCommands, slashMatches, slashQuery } from './Slash';
 // web only -- xterm needs a DOM, and the native build keeps the scraped view
 // rather than being shown an empty box
 const Term = Platform.OS === 'web' ? require('./Term').default : null;
@@ -123,6 +124,7 @@ const CI_HEX = { pass: '#3cd05a', fail: '#e03c3c', pending: '#e0d02c', none: C.e
 //                conflating the two was the dead-tab bug.
 //   onQueue    - optional (): void, opens the up-next queue in the
 //                right-hand column.
+//   skills     - the catalog's skills, for the composer's / menu.
 //   onComposerFocus - optional (): void, called when the composer's own text
 //                box takes focus. The prompt library collapses by default
 //                now (App.js), and focusing the box to type is as clear a
@@ -143,6 +145,7 @@ export default function Pane({
   reachable = true,
   onComposerFocus,
   onQueue,
+  skills,
   place,
   subs,
 }) {
@@ -167,6 +170,7 @@ export default function Pane({
         onSent={onSent}
         onComposerFocus={onComposerFocus}
         onQueue={onQueue}
+        skills={skills}
         place={place}
         subs={subs}
       />
@@ -275,6 +279,7 @@ function Focus({
   onSent,
   onComposerFocus,
   onQueue,
+  skills,
   place,
   subs = [],
 }) {
@@ -843,6 +848,7 @@ function Focus({
           onPromptSent={(text) => setSentPrompts((items) => [...items, text])}
           onComposerFocus={onComposerFocus}
           onQueue={onQueue}
+          skills={skills}
         />
       )}
     </View>
@@ -1060,7 +1066,7 @@ function Markdown({ text }) {
 // ponytail: memory only -- a reload still loses it; localStorage if that bites
 const drafts = new Map();
 
-function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue }) {
+function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue, skills }) {
   const [text, setTextState] = useState(() => drafts.get(info.tid) || '');
   const tidRef = useRef(info.tid);
   const setText = (next) =>
@@ -1093,6 +1099,11 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue }
   // one at a time -- editable, reorderable and removable until the moment
   // each one goes. Polled, because the server drains it on its own.
   const [queue, , setQ] = useQueue(base, info.tid);
+  // The / menu: open while the box holds a slash and a command name being
+  // typed, shut by Esc until the text changes.
+  const allSlash = useMemo(() => slashCommands(skills), [skills]);
+  const [slashSel, setSlashSel] = useState(0);
+  const [slashShut, setSlashShut] = useState(null);
   // What attachFile/attach have actually saved so far: the path is what the
   // agent reads (it's what lives in text, below), the url is the whole data
   // URL or local uri -- kept only so the thumbnail has something to draw,
@@ -1121,12 +1132,18 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue }
   // unknown is not idle: an agent with no session yet has nothing to send to
   const busy = info.status !== 'idle';
   const disabled = empty || sending;
+  const slashQ = text === slashShut ? null : slashQuery(text);
+  const slash = slashQ === null ? [] : slashMatches(allSlash, slashQ);
+  const pickSel = Math.min(slashSel, Math.max(0, slash.length - 1));
+  // tab and a tap fill the name in to add arguments; enter runs it as is
+  const fillSlash = (c) => { setText(`/${c.name} `); setSlashSel(0); };
+  const runSlash = (c) => { setSlashSel(0); send(true, `/${c.name}`); };
 
-  async function send(submit) {
+  async function send(submit, override) {
     setSending(true);
     setErr('');
     try {
-      const body = text.trim() ? text : ghost;
+      const body = override || (text.trim() ? text : ghost);
       const sent = body.trim();
       if (busy) setQ(await addToQueue(base, info.tid, sent));
       else {
@@ -1310,10 +1327,11 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue }
           </Pressable>
         </View>
       )}
+      <SlashMenu items={slash} sel={pickSel} onPick={fillSlash} />
       <TextInput
         style={[styles.composerInput, !!ghost && styles.composerGhost]}
         value={text}
-        onChangeText={setText}
+        onChangeText={(t) => { setText(t); setSlashSel(0); }}
         onFocus={onComposerFocus}
         placeholder={ghost || 'type to the agent'}
         placeholderTextColor={ghost ? C.dim : C.faint}
@@ -1325,12 +1343,25 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue }
         // sends there; a pasted or dictated newline still gets through.
         onKeyPress={Platform.OS === 'web' ? (e) => {
           const ev = e.nativeEvent;
-          if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing) return;
+          if (ev.isComposing) return;
+          if (slash.length) {
+            const step = { ArrowDown: 1, ArrowUp: -1 }[ev.key];
+            if (step) {
+              e.preventDefault();
+              setSlashSel((pickSel + step + slash.length) % slash.length);
+              return;
+            }
+            if (ev.key === 'Tab') { e.preventDefault(); fillSlash(slash[pickSel]); return; }
+            if (ev.key === 'Escape') { e.preventDefault(); setSlashShut(text); return; }
+          }
+          if (ev.key !== 'Enter' || ev.shiftKey) return;
           e.preventDefault();
-          if (!disabled) send(true);
+          if (slash.length) runSlash(slash[pickSel]);
+          else if (!disabled) send(true);
         } : undefined}
         submitBehavior={Platform.OS === 'web' ? undefined : 'submit'}
-        onSubmitEditing={Platform.OS === 'web' ? undefined : () => !disabled && send(true)}
+        onSubmitEditing={Platform.OS === 'web' ? undefined : () =>
+          (slash.length ? runSlash(slash[pickSel]) : !disabled && send(true))}
         returnKeyType="send"
       />
       {!!err && <Text style={styles.err}>{err}</Text>}
