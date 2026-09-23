@@ -1525,6 +1525,8 @@ class Handler(BaseHTTPRequestHandler):
         # otherwise this would also swallow /work/diff
         if self.path == "/work" or self.path.startswith("/work?"):
             return self._work_read()
+        if self.path.startswith("/work/dirty?"):
+            return self._work_dirty()
         if self.path == "/work/diff" or self.path.startswith("/work/diff?"):
             return self._work_diff()
         if self.path.startswith("/agent-def?"):
@@ -2332,6 +2334,19 @@ class Handler(BaseHTTPRequestHandler):
         if run and not run.done:
             run.abort()
         self._send(200, "tests stopped", "text/plain")
+
+    def _work_dirty(self):
+        """The GIT tab's count: files changed and not yet committed, staged
+        or not, untracked included. Just the status call -- /work also
+        builds the commit graph, too much to poll for one number. A file
+        staged and then edited again is one file, not two."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        _, staged, unstaged, conflicts = work_status(root)
+        paths = {r["path"] for r in staged + unstaged + conflicts}
+        self._send(200, json.dumps({"count": len(paths)}), "application/json")
 
     def _work_read(self):
         """Everything the GIT tab's overview screen needs in one call --

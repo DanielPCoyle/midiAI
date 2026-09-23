@@ -310,6 +310,10 @@ export const getHistory = (base, tid, since = 0, sub = '') =>
   getJSON(base, `/history?tid=${encodeURIComponent(tid || '')}&since=${since}`
     + (sub ? `&sub=${encodeURIComponent(sub)}` : ''));
 
+// Files changed and not committed in a checkout -- the GIT tab's count.
+export const getDirty = async (base, cwd) =>
+  (await getJSON(base, `/work/dirty?cwd=${encodeURIComponent(cwd || '')}`)).count;
+
 export const getWork = (base, cwd) =>
   getJSON(base, `/work?cwd=${encodeURIComponent(cwd || '')}`);
 

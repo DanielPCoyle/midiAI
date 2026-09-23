@@ -13,7 +13,8 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
-import { baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+import {
+  getDirty, baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
 import EntrySheet from './src/EntrySheet';
 import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
@@ -211,12 +212,28 @@ export default function App() {
   // single-repo user -- usually zero, and "zero" is itself the useful fact.
   // focus and usage have no one number that sums them up, so they stay bare.
   const testsCount = (surface.views_data?.tests?.[0]?.items || []).length;
-  const prsCount = (surface.views_data?.prs?.[0]?.rows || []).length;
-  // ...but both are read off the Push's own focused agent. With a worktree
-  // picked in the rail the pane below is about a different checkout, and a
-  // badge counting the other one is worse than no badge: GIT read 0 next to
-  // a pane listing five open PRs.
-  const TAB_COUNT = picked ? {} : { tests: testsCount, prs: prsCount };
+  // ...but that one is read off the Push's own focused agent. With a
+  // worktree picked in the rail the pane below is about a different
+  // checkout, and a badge counting the other one is worse than no badge.
+  //
+  // GIT counts what has not been committed yet -- files changed, staged or
+  // not, untracked included -- in whichever checkout is in view, picked or
+  // focused. It used to count open PRs, which is a fact about the remote;
+  // the number worth a glance is the one you are about to lose or ship.
+  const [dirty, setDirty] = useState(null);
+  useEffect(() => {
+    setDirty(null);
+    if (!base || !scopePath) return undefined;
+    let live = true;
+    const pull = () => getDirty(base, scopePath).then((n) => live && setDirty(n)).catch(() => live && setDirty(null));
+    pull();
+    const timer = setInterval(pull, 5000);
+    return () => { live = false; clearInterval(timer); };
+  }, [base, scopePath]);
+  const TAB_COUNT = {
+    ...(picked ? {} : { tests: testsCount }),
+    ...(dirty == null ? {} : { prs: dirty }),
+  };
   const filled = macros.filter(Boolean).length;
 
   // Two different facts were being read as one status. Whether push_cc

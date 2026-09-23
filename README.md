@@ -706,10 +706,12 @@ Pick a worktree nobody is in and **focus** says so by name, with **＋ new
 agent**, **close** (stop looking at it) and **close and delete worktree**.
 Guardrails and CI/CD are unaffected and keep reading that checkout — they used
 to be replaced by this too, which made picking a repo just to look at its tests
-or its pull requests impossible. The tab counts go quiet while a pick is up:
-they are read off the Push's own focused agent, so beside a picked worktree
-they are counting a different checkout, and CI/CD read `· 0` over a pane
-listing five open PRs. It
+or its pull requests impossible. GUARDRAILS' count goes quiet while a pick
+is up: it is read off the Push's own focused agent, so beside a picked
+worktree it would be counting a different checkout. GIT's count is files
+changed and not committed (`/work/dirty` -- staged or not, untracked
+included, a file counted once) in whichever checkout is in view, picked or
+focused, so it stays. It
 is also where you land after closing an agent, which otherwise left you staring
 at whichever seat the Push happened to be on with no sign of what you had just
 emptied. A dirty tree comes back as git's own refusal, with a second key to
