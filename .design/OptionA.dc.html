@@ -1,0 +1,262 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #0b0b0d; color: #e6e6e6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+    a { color: #7aa2d2; } a:hover { color: #b8d0ea; }
+    .m { font-family: Menlo, ui-monospace, monospace; }
+  </style>
+</helmet>
+<svg width="0" height="0" style="position: absolute" aria-hidden="true"><defs>
+<g id="s"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></g></g>
+<symbol id="i-focus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M6.5 9.5l2.8 2.5-2.8 2.5"/><path d="M13 15h4.5"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3v5.7c0 4.2-3 7.5-7.5 9.3-4.5-1.8-7.5-5.1-7.5-9.3V6z"/><path d="M9 12l2.2 2.2L15.6 9.8"/></symbol>
+<symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="4.5" r="2"/><circle cx="6.5" cy="19.5" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 6.5v11"/><path d="M17.5 10v1.5a4 4 0 01-4 4h-3.2"/></symbol>
+<symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17.5a9 9 0 1116 0"/><path d="M12 17.5l4-4.5"/><circle cx="12" cy="17.5" r="1.1"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5A1.5 1.5 0 014.5 5h4.2l2 2.4h8.8A1.5 1.5 0 0121 8.9v9.6A1.5 1.5 0 0119.5 20h-15A1.5 1.5 0 013 18.5z"/></symbol>
+<symbol id="i-tree" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v9.5a2.5 2.5 0 002.5 2.5H18"/><path d="M15 13l3 3-3 3"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7.5" width="17" height="12" rx="3.5"/><path d="M12 3.5v4"/><circle cx="9" cy="13.5" r="1"/><circle cx="15" cy="13.5" r="1"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v5"/><path d="M15 3v5"/><path d="M6.5 8h11v3.5a5.5 5.5 0 01-11 0z"/><path d="M12 17v4"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5c.9 4.2 2.4 5.7 6.5 6.5-4.1.8-5.6 2.3-6.5 6.5-.9-4.2-2.4-5.7-6.5-6.5 4.1-.8 5.6-2.3 6.5-6.5z"/><path d="M18 16.5c.4 1.8 1 2.4 2.8 2.8-1.8.4-2.4 1-2.8 2.8-.4-1.8-1-2.4-2.8-2.8 1.8-.4 2.4-1 2.8-2.8z"/></symbol>
+<symbol id="i-hook" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13.5a4 4 0 005.7 0l2.8-2.8a4 4 0 10-5.7-5.7L11.4 6.4"/><path d="M14 10.5a4 4 0 00-5.7 0l-2.8 2.8a4 4 0 105.7 5.7l1.4-1.4"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
+<symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l.9-3.9L15.6 5.4a2 2 0 012.8 0l1.2 1.2a2 2 0 010 2.8L8.9 20z"/></symbol>
+<symbol id="i-compact" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h5V4"/><path d="M20 9h-5V4"/><path d="M4 15h5v5"/><path d="M20 15h-5v5"/></symbol>
+<symbol id="i-clear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M6 18L18 6"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></symbol>
+<symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="19" r="1.3"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"/><path d="M5.5 11.5L12 5l6.5 6.5"/></symbol>
+<symbol id="i-slash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 4L8.5 20"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 10-1.9 6.3"/><path d="M20 20v-5h-5"/></symbol>
+<symbol id="i-chev-d" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9.5l6 6 6-6"/></symbol>
+<symbol id="i-chev-r" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 6l6 6-6 6"/></symbol>
+<symbol id="i-split" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M12 4.5v15"/></symbol>
+<symbol id="i-scope" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5l8.5 15h-17z"/><path d="M12 10v4"/><circle cx="12" cy="17" r=".9"/></symbol>
+<symbol id="i-push" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9h4v4H7z"/><path d="M14.5 9h2.5M14.5 12h2.5M14.5 15h2.5"/><path d="M7 16h4"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l5 6-5 6"/><path d="M12 18h8"/></symbol>
+</defs></svg>
+<div style="width: 1366px; height: 1024px; display: flex; flex-direction: column; background: #0b0b0d; overflow: hidden">
+
+  <!-- ONE band -->
+  <div style="min-height: 60px; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #24242a; background: #101014">
+    <div style="display: flex; align-items: center; gap: 9px; padding-left: 4px">
+      <span style="color: #3cd05a; display: inline-flex"><svg width="20" height="20"><use href="#i-push"/></svg></span>
+      <div style="color: #e6e6e6; font-size: 15px; font-weight: 600">midiAI</div>
+    </div>
+    <div style="width: 1px; height: 24px; background: #24242a"></div>
+
+    <div style="display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border-radius: 8px; background: #16161c; border: 1px solid #24242a">
+      <span style="color: #7aa2d2; display: inline-flex"><svg width="17" height="17"><use href="#i-folder"/></svg></span>
+      <div style="color: #e6e6e6; font-size: 13px; font-weight: 600">midiAI</div>
+      <span style="color: #5b616b; display: inline-flex"><svg width="15" height="15"><use href="#i-branch"/></svg></span>
+      <div class="m" style="color: #7aa2d2; font-size: 12px">main</div>
+      <span style="color: #33333c; display: inline-flex"><svg width="15" height="15"><use href="#i-chev-d"/></svg></span>
+    </div>
+
+    <!-- icon tabs: the active one earns its word -->
+    <div style="display: flex; align-items: center; gap: 4px; margin-left: 6px">
+      <div style="display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 14px; border-radius: 8px; background: #24242a; color: #7aa2d2">
+        <svg width="20" height="20"><use href="#i-focus"/></svg>
+        <div style="font-size: 13px; font-weight: 600; letter-spacing: .3px">focus</div>
+      </div>
+      <div style="width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #5b616b">
+        <svg width="20" height="20"><use href="#i-shield"/></svg>
+      </div>
+      <div style="position: relative; width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #9aa0aa">
+        <svg width="20" height="20"><use href="#i-branch"/></svg>
+        <div style="position: absolute; top: 7px; right: 6px; min-width: 15px; height: 15px; border-radius: 8px; background: #e0d02c; color: #0b0b0d; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center">2</div>
+      </div>
+      <div style="width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #5b616b">
+        <svg width="20" height="20"><use href="#i-gauge"/></svg>
+      </div>
+    </div>
+
+    <div style="flex-grow: 1"></div>
+    <div class="m" style="color: #33333c; font-size: 10px">~/midiAI</div>
+    <div style="width: 44px; height: 44px; border-radius: 8px; border: 1px solid #1d1d23; background: #08080a; display: flex; align-items: center; justify-content: center; color: #7aa2d2">
+      <svg width="20" height="20"><use href="#i-refresh"/></svg>
+    </div>
+    <div style="width: 44px; height: 44px; border-radius: 8px; border: 1px solid #1d1d23; background: #08080a; display: flex; align-items: center; justify-content: center; color: #7aa2d2">
+      <svg width="20" height="20"><use href="#i-dots"/></svg>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; min-height: 0">
+
+    <!-- rail 268: one tree, icons carry the row types -->
+    <div style="width: 268px; border-right: 1px solid #24242a; padding: 12px; display: flex; flex-direction: column; min-height: 0">
+      <div style="display: flex; align-items: center; gap: 8px; height: 38px; border-radius: 8px; border: 1px solid #1d1d23; background: #08080a; padding: 0 10px; margin-bottom: 10px">
+        <span style="color: #33333c; display: inline-flex"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+        <div style="color: #33333c; font-size: 12px">repos, agents, MCPs</div>
+        <div style="flex-grow: 1"></div>
+        <span style="color: #33333c; display: inline-flex"><svg width="16" height="16"><use href="#i-scope"/></svg></span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 7px; padding: 8px 6px">
+          <span style="color: #33333c; display: inline-flex"><svg width="14" height="14"><use href="#i-chev-d"/></svg></span>
+          <span style="color: #7aa2d2; display: inline-flex"><svg width="16" height="16"><use href="#i-folder"/></svg></span>
+          <div style="color: #e6e6e6; font-size: 12px; font-weight: 600">midiAI</div>
+          <div style="flex-grow: 1"></div>
+          <span style="color: #33333c; display: inline-flex"><svg width="16" height="16"><use href="#i-plus"/></svg></span>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 7px; padding: 6px 6px 6px 22px">
+          <span style="color: #5b616b; display: inline-flex"><svg width="14" height="14"><use href="#i-branch"/></svg></span>
+          <div class="m" style="color: #7aa2d2; font-size: 11px">main</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px 6px 8px 34px; border-radius: 6px; background: #16161c; border-left: 2px solid #f0c828">
+          <span style="color: #f0c828; display: inline-flex"><svg width="16" height="16"><use href="#i-bot"/></svg></span>
+          <div style="color: #e6e6e6; font-size: 12px; font-weight: 600">claude-1</div>
+          <div style="flex-grow: 1"></div>
+          <div class="m" style="color: #5b616b; font-size: 10px">opus</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px 6px 8px 34px">
+          <span style="color: #3cd05a; display: inline-flex"><svg width="16" height="16"><use href="#i-bot"/></svg></span>
+          <div style="color: #9aa0aa; font-size: 12px">claude-2</div>
+          <div style="flex-grow: 1"></div>
+          <div class="m" style="color: #5b616b; font-size: 10px">sonnet</div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 7px; padding: 6px 6px 6px 22px">
+          <span style="color: #5b616b; display: inline-flex"><svg width="14" height="14"><use href="#i-tree"/></svg></span>
+          <div class="m" style="color: #9aa0aa; font-size: 11px">fix-pty</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px 6px 8px 34px">
+          <span style="color: #b04ae0; display: inline-flex"><svg width="16" height="16"><use href="#i-bot"/></svg></span>
+          <div style="color: #9aa0aa; font-size: 12px">claude-3</div>
+          <div style="flex-grow: 1"></div>
+          <div style="display: flex; gap: 4px; color: #33333c">
+            <svg width="15" height="15"><use href="#i-pencil"/></svg>
+            <svg width="15" height="15"><use href="#i-compact"/></svg>
+            <svg width="15" height="15"><use href="#i-clear"/></svg>
+            <svg width="15" height="15"><use href="#i-x"/></svg>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 7px; padding: 6px 6px 6px 22px">
+          <span style="color: #33333c; display: inline-flex"><svg width="14" height="14"><use href="#i-tree"/></svg></span>
+          <div class="m" style="color: #5b616b; font-size: 11px">redesign</div>
+          <div style="flex-grow: 1"></div>
+          <div style="color: #33333c; font-size: 10px">empty</div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 7px; padding: 10px 6px 8px">
+          <span style="color: #33333c; display: inline-flex"><svg width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          <span style="color: #5b616b; display: inline-flex"><svg width="16" height="16"><use href="#i-folder"/></svg></span>
+          <div style="color: #9aa0aa; font-size: 12px">postcaptain</div>
+          <div style="flex-grow: 1"></div>
+          <span style="color: #3cd05a; display: inline-flex"><svg width="14" height="14"><use href="#i-bot"/></svg></span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 7px; padding: 8px 6px">
+          <span style="color: #33333c; display: inline-flex"><svg width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          <span style="color: #5b616b; display: inline-flex"><svg width="16" height="16"><use href="#i-folder"/></svg></span>
+          <div style="color: #9aa0aa; font-size: 12px">course-console</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 7px; padding: 8px 6px">
+          <span style="color: #33333c; display: inline-flex"><svg width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          <span style="color: #5b616b; display: inline-flex"><svg width="16" height="16"><use href="#i-folder"/></svg></span>
+          <div style="color: #9aa0aa; font-size: 12px">simplerdev2026</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 7px; padding: 8px 6px">
+          <span style="color: #33333c; display: inline-flex"><svg width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          <span style="color: #5b616b; display: inline-flex"><svg width="16" height="16"><use href="#i-folder"/></svg></span>
+          <div style="color: #9aa0aa; font-size: 12px">herdr</div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid #16161c">
+        <div style="display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 6px">
+          <span style="color: #5b616b; display: inline-flex"><svg width="17" height="17"><use href="#i-plug"/></svg></span>
+          <div style="color: #9aa0aa; font-size: 12px">MCPs</div>
+          <div style="flex-grow: 1"></div>
+          <span style="color: #e03c3c; display: inline-flex"><svg width="15" height="15"><use href="#i-alert"/></svg></span>
+          <div style="color: #e03c3c; font-size: 11px; font-weight: 600">2</div>
+        </div>
+        <div style="height: 40px; border-radius: 8px; border: 1px dashed #33333c; display: flex; align-items: center; justify-content: center; gap: 8px; color: #5b616b">
+          <svg width="17" height="17"><use href="#i-plus"/></svg>
+          <div style="font-size: 12px">new agent</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- centre -->
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 14px 20px 10px">
+        <span style="color: #f0c828; display: inline-flex"><svg width="19" height="19"><use href="#i-bot"/></svg></span>
+        <div style="color: #e6e6e6; font-size: 15px; font-weight: 600">claude-1</div>
+        <div class="m" style="color: #5b616b; font-size: 11px">working · opus · high · 2h14m</div>
+        <div style="flex-grow: 1"></div>
+        <div style="display: flex; gap: 2px; color: #5b616b">
+          <div style="width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center"><svg width="17" height="17"><use href="#i-pencil"/></svg></div>
+          <div style="width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center"><svg width="17" height="17"><use href="#i-compact"/></svg></div>
+          <div style="width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center"><svg width="17" height="17"><use href="#i-clear"/></svg></div>
+          <div style="width: 34px; height: 34px; border-radius: 6px; display: flex; align-items: center; justify-content: center"><svg width="17" height="17"><use href="#i-x"/></svg></div>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1; padding: 6px 20px 16px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+        <div style="align-self: flex-end; max-width: 55%; border-radius: 8px; background: #16161c; border: 1px solid #24242a; padding: 10px 12px; color: #9aa0aa; font-size: 12px">let's mock up a redesign of the app</div>
+        <div style="display: flex; flex-direction: column; gap: 7px">
+          <div style="height: 9px; width: 94%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 88%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 66%; border-radius: 3px; background: #16161c"></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px; border-left: 2px solid #24242a; padding-left: 12px">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span style="color: #7aa2d2; display: inline-flex"><svg width="15" height="15"><use href="#i-terminal"/></svg></span>
+            <div class="m" style="color: #7aa2d2; font-size: 11px">rtk git status</div>
+          </div>
+          <div style="height: 8px; width: 40%; border-radius: 3px; background: #101014"></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 7px">
+          <div style="height: 9px; width: 91%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 79%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 95%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 84%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 42%; border-radius: 3px; background: #16161c"></div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px"><div style="width: 7px; height: 7px; border-radius: 4px; background: #f0c828"></div><div class="m" style="color: #f0c828; font-size: 11px">Working — reading app/App.js</div></div>
+      </div>
+
+      <div style="border-top: 1px solid #16161c; padding: 12px 20px; display: flex; align-items: center; gap: 10px">
+        <div style="flex-grow: 1; height: 48px; border-radius: 8px; border: 1px solid #1d1d23; background: #08080a; display: flex; align-items: center; padding: 0 12px; gap: 9px">
+          <span style="color: #7aa2d2; display: inline-flex"><svg width="17" height="17"><use href="#i-slash"/></svg></span>
+          <div style="color: #33333c; font-size: 13px">type to claude-1…</div>
+        </div>
+        <div style="width: 48px; height: 48px; border-radius: 8px; border: 1px solid #1d1d23; background: #101016; display: flex; align-items: center; justify-content: center; color: #7aa2d2">
+          <svg width="20" height="20"><use href="#i-send"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- right: 60px icon strip -->
+    <div style="width: 60px; border-left: 1px solid #24242a; background: #101014; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0">
+      <div style="position: relative; width: 44px; height: 44px; border-radius: 8px; border: 1px solid #33333c; background: #16161c; display: flex; align-items: center; justify-content: center; color: #7aa2d2">
+        <svg width="20" height="20"><use href="#i-grid"/></svg>
+        <div style="position: absolute; top: -4px; right: -4px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: #4a86d0; color: #0b0b0d; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center">19</div>
+      </div>
+      <div style="width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #5b616b"><svg width="20" height="20"><use href="#i-spark"/></svg></div>
+      <div style="width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #5b616b"><svg width="20" height="20"><use href="#i-hook"/></svg></div>
+      <div style="width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #5b616b"><svg width="20" height="20"><use href="#i-terminal"/></svg></div>
+      <div style="width: 28px; height: 1px; background: #24242a; margin: 4px 0"></div>
+      <div style="width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #5b616b"><svg width="20" height="20"><use href="#i-push"/></svg></div>
+      <div style="flex-grow: 1"></div>
+      <div style="width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #33333c"><svg width="18" height="18"><use href="#i-chev-r"/></svg></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

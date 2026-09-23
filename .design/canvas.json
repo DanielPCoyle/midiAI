@@ -1,166 +1,17 @@
 {
-  "pages": [
-    {
-      "id": "page-1",
-      "name": "The layout"
-    },
-    {
-      "id": "page-2",
-      "name": "Every view"
-    }
-  ],
   "artboards": [
-    {
-      "file": "Main.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1194,
-      "h": 834,
-      "title": "At rest",
-      "page": "page-1"
-    },
-    {
-      "file": "Question.dc.html",
-      "x": 1314,
-      "y": 0,
-      "w": 1194,
-      "h": 834,
-      "title": "A question",
-      "page": "page-1"
-    },
-    {
-      "file": "GridMode.dc.html",
-      "x": 2628,
-      "y": 0,
-      "w": 1194,
-      "h": 834,
-      "title": "Grid mode",
-      "page": "page-1"
-    },
-    {
-      "file": "EditPad.dc.html",
-      "x": 0,
-      "y": 1010,
-      "w": 1194,
-      "h": 834,
-      "title": "Editing a pad",
-      "page": "page-1"
-    },
-    {
-      "file": "PushMirror.dc.html",
-      "x": 1314,
-      "y": 1010,
-      "w": 1194,
-      "h": 834,
-      "title": "Push mirror mode",
-      "page": "page-1"
-    },
-    {
-      "file": "Desktop.dc.html",
-      "x": 2628,
-      "y": 1010,
-      "w": 1728,
-      "h": 1000,
-      "title": "Desktop full screen",
-      "page": "page-1"
-    },
-    {
-      "file": "ViewSessions.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1194,
-      "h": 834,
-      "title": "sessions \u2014 pads are subagents",
-      "page": "page-2"
-    },
-    {
-      "file": "ViewTests.dc.html",
-      "x": 1314,
-      "y": 0,
-      "w": 1194,
-      "h": 834,
-      "title": "tests \u2014 pads are test items",
-      "page": "page-2"
-    },
-    {
-      "file": "ViewPrs.dc.html",
-      "x": 0,
-      "y": 1010,
-      "w": 1194,
-      "h": 834,
-      "title": "prs \u2014 pads stay macros",
-      "page": "page-2"
-    },
-    {
-      "file": "ViewUsage.dc.html",
-      "x": 1314,
-      "y": 1010,
-      "w": 1194,
-      "h": 834,
-      "title": "usage \u2014 three altitudes",
-      "page": "page-2"
-    }
+    { "file": "Current.dc.html", "x": 0,    "y": 0, "w": 1366, "h": 1024, "title": "Today — three fixed columns" },
+    { "file": "OptionA.dc.html", "x": 1466, "y": 0, "w": 1366, "h": 1024, "title": "Option A — One chrome band  ·  CHOSEN" },
+    { "file": "Main.dc.html",    "x": 2932, "y": 0, "w": 1366, "h": 1024, "title": "Option B — Agent-first, one surface" },
+    { "file": "OptionC.dc.html", "x": 4398, "y": 0, "w": 1366, "h": 1024, "title": "Option C — Multi-agent cockpit" },
+    { "file": "Icons.dc.html",   "x": 1466, "y": 1224, "w": 1366, "h": 700, "title": "Icon set" }
   ],
   "annotations": [
-    {
-      "id": "thesis",
-      "x": 0,
-      "y": -190,
-      "w": 620,
-      "page": "page-1",
-      "text": "The thesis: stop mirroring the Push's geometry.\n\nThe iPad has a better screen than the Push and no reason to be 8x8. Same state, rendered natively \u2014 sessions as a rail with what each is doing, the live session at real type sizes, macros as the 19 things you actually have rather than 64 cells of which 45 are blank."
-    },
-    {
-      "id": "tension",
-      "x": 2628,
-      "y": -190,
-      "w": 620,
-      "page": "page-1",
-      "text": "The tension, not papered over: position is meaningful.\n\nA row is a chain, and muscle memory on the hardware depends on where a pad sits. So the macro pane has two modes \u2014 Library to find and fire, Grid to arrange and see chains at 1:1 with the Push."
-    },
-    {
-      "id": "question-note",
-      "x": 1314,
-      "y": -190,
-      "w": 620,
-      "page": "page-1",
-      "text": "A question hides the macros outright, exactly as the Push does \u2014 the grid goes dark there because there is one grid, and the same rule holds here for the same reason: while a session is waiting on you there is one thing to do."
-    },
-    {
-      "id": "palette-note",
-      "x": 0,
-      "y": 1900,
-      "w": 620,
-      "page": "page-1",
-      "text": "Pad colours expanded to ten: Black, White, Red, Orange, Yellow, Green, Cyan, Blue, Indigo, Violet.\n\nThe indices under each swatch are the ones you gave me \u2014 they disagree with what push_cc.py uses today on every existing colour. Worth settling before this is built."
-    },
-    {
-      "id": "mirror-note",
-      "x": 1314,
-      "y": 1900,
-      "w": 620,
-      "page": "page-1",
-      "text": "Today's entire app, kept as one mode rather than the frame everything hangs off. Every row shares the same eight columns, so a pad sits under the button that governs its column."
-    },
-    {
-      "id": "views-rule",
-      "x": 0,
-      "y": -230,
-      "w": 900,
-      "page": "page-2",
-      "text": "Every view has two halves on the Push: what the screen shows, and what the 64 pads become. The rail on the right is that second half \u2014 it is always \"what the pads are right now\".\n\nfocus \u2192 the macros.  sessions \u2192 the subagents this session spawned.  tests \u2192 the test items at this zoom.  prs and usage \u2192 the Push darkens the grid, because 64 lit pads about something else says nothing; the iPad has the room, so the macros stay reachable there."
-    },
-    {
-      "id": "modes-note",
-      "x": 1314,
-      "y": -230,
-      "w": 900,
-      "page": "page-2",
-      "text": "The second modes mostly dissolve. focus 2/2 is the shortcuts grid \u2014 the session shown as what you can say to it \u2014 which is just the macro library, already on screen. sessions 2/2 names the subagents on the glass because the pads cannot; here they are named in the rail already. usage keeps its three altitudes as a segmented walk.\n\nSubagent rows are illustrative: none are on disk right now. Everything else is real."
-    }
+    { "id": "today", "x": 0, "y": -300, "w": 620, "text": "TODAY, at 1366×1024 (12.9\" iPad).\n\nThree bands of chrome before any content — header 56, repo bar 27, pane title 45 — then three columns where two are fixed furniture: rail 268, pads 344. The transcript gets 754px of 1366.\n\nWhat breaks: at 1194 (11\" iPad landscape) width is below the 1200 `wide` breakpoint, so the rail is already a modal drawer. The layout the README describes only exists on the largest iPad.\n\nFour separate navigation systems: header views, rail tabs (agents/mcps), pane sub-tabs, right-panel picker. \"hooks\" appears in two of them meaning different things — git hooks and Claude Code hooks." },
+    { "id": "opt-a", "x": 1466, "y": -300, "w": 620, "text": "OPTION A — One chrome band.  ← CHOSEN, and now built.\nAxis: reclaim space, keep the three-column model.\n\nHeader and repo bar merge into one 56px row: status dot, identity, the checkout as a chip, the view tabs, the path, ⋮. The rail becomes ONE tree — repo ▸ worktree ▸ the agents living in it — so \"which worktree is this agent in\" is answered by position instead of a longest-prefix match read by eye, and the two 30vh scroll boxes collapse to one list. The pads column becomes a 56px strip of keys that expands on tap.\n\nTranscript: 754 → ~1040px. 27px of vertical chrome recovered.\n\nTradeoff, stated honestly: still three columns, so it still falls apart below 1200. This is the smallest honest diff, not the boldest layout.\n\nNOTE: this drawing is the icon-forward pass. The shipped code keeps the original TEXT tabs (FOCUS · GUARDRAILS · GIT · USAGE) and uses icons only in the right-hand strip — which is what was picked." },
+    { "id": "opt-b", "x": 2932, "y": -300, "w": 620, "text": "OPTION B — Agent-first, one surface.  NOT BUILT — rejected.\nAxis: fewest persistent surfaces; the transcript IS the app.\n\nThe rail becomes a 76px seat strip; projects and MCPs go behind its folder key; the view lenses move into the pane's own title row; the prompt library becomes a sheet over the composer opened by \"/\".\n\nTranscript: 754 → 1290px, one band of chrome, same layout down to a phone.\n\nWhy it lost: it makes the pads two gestures instead of one and hides the projects tree, and the seat strip is a bigger bet than the problem needed." },
+    { "id": "opt-c", "x": 4398, "y": -300, "w": 620, "text": "OPTION C — Multi-agent cockpit.  NOT BUILT.\nAxis: the app is for watching SEVERAL agents, not one.\n\nOne or two agent panes side by side, each with its own view tabs — a transcript beside another repo's CI. Drag a seat chip in to add a pane. One command bar spans the width and targets the focused pane.\n\nStill the only option that answers \"is the other agent blocked?\" without leaving the one you're reading — worth revisiting once A has settled, since A's rail already knows which agent is in which worktree.\n\nTradeoff: most work by far, and each transcript drops to ~630px." },
+    { "id": "icons", "x": 1466, "y": 944, "w": 620, "text": "ICON SET — in use, but only where A actually needs it: the collapsed right-hand strip (prompts / skills / hooks) and the rail's row types.\n\nOne stroke weight, 24px grid, currentColor so a seat's status hue drives its own glyph. No emoji, no fills.\n\nThe rule that keeps it from becoming a puzzle: an icon that is a NAVIGATION choice keeps its word. That is why A's view tabs stayed text — a row of four glyphs all meaning \"a view of this checkout\" is exactly the kind of thing nobody learns." }
   ],
-  "launch": {
-    "view": "canvas",
-    "page": "page-2"
-  }
+  "launch": { "view": "canvas" }
 }

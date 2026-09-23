@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #0b0b0d; color: #e6e6e6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+    a { color: #7aa2d2; } a:hover { color: #b8d0ea; }
+    .m { font-family: Menlo, ui-monospace, monospace; }
+  </style>
+</helmet>
+
+<div style="width: 1366px; height: 1024px; display: flex; flex-direction: column; background: #0b0b0d; overflow: hidden">
+
+  <!-- band 1: header -->
+  <div style="min-height: 56px; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid #24242a">
+    <div style="color: #e6e6e6; font-size: 16px; font-weight: 600">midiAI</div>
+    <div style="display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 12px; border-radius: 6px; border: 1px solid #1d1d23; background: #08080a">
+      <div style="width: 8px; height: 8px; border-radius: 4px; background: #3cd05a"></div>
+      <div style="color: #9aa0aa; font-size: 12px">push_cc up · 3 agents</div>
+    </div>
+    <div style="display: flex; align-items: stretch; gap: 18px; margin-left: 12px; align-self: stretch">
+      <div style="display: flex; align-items: center; padding: 0 2px; border-bottom: 2px solid #7aa2d2; color: #7aa2d2; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px">focus</div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 0 2px; border-bottom: 2px solid transparent; color: #9aa0aa; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px">guardrails <span style="color: #5b616b; font-size: 12px">0</span></div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 0 2px; border-bottom: 2px solid transparent; color: #9aa0aa; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px">ci/cd <span style="color: #e0d02c; font-size: 12px; font-weight: 600">2</span></div>
+      <div style="display: flex; align-items: center; padding: 0 2px; border-bottom: 2px solid transparent; color: #9aa0aa; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px">usage</div>
+    </div>
+    <div style="flex-grow: 1"></div>
+    <div style="height: 40px; min-width: 96px; display: flex; align-items: center; justify-content: center; padding: 0 12px; border-radius: 6px; border: 1px solid #1d1d23; background: #101016; color: #7aa2d2; font-size: 12px">following the Push</div>
+    <div style="height: 40px; width: 40px; display: flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid #1d1d23; background: #08080a; color: #7aa2d2; font-size: 15px">⋮</div>
+  </div>
+
+  <!-- band 2: repo bar -->
+  <div style="display: flex; align-items: baseline; gap: 8px; padding: 5px 20px; border-bottom: 1px solid #24242a; background: #101014">
+    <div style="color: #e6e6e6; font-size: 12px; font-weight: 600">midiAI</div>
+    <div class="m" style="color: #7aa2d2; font-size: 11px">main</div>
+    <div style="flex-grow: 1"></div>
+    <div class="m" style="color: #33333c; font-size: 10px">~/midiAI</div>
+  </div>
+
+  <!-- body -->
+  <div style="flex-grow: 1; display: flex; min-height: 0">
+
+    <!-- rail 268 -->
+    <div style="width: 268px; border-right: 1px solid #24242a; padding: 14px 12px; display: flex; flex-direction: column; gap: 0; min-height: 0">
+      <div style="color: #5b616b; font-size: 10px; letter-spacing: 1.2px; padding: 0 4px 8px">PROJECTS</div>
+      <div style="display: flex; flex-direction: column; gap: 2px; height: 300px; overflow: hidden; border-bottom: 1px solid #16161c; padding-bottom: 8px">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-radius: 6px; background: #16161c"><div style="color: #e6e6e6; font-size: 12px">▾ midiAI</div><div style="flex-grow: 1"></div><div class="m" style="color: #5b616b; font-size: 10px">main</div></div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 6px 7px 18px"><div style="width: 6px; height: 6px; border-radius: 3px; background: #f0c828"></div><div class="m" style="color: #9aa0aa; font-size: 11px">↳ fix-pty</div></div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 6px 7px 18px"><div style="width: 6px; height: 6px; border-radius: 3px; background: #33333c"></div><div class="m" style="color: #9aa0aa; font-size: 11px">↳ redesign</div></div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 6px"><div style="color: #e6e6e6; font-size: 12px">▸ postcaptain</div></div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 6px"><div style="color: #e6e6e6; font-size: 12px">▸ course-console</div></div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 6px"><div style="color: #e6e6e6; font-size: 12px">▸ simplerdev2026</div></div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 6px"><div style="color: #e6e6e6; font-size: 12px">▸ herdr</div></div>
+        <div style="text-align: center; color: #33333c; font-size: 10px; padding-top: 4px">▾ 30vh — scrolls</div>
+      </div>
+
+      <div style="display: flex; align-items: baseline; gap: 8px; padding: 14px 4px 8px">
+        <div style="color: #e6e6e6; font-size: 10px; letter-spacing: 1.2px; border-bottom: 1px solid #7aa2d2; padding-bottom: 4px">AGENTS</div>
+        <div style="color: #5b616b; font-size: 10px; letter-spacing: 1.2px">MCPS <span style="color: #e03c3c">2</span></div>
+        <div style="flex-grow: 1"></div>
+        <div style="color: #5b616b; font-size: 11px">all / here</div>
+      </div>
+      <div style="height: 30px; border-radius: 6px; border: 1px solid #1d1d23; background: #08080a; display: flex; align-items: center; padding: 0 10px; color: #33333c; font-size: 11px; margin-bottom: 8px">search</div>
+      <div style="display: flex; flex-direction: column; gap: 6px; flex-grow: 1; overflow: hidden">
+        <div style="border-radius: 6px; border: 1px solid #33333c; background: #16161c; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px">
+          <div style="display: flex; align-items: center; gap: 6px"><div style="width: 7px; height: 7px; border-radius: 4px; background: #f0c828"></div><div style="color: #e6e6e6; font-size: 12px; font-weight: 600">claude-1</div><div style="flex-grow: 1"></div><div style="color: #5b616b; font-size: 11px; letter-spacing: 2px">✎ ⊟ ⊘ ×</div></div>
+          <div class="m" style="color: #5b616b; font-size: 10px">opus · high · working</div>
+        </div>
+        <div style="border-radius: 6px; border: 1px solid #24242a; background: #101014; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px">
+          <div style="display: flex; align-items: center; gap: 6px"><div style="width: 7px; height: 7px; border-radius: 4px; background: #3cd05a"></div><div style="color: #e6e6e6; font-size: 12px">claude-2</div><div style="flex-grow: 1"></div><div style="color: #33333c; font-size: 11px; letter-spacing: 2px">✎ ⊟ ⊘ ×</div></div>
+          <div class="m" style="color: #5b616b; font-size: 10px">sonnet · idle</div>
+        </div>
+        <div style="border-radius: 6px; border: 1px solid #24242a; background: #101014; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px">
+          <div style="display: flex; align-items: center; gap: 6px"><div style="width: 7px; height: 7px; border-radius: 4px; background: #b04ae0"></div><div style="color: #e6e6e6; font-size: 12px">claude-3</div><div style="flex-grow: 1"></div><div style="color: #33333c; font-size: 11px; letter-spacing: 2px">✎ ⊟ ⊘ ×</div></div>
+          <div class="m" style="color: #5b616b; font-size: 10px">opus · done</div>
+        </div>
+        <div style="text-align: center; color: #33333c; font-size: 10px; padding-top: 2px">▾ 30vh — scrolls</div>
+      </div>
+      <div style="height: 34px; border-radius: 6px; border: 1px dashed #33333c; display: flex; align-items: center; justify-content: center; color: #5b616b; font-size: 11px; margin-top: 8px">＋ new agent</div>
+    </div>
+
+    <!-- centre -->
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+      <!-- band 3: pane title -->
+      <div style="display: flex; align-items: baseline; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #16161c">
+        <div style="color: #e6e6e6; font-size: 15px; font-weight: 600">claude-1</div>
+        <div class="m" style="color: #5b616b; font-size: 11px">working · opus · high</div>
+        <div style="flex-grow: 1"></div>
+        <div style="color: #7aa2d2; font-size: 12px">prompts ▾</div>
+        <div style="color: #5b616b; font-size: 12px">⌄ pads 19</div>
+      </div>
+
+      <div style="flex-grow: 1; padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+        <div style="align-self: flex-end; max-width: 60%; border-radius: 8px; background: #16161c; border: 1px solid #24242a; padding: 10px 12px; color: #9aa0aa; font-size: 12px">let's mock up a redesign of the app</div>
+        <div style="display: flex; flex-direction: column; gap: 7px">
+          <div style="height: 9px; width: 92%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 84%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 61%; border-radius: 3px; background: #16161c"></div>
+        </div>
+        <div style="border-left: 2px solid #24242a; padding-left: 10px; display: flex; flex-direction: column; gap: 6px">
+          <div class="m" style="color: #7aa2d2; font-size: 11px">Bash · rtk git status</div>
+          <div style="height: 8px; width: 44%; border-radius: 3px; background: #101014"></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 7px">
+          <div style="height: 9px; width: 88%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 73%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 90%; border-radius: 3px; background: #16161c"></div>
+          <div style="height: 9px; width: 38%; border-radius: 3px; background: #16161c"></div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px"><div style="width: 7px; height: 7px; border-radius: 4px; background: #f0c828"></div><div class="m" style="color: #f0c828; font-size: 11px">Working — reading app/App.js</div></div>
+      </div>
+
+      <div style="border-top: 1px solid #16161c; padding: 12px 16px; display: flex; align-items: center; gap: 10px">
+        <div style="flex-grow: 1; height: 44px; border-radius: 8px; border: 1px solid #1d1d23; background: #08080a; display: flex; align-items: center; padding: 0 12px; color: #33333c; font-size: 13px">type to claude-1…</div>
+        <div style="height: 44px; min-width: 72px; border-radius: 6px; border: 1px solid #1d1d23; background: #101016; display: flex; align-items: center; justify-content: center; color: #7aa2d2; font-size: 13px">send</div>
+      </div>
+    </div>
+
+    <!-- pads 344 -->
+    <div style="width: 344px; border-left: 1px solid #24242a; display: flex; flex-direction: column; min-height: 0">
+      <div style="padding: 14px 12px 10px; border-bottom: 1px solid #24242a; display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; align-items: center; gap: 8px">
+          <div style="color: #5b616b; font-size: 10px; letter-spacing: 1.2px">PROMPTS</div>
+          <div style="flex-grow: 1"></div>
+          <div style="color: #33333c; font-size: 11px">skills · hooks</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px"><div style="color: #e6e6e6; font-size: 15px; font-weight: 600">library</div><div style="color: #33333c; font-size: 11px; font-weight: 400">19 pads · page 1/2</div></div>
+      </div>
+      <div style="padding: 12px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px">
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #4a86d0; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #3cd05a; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #e0d02c; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #b04ae0; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #e08a2c; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #2cd0d0; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #6a5ae0; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #e03c3c; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #16161c; border: 1px solid #24242a"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #4a86d0; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #16161c; border: 1px solid #24242a"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #3cd05a; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #16161c; border: 1px solid #24242a"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #16161c; border: 1px solid #24242a"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #e08a2c; opacity: .85"></div>
+        <div style="aspect-ratio: 1; border-radius: 6px; background: #16161c; border: 1px solid #24242a"></div>
+      </div>
+      <div style="padding: 0 12px; display: flex; flex-direction: column; gap: 6px">
+        <div style="height: 30px; border-radius: 6px; background: #101014; border: 1px solid #24242a; display: flex; align-items: center; padding: 0 10px; color: #9aa0aa; font-size: 11px">/plan-then-delegate</div>
+        <div style="height: 30px; border-radius: 6px; background: #101014; border: 1px solid #24242a; display: flex; align-items: center; padding: 0 10px; color: #9aa0aa; font-size: 11px">/code-review high</div>
+        <div style="height: 30px; border-radius: 6px; background: #101014; border: 1px solid #24242a; display: flex; align-items: center; padding: 0 10px; color: #9aa0aa; font-size: 11px">run the gates</div>
+      </div>
+      <div style="flex-grow: 1"></div>
+      <div style="padding: 12px; border-top: 1px solid #16161c; display: flex; gap: 8px">
+        <div style="flex-grow: 1; height: 34px; border-radius: 6px; border: 1px dashed #33333c; display: flex; align-items: center; justify-content: center; color: #5b616b; font-size: 11px">＋ new pad</div>
+        <div style="flex-grow: 1; height: 34px; border-radius: 6px; border: 1px solid #1d1d23; background: #101016; display: flex; align-items: center; justify-content: center; color: #7aa2d2; font-size: 11px">edit pad</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
