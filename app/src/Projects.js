@@ -44,7 +44,9 @@ export const inside = (cwd, path) =>
 //                            behind the ⋮ you have just closed.
 // One worktree's name: the branch, or a short sha when it is detached.
 const labelOf = (row) =>
-  row.detached ? (row.head || '').slice(0, 7) : row.branch || '(no branch)';
+  row.detached ? (row.head || '').slice(0, 7)
+    // a project folder with no repository has no branch and no head at all
+    : row.branch || (row.head ? '(no branch)' : 'no repo');
 
 // What the pane needs to draw its "no active agent" panel and act on it.
 const pickOf = (project, row) => ({
@@ -217,6 +219,7 @@ export default function Projects({ cols, base, beat, onSeat, onChanged, onPick }
                   which goes back to the × it had: nothing on disk is lost, and
                   an agent running there puts it straight back, so it needs no
                   confirmation and no menu to sit in. */}
+              {p.git !== false && (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`new worktree in ${p.name}`}
@@ -225,6 +228,7 @@ export default function Projects({ cols, base, beat, onSeat, onChanged, onPick }
                 style={styles.dots}>
                 <Text style={styles.plus}>＋</Text>
               </Pressable>
+              )}
               {!held && (
                 <Pressable
                   accessibilityRole="button"
@@ -281,7 +285,7 @@ export default function Projects({ cols, base, beat, onSeat, onChanged, onPick }
                       {label}
                     </Text>
                     {here.length > 1 && <Text style={styles.tag}>{here.length}</Text>}
-                    {row.main && label !== 'main' && <Text style={styles.tag}>main</Text>}
+                    {row.main && label !== 'main' && p.git !== false && <Text style={styles.tag}>main</Text>}
                     {!row.exists && <Text style={styles.tagGone}>gone</Text>}
                     {busy === row.path && (
                       <ActivityIndicator size="small" color={C.faint} />

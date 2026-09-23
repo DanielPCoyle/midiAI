@@ -725,6 +725,16 @@ cancel, so the button seemed to do nothing. A real failure now shows under
 the button; only error -128 is a cancel. On the iPad it is still the sheet
 below, because the Finder window would open on the Mac across the room.
 
+A project does not need a repository. A folder with none is kept as a
+plain project: one checkout, labelled **no repo**, no new-worktree ＋ (a
+worktree needs a repo). The GIT tab wears a **⚠** instead of a count
+(`/work/dirty` answers `git: false`), and opening it offers `git init` --
+a first branch name, and on by default a first commit of what is already
+there (`/work/init`). That route only acts on a folder the project list
+holds; mapui can be bound to the LAN. With a folder picked in the rail,
+the views read the pick rather than the focused agent's repo -- the GIT
+badge already did, and the two used to disagree.
+
 **Add project** browses the disk; **new agent** does not. The folder picker
 used to live in the new-agent modal, which put the same question — where is
 this repo — in front of you every single time you started one. Adding the

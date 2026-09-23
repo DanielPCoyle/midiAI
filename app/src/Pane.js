@@ -54,6 +54,8 @@ import {
   summarizePrompt,
   draftCommit,
   renameAgent,
+  getDirty,
+  initRepo,
   setAgentModel,
   addToQueue,
   reviewPr,
@@ -2667,6 +2669,79 @@ function Checks({ runs }) {
 // only by leaving the app for a terminal.
 const GIT_TABS = ['work', 'pull requests', 'actions', 'hooks'];
 
+// A project can start as a plain folder. Until it has a repository there is
+// nothing for work, pull requests, actions or hooks to show, so GIT offers
+// the one thing that makes them mean something: `git init`, with a branch
+// name and -- on by default -- a first commit of what is already there.
+function InitRepo({ base, cwd, onDone }) {
+  const narrow = useNarrow();
+  const [branch, setBranch] = useState('main');
+  const [commit, setCommit] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [said, setSaid] = useState('');
+  async function go() {
+    setBusy(true);
+    setErr('');
+    try {
+      const got = await initRepo(base, cwd, branch.trim() || 'main', commit);
+      setSaid(got.said || 'initialised');
+      onDone && onDone();
+    } catch (e) {
+      setErr(String((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <View style={[styles.body, narrow && styles.bodyNarrow]}>
+      <View style={styles.title}>
+        <Text style={styles.h1}>git</Text>
+      </View>
+      <View style={styles.initCard}>
+        <Text style={styles.initHead}>⚠ no git repository yet</Text>
+        <Text style={styles.initText}>
+          {cwd} is a plain folder. Work, pull requests, actions and hooks all need a
+          repository -- start one here and they light up.
+        </Text>
+        <View style={styles.initRow}>
+          <Text style={styles.initLabel}>first branch</Text>
+          <TextInput
+            value={branch}
+            onChangeText={setBranch}
+            autoCapitalize="none"
+            autoCorrect={false}
+            accessibilityLabel="first branch name"
+            style={styles.initInput}
+          />
+        </View>
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: commit }}
+          onPress={() => setCommit((c) => !c)}
+          style={styles.initRow}>
+          <View style={[styles.grBox, commit && styles.grBoxOn]}>
+            <Text style={styles.grTick}>{commit ? '✓' : ''}</Text>
+          </View>
+          <Text style={styles.initText}>commit what is already here as the first commit</Text>
+        </Pressable>
+        <View style={styles.manageRow}>
+          <PushButton
+            label={busy ? 'initialising…' : 'git init'}
+            colour="#3cd05a"
+            lit
+            disabled={busy}
+            onPress={go}
+            style={styles.reviewBtn}
+          />
+        </View>
+        {!!said && <Text style={styles.caption}>{said}</Text>}
+        {!!err && <Text style={styles.err}>{err}</Text>}
+      </View>
+    </View>
+  );
+}
+
 function GitTabs({ at, onAt }) {
   return (
     <View style={styles.walk}>
@@ -2686,6 +2761,16 @@ function GitTabs({ at, onAt }) {
 
 function Git({ data, base, cwd, place }) {
   const [at, setAt] = useState(0);
+  // null until asked; false is a project folder with no repository yet
+  const [hasGit, setHasGit] = useState(null);
+  const recheck = () => (base && cwd
+    ? getDirty(base, cwd).then((d) => setHasGit(!!d.git)).catch(() => setHasGit(null))
+    : setHasGit(null));
+  useEffect(() => { setHasGit(null); recheck(); }, [base, cwd]);   // eslint-disable-line react-hooks/exhaustive-deps
+  if (hasGit === false) return <InitRepo base={base} cwd={cwd} onDone={recheck} />;
+  // not yet known: drawing Work now would ask /work of a folder that may
+  // have no repo, and log a 400 for the moment it takes to find out
+  if (hasGit === null && base && cwd) return <Empty what="reading the repository…" />;
   const tabs = <GitTabs at={at} onAt={setAt} />;
   // no repo name threaded down any more -- the banner above every pane says
   // it once, and four panes each working it out again was the drift
@@ -4692,6 +4777,12 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  initCard: { gap: 12, borderWidth: 1, borderColor: '#e0a03c', borderRadius: S.radius, padding: 18, maxWidth: 640 },
+  initHead: { color: '#e0a03c', fontSize: 15, fontWeight: '700' },
+  initText: { color: C.dim, fontSize: 13, lineHeight: 19, flexShrink: 1 },
+  initRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  initLabel: { color: C.faint, fontSize: 12 },
+  initInput: { color: C.text, fontSize: 13, borderWidth: 1, borderColor: C.edge, borderRadius: S.radius, paddingHorizontal: 10, paddingVertical: 6, minWidth: 160, ...mono },
   nameKey: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   nameEdit: { gap: 2 },
   nameInput: { minWidth: 180, paddingVertical: 0, paddingHorizontal: 6, borderWidth: 1, borderColor: C.accentText, borderRadius: S.radius, backgroundColor: C.bg },

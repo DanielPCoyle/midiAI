@@ -147,7 +147,11 @@ export default function App() {
     // checkout, not about who happens to be sitting in it -- reading them
     // needed an agent only because this was the one thing that answered
     // "which checkout", and it only ever asked the agents.
-    const from = here?.cwd || pick?.path;
+    // A pick wins: it is what you just chose to look at, and the tab badges
+    // already read it (scopePath) -- with the agent winning here instead,
+    // GIT's badge described the picked folder while its pane showed the
+    // agent's repo underneath it.
+    const from = pick?.path || here?.cwd;
     if (!from) return null;
     let best = null;
     for (const p of projects)
@@ -225,15 +229,18 @@ export default function App() {
     setDirty(null);
     if (!base || !scopePath) return undefined;
     let live = true;
-    const pull = () => getDirty(base, scopePath).then((n) => live && setDirty(n)).catch(() => live && setDirty(null));
+    const pull = () => getDirty(base, scopePath).then((d) => live && setDirty(d)).catch(() => live && setDirty(null));
     pull();
     const timer = setInterval(pull, 5000);
     return () => { live = false; clearInterval(timer); };
   }, [base, scopePath]);
   const TAB_COUNT = {
     ...(picked ? {} : { tests: testsCount }),
-    ...(dirty == null ? {} : { prs: dirty }),
+    ...(dirty?.git ? { prs: dirty.count } : {}),
   };
+  // a project folder with no repo yet: GIT wears a warning, and opening it
+  // is where `git init` is offered
+  const TAB_WARN = { prs: dirty?.git === false };
   const filled = macros.filter(Boolean).length;
 
   // Two different facts were being read as one status. Whether push_cc
@@ -662,6 +669,7 @@ export default function App() {
                   key={name}
                   label={TAB_LABEL[name] || name}
                   count={TAB_COUNT[name]}
+                  warn={TAB_WARN[name]}
                   hue={hue}
                   on={i === viewIdx}
                   onPress={() => {
@@ -1066,12 +1074,12 @@ const PANELS = [
 // landing on whichever node the pointer was actually over, sometimes just
 // the count on its own ("· 0", nothing to say what it counted) (MIDI-015).
 // The inner Text is aria-hidden so that name isn't read out a second time.
-function Tab({ label, count, hue, on, onPress }) {
+function Tab({ label, count, warn, hue, on, onPress }) {
   const has = count != null && count > 0;
   return (
     <Pressable
       accessibilityRole="tab"
-      accessibilityLabel={count != null ? `${label} · ${count}` : label}
+      accessibilityLabel={warn ? `${label} · no repository yet` : count != null ? `${label} · ${count}` : label}
       accessibilityState={{ selected: on }}
       onPress={onPress}
       style={styles.tabHit}>
@@ -1084,6 +1092,7 @@ function Tab({ label, count, hue, on, onPress }) {
           on && styles.tabOn,
         ]}>
         {label}
+        {warn && <Text style={styles.tabWarn}> ⚠</Text>}
         {count != null && (
           <Text style={[styles.tabCount, has && { color: hue, fontWeight: '700' }]}>
             {' '}
@@ -1137,6 +1146,7 @@ const styles = StyleSheet.create({
   // read the same at a glance (MIDI-014). Tab lifts it to the tab's own hue
   // and bold whenever there is something behind the tab.
   tabCount: { color: C.faint, fontSize: 12 },
+  tabWarn: { color: '#e0a03c', fontWeight: '700' },
   // One row, wrapping rather than truncating: at a phone width the lenses drop
   // to a second line, which costs 40px once instead of hiding a control.
   band: {

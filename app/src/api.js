@@ -319,8 +319,14 @@ export const summarizePrompt = async (base, text) =>
   JSON.parse(await post(base, '/summarize-prompt', { text })).summary;
 
 // Files changed and not committed in a checkout -- the GIT tab's count.
-export const getDirty = async (base, cwd) =>
-  (await getJSON(base, `/work/dirty?cwd=${encodeURIComponent(cwd || '')}`)).count;
+// {count, git}: git is false for a project folder with no repository yet.
+export const getDirty = (base, cwd) =>
+  getJSON(base, `/work/dirty?cwd=${encodeURIComponent(cwd || '')}`);
+
+// `git init` for a project folder that has none, optionally committing what
+// is already there. Only works on a folder the project list holds.
+export const initRepo = async (base, cwd, branch, commit) =>
+  JSON.parse(await post(base, '/work/init', { cwd, branch, commit }));
 
 export const getWork = (base, cwd) =>
   getJSON(base, `/work?cwd=${encodeURIComponent(cwd || '')}`);

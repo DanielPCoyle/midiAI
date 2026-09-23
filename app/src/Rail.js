@@ -53,7 +53,9 @@ const MCP_TABS = [
 // `inside` is exported from there and four lines here beat a second file
 // this task is not allowed to touch.
 const labelOf = (row) =>
-  row.detached ? (row.head || '').slice(0, 7) : row.branch || '(no branch)';
+  row.detached ? (row.head || '').slice(0, 7)
+    // a project folder with no repository has no branch and no head at all
+    : row.branch || (row.head ? '(no branch)' : 'no repo');
 
 // What the pane needs to draw its "no active agent" panel and act on it.
 const pickOf = (project, row) => ({
@@ -544,6 +546,7 @@ export default function Rail({
                       which goes back to the × it had: nothing on disk is lost, and
                       an agent running there puts it straight back, so it needs no
                       confirmation and no menu to sit in. */}
+                  {p.git !== false && (
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`new worktree in ${p.name}`}
@@ -552,6 +555,7 @@ export default function Rail({
                     style={styles.dots}>
                     <Text style={styles.plus}>＋</Text>
                   </Pressable>
+                  )}
                   {!held && (
                     <Pressable
                       accessibilityRole="button"
@@ -610,7 +614,7 @@ export default function Rail({
                               numberOfLines={1}>
                               {label}
                             </Text>
-                            {row.main && label !== 'main' && <Text style={styles.tag}>main</Text>}
+                            {row.main && label !== 'main' && p.git !== false && <Text style={styles.tag}>main</Text>}
                             {!row.exists && <Text style={styles.tagGone}>gone</Text>}
                             {/* "nothing is running here" is a fact worth seeing --
                                 selecting an empty worktree is how you pick a

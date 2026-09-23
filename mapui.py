@@ -581,6 +581,13 @@ def repo_worktrees(cwd):
     return rows or None
 
 
+def plain_checkout(path):
+    """A folder with no repo, shaped like a worktree row so the rail draws it
+    the same way: its one checkout, on no branch."""
+    return {"path": path, "branch": "", "head": "", "main": True, "detached": False,
+            "locked": False, "prunable": False, "exists": True}
+
+
 def git(root, *argv, timeout=30):
     """The one call every /work route makes into git -- argv stays a list, so
     a path or message with spaces or shell metacharacters in it can never be
@@ -1755,6 +1762,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._tests_run()
         if self.path == "/tests/stop":
             return self._tests_stop()
+        if self.path == "/work/init":
+            return self._work_init()
         if self.path == "/work/ai-message":
             return self._work_ai_message()
         if self.path == "/work/do":
@@ -2440,11 +2449,14 @@ class Handler(BaseHTTPRequestHandler):
         staged and then edited again is one file, not two."""
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err == "not a git checkout":
+            # a real folder with no repo: not an error, a fact the tab shows
+            return self._send(200, json.dumps({"count": 0, "git": False}), "application/json")
         if err:
             return self._send(400, err, "text/plain")
         _, staged, unstaged, conflicts = work_status(root)
         paths = {r["path"] for r in staged + unstaged + conflicts}
-        self._send(200, json.dumps({"count": len(paths)}), "application/json")
+        self._send(200, json.dumps({"count": len(paths), "git": True}), "application/json")
 
     def _work_read(self):
         """Everything the GIT tab's overview screen needs in one call --
@@ -2493,6 +2505,40 @@ class Handler(BaseHTTPRequestHandler):
             # exactly the patch we want
             text = git(root, "diff", "--no-index", "--", "/dev/null", file).stdout
         self._send(200, text[:250000], "text/plain")
+
+    def _work_init(self):
+        """`git init` for a project that started as a plain folder, with an
+        optional first commit of what is already there. Only for a folder
+        the project list already holds -- this server can be bound to the
+        LAN, and it is not a way to plant a repo anywhere on the disk."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        cwd = os.path.realpath(os.path.expanduser(str(body.get("cwd") or "")))
+        if not os.path.isdir(cwd):
+            return self._send(400, "that folder does not exist", "text/plain")
+        known = {os.path.realpath(p) for p in load_projects()}
+        if cwd not in known:
+            return self._send(403, "only a folder in the project list can be initialised",
+                              "text/plain")
+        if git(cwd, "rev-parse", "--show-toplevel").returncode == 0:
+            return self._send(409, "this folder is already inside a git repository", "text/plain")
+        branch = str(body.get("branch") or "main").strip()
+        if git(cwd, "check-ref-format", "--branch", branch).returncode:
+            return self._send(400, f"{branch!r} is not a valid branch name", "text/plain")
+        out = git(cwd, "init", "-b", branch)
+        if out.returncode:
+            return self._send(500, (out.stderr or "git init failed").strip()[-300:], "text/plain")
+        said = f"initialised on {branch}"
+        if body.get("commit"):
+            git(cwd, "add", "-A")
+            done = git(cwd, "commit", "-m", "Initial commit")
+            if done.returncode:
+                # the repo exists either way; say why the commit did not happen
+                said += " -- first commit failed: " + (done.stderr or done.stdout).strip()[-200:]
+            else:
+                said += ", first commit made"
+        self._send(200, json.dumps({"ok": True, "said": said}), "application/json")
 
     def _work_ai_message(self):
         body = self._read_json_body()
@@ -2746,13 +2792,23 @@ class Handler(BaseHTTPRequestHandler):
             if not rows:
                 if remembered:
                     keep.add(cwd)   # kept but not resolved -- see the docstring
+                    # A folder you added that has no repo yet is still a
+                    # project: listed as its one plain checkout, flagged so the
+                    # GIT tab can offer to start one. Only remembered ones --
+                    # an agent living in some stray folder does not make it
+                    # a project.
+                    if os.path.isdir(cwd) and cwd not in seen:
+                        seen.add(cwd)
+                        out.append({"path": cwd, "git": False,
+                                    "name": os.path.basename(cwd.rstrip("/")) or cwd,
+                                    "worktrees": [plain_checkout(cwd)]})
                 continue
             main = rows[0]["path"]
             keep.add(main)          # the file converges on main checkouts
             if main in seen:
                 continue
             seen.add(main)
-            out.append({"path": main,
+            out.append({"path": main, "git": True,
                         "name": os.path.basename(main.rstrip("/")) or main,
                         "worktrees": rows})
         save_projects(keep)
@@ -2774,11 +2830,11 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isdir(path):
             return self._send(400, "path is not a directory", "text/plain")
         rows = repo_worktrees(path)
-        if not rows:
-            return self._send(400, "not a git repo", "text/plain")
-        main = rows[0]["path"]
+        # no repo is fine: a project can start as a plain folder, and the GIT
+        # tab offers `git init` for it
+        main = rows[0]["path"] if rows else path
         save_projects(set(load_projects()) | {main})
-        self._send(200, json.dumps({"path": main}), "application/json")
+        self._send(200, json.dumps({"path": main, "git": bool(rows)}), "application/json")
 
     def _projects_remove(self):
         """Forget a repo. Nothing on disk is touched -- this is the list's own
