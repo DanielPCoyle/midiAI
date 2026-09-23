@@ -337,6 +337,11 @@ export const getWorkDiff = (base, cwd, { file = '', staged = false, sha = '' } =
 // app composes -- paths ride after a `--` and nothing here reaches a shell.
 // git's own refusal comes back as the message, which says it better than a
 // code of ours would.
+// A commit message drafted by the model from the change: the staged diff,
+// or every change when nothing is staged (scope says which). Drafted only.
+export const draftCommit = async (base, cwd) =>
+  JSON.parse(await post(base, '/work/ai-message', { cwd }));
+
 export const doWork = (base, cwd, verb, fields = {}) =>
   post(base, '/work/do', { cwd, verb, ...fields });
 

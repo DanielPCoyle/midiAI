@@ -739,6 +739,49 @@ def ref_pills(decorate, remotes):
     return out
 
 
+# The commit box's "write it": a message drafted from the change itself. The
+# staged diff when there is one -- that is what the commit will hold --
+# else everything uncommitted, with a note saying so, since the commit key
+# still only takes what is staged. The repo's own recent subjects go in as
+# the house style to follow. Drafted, never committed: it lands in the box.
+AI_DIFF_MAX = 30000
+
+
+def commit_message(root, run=None):
+    """(message, scope) where scope is "staged" or "all"; raises on failure."""
+    staged = git(root, "diff", "--cached", "--stat", "--patch", "--no-color").stdout
+    scope = "staged" if staged.strip() else "all"
+    diff = staged if staged.strip() else git(root, "diff", "--stat", "--patch", "--no-color").stdout
+    if scope == "all":
+        untracked = git(root, "ls-files", "--others", "--exclude-standard").stdout.split()
+        if untracked:
+            diff += "\n\nNew untracked files:\n" + "\n".join(untracked[:200])
+    if not diff.strip():
+        raise ValueError("nothing has changed to write a message about")
+    if len(diff) > AI_DIFF_MAX:
+        diff = diff[:AI_DIFF_MAX] + "\n[diff truncated]"
+    recent = git(root, "log", "-12", "--format=%s").stdout.strip()
+    ask = ("Write a git commit message for the change below.\n\n"
+           "Match the style of this repository's recent subjects:\n" + (recent or "(no history)") +
+           "\n\nRules: a subject line of at most 72 characters in that style, a blank "
+           "line, then a short body saying what changed and why. No trailers, no "
+           "code fences, no preamble -- output only the message.\n\nThe change:\n" + diff)
+    if run:
+        out = run(ask)
+    else:
+        done = subprocess.run(memory.SUMMARY_CMD, input=ask, text=True,
+                              capture_output=True, timeout=120, cwd=tempfile.gettempdir())
+        if done.returncode:
+            raise RuntimeError((done.stderr or "the model call failed")[-300:])
+        out = done.stdout
+    text = out.strip()
+    if text.startswith("```"):       # a fence despite being asked not to
+        text = text.strip("`").split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    if not text:
+        raise RuntimeError("the model returned nothing")
+    return text, scope
+
+
 def work_stashes(root):
     """The stash list for the GIT tab's stash panel. An empty list here means
     either no stashes or git failing outright -- both render the same way in
@@ -1712,6 +1755,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._tests_run()
         if self.path == "/tests/stop":
             return self._tests_stop()
+        if self.path == "/work/ai-message":
+            return self._work_ai_message()
         if self.path == "/work/do":
             return self._work_do()
         if self.path != "/macros":
@@ -2448,6 +2493,21 @@ class Handler(BaseHTTPRequestHandler):
             # exactly the patch we want
             text = git(root, "diff", "--no-index", "--", "/dev/null", file).stdout
         self._send(200, text[:250000], "text/plain")
+
+    def _work_ai_message(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            message, scope = commit_message(root)
+        except ValueError as e:
+            return self._send(409, str(e), "text/plain")
+        except Exception as e:
+            return self._send(502, f"could not draft a message: {e}", "text/plain")
+        self._send(200, json.dumps({"message": message, "scope": scope}), "application/json")
 
     def _work_do(self):
         """The GIT tab's action bar: stage, unstage, discard, commit, fetch,

@@ -822,6 +822,17 @@ Web only, and on purpose: iOS hands React Native no paste event and no
 clipboard image without another dependency. In Expo Go the composer still
 takes typed paths.
 
+## Commit messages from the diff
+
+Beside the commit key in GIT › Work, **✨ write it** drafts a message:
+the staged diff if anything is staged -- that is what the commit will hold
+-- else every uncommitted change, untracked names included, with a line
+saying so because the commit key still only takes what is staged. The
+repo's last twelve subjects go in as the style to match. It is Haiku through
+the same isolated `claude -p` the memory summaries use (`/work/ai-message`,
+diff capped at 30k characters). It only ever fills the box: nothing is
+committed until you press commit. `test_commit_message.py` is its gate.
+
 ## What you asked, pinned
 
 The pretty conversation keeps a prompt pinned above it, **YOU ASKED**, like

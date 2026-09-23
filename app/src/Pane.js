@@ -52,6 +52,7 @@ import {
   promptAgent,
   getAgentDef,
   summarizePrompt,
+  draftCommit,
   setAgentModel,
   addToQueue,
   reviewPr,
@@ -2695,6 +2696,9 @@ function Work({ base, cwd, tabs }) {
   const [diff, setDiff] = useState('');
   const [tick, setTick] = useState(0);
   const [msg, setMsg] = useState('');
+  // the model's draft: '' idle, 'writing' while it thinks, and after it
+  // lands, 'all' when it had to describe unstaged changes too
+  const [drafting, setDrafting] = useState('');
   const [amend, setAmend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -2764,7 +2768,7 @@ function Work({ base, cwd, tabs }) {
       setPick({ file: row.path, staged: !wasStaged }));
 
   const commit = () =>
-    run('commit', { message: msg, amend }, () => { setMsg(''); setAmend(false); setPick(null); });
+    run('commit', { message: msg, amend }, () => { setMsg(''); setAmend(false); setPick(null); setDrafting(''); });
 
   const openBranches = async () => {
     setErr('');
@@ -2973,11 +2977,41 @@ function Work({ base, cwd, tabs }) {
             value={msg}
             onChangeText={setMsg}
             multiline
-            placeholder={amend ? 'Amend the last commit (leave empty to keep its message)' : 'Commit message'}
+            editable={drafting !== 'writing'}
+            placeholder={drafting === 'writing' ? 'writing a message from the diff…'
+              : amend ? 'Amend the last commit (leave empty to keep its message)' : 'Commit message'}
             placeholderTextColor={C.faint}
             style={styles.reviewInput}
           />
+          {drafting === 'all' && !staged.length && (
+            <Text style={styles.caption}>
+              nothing was staged, so this describes every change — stage all (or
+              the files it covers) to commit it
+            </Text>
+          )}
           <View style={styles.manageRow}>
+            {/* drafts into the box, never commits: the message is read and
+                edited before the commit key is what sends it */}
+            <PushButton
+              label={drafting === 'writing' ? 'writing…' : msg.trim() ? '✨ rewrite' : '✨ write it'}
+              accessibilityLabel="write the commit message with AI"
+              colour={C.accentText}
+              lit={drafting === 'writing'}
+              disabled={busy || drafting === 'writing' || !(staged.length + dirty.length)}
+              onPress={async () => {
+                setDrafting('writing');
+                setErr('');
+                try {
+                  const got = await draftCommit(base, cwd);
+                  setMsg(got.message);
+                  setDrafting(got.scope === 'all' ? 'all' : '');
+                } catch (e) {
+                  setErr(e.message);
+                  setDrafting('');
+                }
+              }}
+              style={styles.wkBtn}
+            />
             <PushButton
               label={amend ? 'amend' : 'commit'}
               colour="#3cd05a"
