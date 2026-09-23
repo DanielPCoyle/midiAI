@@ -417,7 +417,15 @@ export default function Rail({
         const here = at[row.path] || [];
         return hitProject(p) || hitWorktree(row) || here.some((s) => hitAgent(s.col));
       });
-      return { p, at, rows };
+      // The one row that reads as selected: the worktree "here" is in (the
+      // picked one, else the focused agent's), longest match so a nested
+      // worktree wins over its checkout. Having an agent is not being
+      // selected -- two repos each with an agent on main lit both mains.
+      const sel = scopePath
+        ? p.worktrees.filter((r) => inside(scopePath, r.path))
+          .sort((a, b) => b.path.length - a.path.length)[0]?.path
+        : null;
+      return { p, at, rows, sel };
     })
     .filter(({ p, rows }) => !find || hitProject(p) || rows.length > 0);
 
@@ -525,7 +533,7 @@ export default function Rail({
           {!!find && projects.length > 0 && visibleProjects.length === 0 && (
             <Text style={styles.empty}>no matches for “{q.trim()}”</Text>
           )}
-          {visibleProjects.map(({ p, at, rows }) => {
+          {visibleProjects.map(({ p, at, rows, sel }) => {
             const isOpen = !shut[p.path];
             const held = Object.keys(at).length > 0;
             const repoHue = summaryHue(Object.values(at).flat());
@@ -599,7 +607,7 @@ export default function Rail({
                                 : `${label} — open an agent here`
                             }
                             onPress={() => tapWt(p, row, hereAll)}
-                            style={[styles.wt, seat && styles.wtOn]}>
+                            style={[styles.wt, row.path === sel && styles.wtOn]}>
                             <View
                               style={[
                                 styles.wtDot,
