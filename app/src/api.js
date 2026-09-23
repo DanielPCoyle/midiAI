@@ -43,6 +43,103 @@ export const post = async (base, path, body) =>
 export const listAgents = async (base) =>
   (await getJSON(base, '/agents')).agents || [];
 
+export const listMcps = async (base, cwd) =>
+  (await getJSON(base, `/mcps${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`)).mcps || [];
+
+// Health is a separate call from the list on purpose: the list is a file read
+// and answers instantly, the health check starts every configured server and
+// takes about nine seconds. The rail draws on the first and fills in the
+// second when it lands.
+export const mcpHealth = (base, cwd) =>
+  getJSON(base, `/mcp/health?cwd=${encodeURIComponent(cwd || '')}`);
+
+// login opens a browser and cannot be awaited -- its result turns up in the
+// next health check, which is the thing you are already watching.
+export const mcpDo = (base, verb, body) => post(base, `/mcp/${verb}`, body);
+
+// A wire, not a composer: these bytes go to the pane as typed. The control
+// sequences ride in the same string a character does -- \x03 is Ctrl-C.
+export const sendKeys = (base, terminal_id, keys) =>
+  post(base, '/keys', { terminal_id, keys });
+
+// Hands the pane to a real terminal on the machine running midiAI. The
+// in-app one is a picture with a keyboard on it; this is the thing itself.
+// Which pane the in-app terminal is looking at now. A read: tmux owns the
+// active pane and shares it between clients, so the app follows rather than
+// steers -- moving it from here would move somebody else's cursor.
+export const ptyWhere = (base, pane) =>
+  getJSON(base, `/pty/where?pane=${encodeURIComponent(pane || '')}`);
+
+export const openTerminal = (base, terminal_id) =>
+  post(base, '/terminal/open', { terminal_id });
+
+export const getPr = (base, cwd, number) =>
+  getJSON(base, `/pr?cwd=${encodeURIComponent(cwd || '')}&number=${Number(number)}`);
+
+export const listPrs = (base, cwd) =>
+  getJSON(base, `/prs?cwd=${encodeURIComponent(cwd || '')}`);
+
+export const reviewPr = (base, cwd, number, action, body = '') =>
+  post(base, '/pr/review', { cwd, number, action, body });
+
+// A workflow is addressed by name, never by path -- the server derives
+// `.github/workflows/<name>.yml` itself and rejects anything a `..` could ride
+// in on, so there is no path on this wire for the app to get wrong.
+export const listWorkflows = (base, cwd) =>
+  getJSON(base, `/workflows?cwd=${encodeURIComponent(cwd || '')}`);
+
+export const getWorkflow = (base, cwd, name) =>
+  getJSON(base, `/workflow?cwd=${encodeURIComponent(cwd || '')}&name=${encodeURIComponent(name || '')}`);
+
+// `replace` is the editor saying it opened this one: without it the server
+// answers 409 rather than overwriting a pipeline someone is relying on.
+export const saveWorkflow = (base, cwd, name, body, replace = false) =>
+  post(base, '/workflow', { cwd, name, body, replace });
+
+// The files that govern a pull request are addressed by a key from a fixed
+// table the server owns -- tighter even than a workflow's name, since there is
+// no open-ended part at all.
+export const listGoverns = (base, cwd) =>
+  getJSON(base, `/governs?cwd=${encodeURIComponent(cwd || '')}`);
+
+export const getGovern = (base, cwd, key) =>
+  getJSON(base, `/govern?cwd=${encodeURIComponent(cwd || '')}&key=${encodeURIComponent(key || '')}`);
+
+export const saveGovern = (base, cwd, key, body, replace = false) =>
+  post(base, '/govern', { cwd, key, body, replace });
+
+// Only the state -- which are ticked, which were added, which starters were
+// struck out. The list itself ships with the app.
+export const getGuardrails = (base, cwd) =>
+  getJSON(base, `/guardrails?cwd=${encodeURIComponent(cwd || '')}`);
+
+export const saveGuardrails = (base, cwd, state) =>
+  post(base, '/guardrails', { cwd, ...state });
+
+// A saved checklist, for use in another checkout. The items travel; the ticks
+// do not -- whether a guardrail is in force is a fact about one repo.
+export const getGuardrailTemplates = (base) =>
+  getJSON(base, '/guardrail-templates');
+
+export const saveGuardrailTemplate = (base, name, items, phases, replace = false) =>
+  post(base, '/guardrail-template', { name, items, phases, replace });
+
+export const dropGuardrailTemplate = (base, name) =>
+  post(base, '/guardrail-template/delete', { name });
+
+export const getTests = (base, cwd, path = []) =>
+  getJSON(
+    base,
+    `/tests?cwd=${encodeURIComponent(cwd || '')}&path=${encodeURIComponent(
+      (path || []).join('/')
+    )}`
+  );
+
+export const runTests = (base, cwd, path = [], file = '') =>
+  post(base, '/tests/run', { cwd, path, file });
+
+export const stopTests = (base, cwd) => post(base, '/tests/stop', { cwd });
+
 export const createAgent = (base, cwd, name) =>
   post(base, '/agents', name ? { cwd, name } : { cwd });
 
@@ -183,3 +280,29 @@ export const listDirs = (base, path) =>
 // dismissed -- a long request by design. null means the user cancelled.
 export const chooseDir = async (base, start) =>
   (await getJSON(base, `/choose-dir${start ? `?start=${encodeURIComponent(start)}` : ''}`)).path;
+
+// The working tree as a person works it: what is staged, what is not, what
+// git would refuse to commit, the stashes, and the commit graph. One call --
+// six git invocations that always get read together are one screen's worth of
+// state, not six polls.
+export const getWork = (base, cwd) =>
+  getJSON(base, `/work?cwd=${encodeURIComponent(cwd || '')}`);
+
+// A patch, as text, for the diff parser the PR review already uses. Either one
+// file's changes (staged or not) or a whole commit's -- the same viewer draws
+// both, because they are the same question asked of different ranges.
+export const getWorkDiff = (base, cwd, { file = '', staged = false, sha = '' } = {}) =>
+  getText(
+    base,
+    `/work/diff?cwd=${encodeURIComponent(cwd || '')}` +
+      (sha ? `&sha=${encodeURIComponent(sha)}` : '') +
+      (file ? `&file=${encodeURIComponent(file)}` : '') +
+      (staged ? '&staged=1' : '')
+  );
+
+// Every write is a verb from a table the server owns, never a command line the
+// app composes -- paths ride after a `--` and nothing here reaches a shell.
+// git's own refusal comes back as the message, which says it better than a
+// code of ours would.
+export const doWork = (base, cwd, verb, fields = {}) =>
+  post(base, '/work/do', { cwd, verb, ...fields });

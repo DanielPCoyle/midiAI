@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import Icon from './Icon';
 import Inspector from './Inspector';
 import PushButton from './PushButton';
 import { ANSWER_HEX, C, S, hexFor, mono } from './theme';
@@ -24,6 +25,8 @@ export default function Pads({
   opts,
   macros,
   labels,
+  promptRoot,
+  promptPath,
   panel,
   onPanel,
   catalog,
@@ -40,8 +43,10 @@ export default function Pads({
   onDelLabel,
   onClose,
   onAnswer,
+  onCollapse,
 }) {
   const [q, setQ] = useState('');
+  const [masterScope, setMasterScope] = useState('global');
 
   // whatever the view, a pending question is what the pads are
   if (opts && opts.length) {
@@ -79,7 +84,7 @@ export default function Pads({
           {/* the note number only matters with macros.json open by hand --
               dropped well back so "Pad" reads first and the address second */}
           <Text style={styles.title}>
-            Pad <Text style={styles.titleNote}>{36 + sel}</Text>
+            Prompt
           </Text>
           <View style={styles.spacer} />
           <PushButton label="close" onPress={onClose} style={styles.key} />
@@ -88,6 +93,9 @@ export default function Pads({
           index={sel}
           pad={sel === null ? null : macros[sel] || null}
           labels={labels}
+          promptRoot={promptRoot}
+          promptPath={promptPath}
+          defaultScope={masterScope}
           onSave={onSave}
           onClear={onClear}
           onAddLabel={onAddLabel}
@@ -146,10 +154,23 @@ export default function Pads({
   // things an agent works from. Prompts are what you send it; skills and hooks
   // are what it already has. Same column, three tabs, because they answer the
   // same question at three removes and only one of them fits at a time.
-  const filled = macros.filter(Boolean).length;
   const skills = catalog?.skills || [];
   const hooks = catalog?.hooks || [];
-  const counts = { prompts: filled, skills: skills.length, hooks: hooks.length };
+  const inMasterScope = (row) => masterScope === 'global'
+    ? row.scope === 'user' || row.scope === 'plugin'
+    : row.scope === masterScope;
+  const promptInMasterScope = (prompt) => {
+    const scope = prompt?.scope || 'global';
+    if (scope !== masterScope) return false;
+    if (scope === 'project' && prompt.project && prompt.project !== promptRoot) return false;
+    if (scope === 'local' && prompt.worktree && prompt.worktree !== promptPath) return false;
+    return true;
+  };
+  const counts = {
+    prompts: macros.filter((prompt) => prompt && promptInMasterScope(prompt)).length,
+    skills: skills.filter(inMasterScope).length,
+    hooks: hooks.filter(inMasterScope).length,
+  };
   const at = panel || 'prompts';
   const placeholder =
     at === 'prompts' ? 'search prompts' : at === 'skills' ? 'search skills' : 'search hooks';
@@ -157,6 +178,23 @@ export default function Pads({
   return (
     <View style={styles.rail}>
       <View style={styles.headCol}>
+        <View style={styles.masterTabs}>
+          {[
+            ['global', 'global'],
+            ['project', 'project'],
+            ['local', 'project local'],
+          ].map(([key, word]) => (
+            <Pressable
+              key={key}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: masterScope === key }}
+              onPress={() => setMasterScope(key)}>
+              <Text style={[styles.masterTab, masterScope === key && styles.masterTabOn]}>
+                {word}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
         <View style={styles.tabs}>
           {['prompts', 'skills', 'hooks'].map((k) => (
             <Text
@@ -168,6 +206,17 @@ export default function Pads({
               {k} · {counts[k]}
             </Text>
           ))}
+          {/* the pane's title row used to own open/close for this panel;
+              now that it doesn't, the panel needs its own way out */}
+          {onCollapse && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="collapse the panel"
+              onPress={onCollapse}
+              style={styles.collapse}>
+              <Icon name="right" size={18} color={C.faint} />
+            </Pressable>
+          )}
         </View>
         <TextInput
           value={q}
@@ -189,7 +238,7 @@ export default function Pads({
         accessibilityRole="button"
         accessibilityLabel={`new ${at === 'prompts' ? 'prompt' : at.slice(0, -1)}`}
         onPress={() =>
-          at === 'prompts' ? onNewPad && onNewPad() : onEntry && onEntry(at, null)
+          at === 'prompts' ? onNewPad && onNewPad() : onEntry && onEntry(at, null, masterScope)
         }
         style={styles.add}>
         <Text style={styles.addText}>
@@ -201,6 +250,9 @@ export default function Pads({
         <Library
           macros={macros}
           labels={labels}
+          promptRoot={promptRoot}
+          promptPath={promptPath}
+          promptScope={masterScope}
           q={q}
           sel={sel}
           onPress={onPress}
@@ -208,8 +260,8 @@ export default function Pads({
           onEdit={onEdit}
         />
       )}
-      {at === 'skills' && <Scoped rows={skills} q={q} kind="skills" onEntry={onEntry} />}
-      {at === 'hooks' && <Scoped rows={hooks} q={q} kind="hooks" onEntry={onEntry} />}
+      {at === 'skills' && <Scoped rows={skills} labels={labels} q={q} kind="skills" masterScope={masterScope} onEntry={onEntry} />}
+      {at === 'hooks' && <Scoped rows={hooks} labels={labels} q={q} kind="hooks" masterScope={masterScope} onEntry={onEntry} />}
     </View>
   );
 }
@@ -217,57 +269,50 @@ export default function Pads({
 // Where a thing came from is the first fact about it: a hook in the repo is
 // the team's, one in ~/.claude is yours, and telling them apart is most of
 // what you open this panel to do. So scope is the grouping, not a tag.
-const SCOPE_NAME = {
-  project: 'project',
-  local: 'project · local',
-  user: 'global',
-  plugin: 'plugins',
-};
-const SCOPE_ORDER = ['project', 'local', 'user', 'plugin'];
-
-function Scoped({ rows, q, kind, onEntry }) {
-  // Which scope is showing. 131 plugin skills over 38 of your own is not a
-  // list you scroll looking for one of the 38 -- so scope is a tab, not a
-  // heading you pass on the way down.
-  const [scope, setScope] = useState(null);
+function Scoped({ rows, labels, q, kind, masterScope, onEntry }) {
+  const [skillLabel, setSkillLabel] = useState('all');
   const find = q.trim().toLowerCase();
   const hit = (r) =>
     !find ||
-    `${r.name || ''} ${r.description || ''} ${r.event || ''} ${r.matcher || ''} ${r.command || ''}`
+    `${r.name || ''} ${r.label || ''} ${r.description || ''} ${r.event || ''} ${r.matcher || ''} ${r.command || ''}`
       .toLowerCase()
       .includes(find);
-  const shown = rows.filter(hit);
-  const groups = SCOPE_ORDER.map((scope) => ({
-    scope,
-    items: shown.filter((r) => r.scope === scope),
-  })).filter((g) => g.items.length);
-  // anything the server labelled with a scope this list has never heard of
-  // still belongs on screen -- silently dropping a row is worse than a
-  // heading nobody planned
-  const rest = shown.filter((r) => !SCOPE_ORDER.includes(r.scope));
-  if (rest.length) groups.push({ scope: 'other', items: rest });
-
-  // A search that empties the tab you were on would otherwise read as "no
-  // hooks at all" -- fall through to the first that has something instead.
-  const at = groups.find((g) => g.scope === scope) || groups[0] || null;
-  // One scope is not a choice, so it is not drawn as one.
-  const bar = groups.length > 1;
+  const inMasterScope = (row) => masterScope === 'global'
+    ? row.scope === 'user' || row.scope === 'plugin'
+    : row.scope === masterScope;
+  const shown = rows.filter((row) => inMasterScope(row) && hit(row));
+  const knownLabels = new Set((labels || []).map((item) => item.name));
+  const rowLabel = (row) => knownLabels.has(row.label) ? row.label : 'untagged';
+  const itemLabels = [...new Set(
+    shown.map(rowLabel)
+  )].sort((a, b) => a.localeCompare(b));
+  const labelTabs = ['all', ...itemLabels];
+  const activeSkillLabel = labelTabs.includes(skillLabel) ? skillLabel : 'all';
+  const visibleItems = activeSkillLabel !== 'all'
+    ? shown.filter((row) => rowLabel(row) === activeSkillLabel)
+    : shown;
 
   return (
     <>
-      {bar && (
+      {labelTabs.length > 1 && (
         <View style={styles.subTabs}>
-          {groups.map((g) => (
-            <Text
-              key={g.scope}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: at?.scope === g.scope }}
-              onPress={() => setScope(g.scope)}
-              style={[styles.subTab, at?.scope === g.scope && styles.subTabOn]}>
-              {SCOPE_NAME[g.scope] || g.scope}
-              <Text style={styles.subTabN}> {g.items.length}</Text>
-            </Text>
-          ))}
+          {labelTabs.map((label) => {
+            const count = label === 'all'
+              ? shown.length
+              : shown.filter((row) => rowLabel(row) === label).length;
+            return (
+              <Pressable
+                key={label}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: activeSkillLabel === label }}
+                onPress={() => setSkillLabel(label)}
+                style={styles.promptTab}>
+                <Text style={[styles.subTab, activeSkillLabel === label && styles.subTabOn]}>
+                  {label}<Text style={styles.subTabN}> {count}</Text>
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
       )}
       <ScrollView contentContainerStyle={styles.list}>
@@ -276,9 +321,9 @@ function Scoped({ rows, q, kind, onEntry }) {
             {find ? `nothing matches “${q.trim()}”` : `no ${kind}`}
           </Text>
         )}
-        {!!at && (
-        <View key={at.scope} style={styles.group}>
-          {at.items.map((r, i) => {
+        {!!shown.length && (
+        <View key={masterScope} style={styles.group}>
+          {visibleItems.map((r, i) => {
             // a plugin's skill opens too -- read-only, to be read, opened in an
             // editor, or copied somewhere it becomes yours. What it is not is
             // saveable, which its next update would undo without saying so.
@@ -293,7 +338,7 @@ function Scoped({ rows, q, kind, onEntry }) {
               onPress={() => onEntry && onEntry(kind, r)}
               style={styles.item}>
               <View style={styles.pick}>
-                <View style={[styles.bar, { backgroundColor: SCOPE_HEX[at.scope] || C.edge }]} />
+                <View style={[styles.bar, { backgroundColor: SCOPE_HEX[r.scope] || C.edge }]} />
                 <View style={styles.rowBody}>
                   <Text style={styles.rowName} numberOfLines={1}>
                     {kind === 'skills' ? r.name : r.event}
@@ -330,46 +375,95 @@ function Shell({ title, sub, children }) {
 
 // Grouped by the colour labels themselves: the tag is already how you think
 // about a pad, and the grid could only ever show it as a stripe.
-function Library({ macros, labels, q, sel, onPress, onExecute, onEdit }) {
+function Library({ macros, labels, promptRoot, promptPath, promptScope, q, sel, onPress, onExecute, onEdit }) {
+  const [labelTab, setLabelTab] = useState(null);
+  const [formPrompt, setFormPrompt] = useState(null);
+  const [formValues, setFormValues] = useState({});
   // label, prompt body and tag all: you look for a prompt by whichever of
   // the three you happen to remember
   const find = q.trim().toLowerCase();
   const hit = (m) =>
     !find || `${m.label} ${m.text} ${m.tag || ''}`.toLowerCase().includes(find);
-  const groups = labels.map((l) => ({
+  const scopedMacros = macros.map((m, i) => ({ m, i })).filter(({ m }) => {
+    if (!m) return false;
+    const scope = m.scope || 'global';
+    if (scope !== promptScope) return false;
+    if (scope === 'project' && m.project && m.project !== promptRoot) return false;
+    if (scope === 'local' && m.worktree && m.worktree !== promptPath) return false;
+    return true;
+  });
+  const allItems = scopedMacros
+    .map(({ m, i }) => (hit(m) ? { m, i } : null))
+    .filter(Boolean);
+  const groups = [{ name: 'all', colour: null, items: allItems }, ...labels.map((l) => ({
     name: l.name,
     colour: l.colour,
-    items: macros
-      .map((m, i) => (m && m.tag === l.name && hit(m) ? { m, i } : null))
+    items: scopedMacros
+      .map(({ m, i }) => (m.tag === l.name && hit(m) ? { m, i } : null))
       .filter(Boolean),
-  }));
-  const loose = macros
-    .map((m, i) =>
-      m && !labels.some((l) => l.name === m.tag) && hit(m) ? { m, i } : null
+  }))];
+  const loose = scopedMacros
+    .map(({ m, i }) =>
+      !labels.some((l) => l.name === m.tag) && hit(m) ? { m, i } : null
     )
     .filter(Boolean);
   if (loose.length) groups.push({ name: 'untagged', colour: null, items: loose });
+  const available = groups.filter((g) => g.items.length);
+  // Searching can empty the selected label. Falling through to the first tab
+  // with a hit keeps a cross-label search from looking falsely empty.
+  const active = available.find((g) => g.name === labelTab) || available[0] || null;
+  const runPrompt = (m, i) => {
+    if (!m.fields?.length) return onExecute(i);
+    setFormValues({});
+    setFormPrompt({ m, i });
+  };
+  const stageFormPrompt = () => {
+    if (!formPrompt) return;
+    const { m, i } = formPrompt;
+    let dynamic = m.dynamic || (m.prefix && m.text.startsWith(m.prefix)
+      ? m.text.slice(m.prefix.length).trimStart()
+      : m.text);
+    for (const field of m.fields || [])
+      dynamic = dynamic.split(`{{${field.name}}}`).join((formValues[field.name] || '').trim());
+    const rendered = [m.prefix?.trim(), dynamic.trim()].filter(Boolean).join('\n\n');
+    setFormPrompt(null);
+    onExecute(i, rendered);
+  };
 
   return (
-    <ScrollView contentContainerStyle={styles.list}>
-      {!!find && !groups.some((g) => g.items.length) && (
-        <Text style={styles.none}>nothing matches “{q.trim()}”</Text>
-      )}
-      {groups
-        .filter((g) => g.items.length)
-        .map((g) => (
-          <View key={g.name} style={styles.group}>
-            <View style={styles.groupHead}>
+    <>
+      {available.length > 1 && (
+        <View style={styles.subTabs}>
+          {available.map((g) => (
+            <Pressable
+              key={g.name}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active?.name === g.name }}
+              onPress={() => setLabelTab(g.name)}
+              style={styles.promptTab}>
               <View
                 style={[
-                  styles.swatch,
+                  styles.promptTabDot,
+                  g.name === 'all' && styles.promptTabDotAll,
                   { backgroundColor: g.colour === null ? C.edge : hexFor(g.colour) },
                 ]}
               />
-              <Text style={styles.groupName}>{g.name}</Text>
-              <Text style={styles.groupN}>{g.items.length}</Text>
-            </View>
-            {g.items.map(({ m, i }) => (
+              <Text style={[styles.subTab, active?.name === g.name && styles.subTabOn]}>
+                {g.name}<Text style={styles.subTabN}> {g.items.length}</Text>
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      <ScrollView contentContainerStyle={styles.list}>
+      {!active && (
+        <Text style={styles.none}>
+          {find ? `nothing matches “${q.trim()}”` : 'no prompts'}
+        </Text>
+      )}
+      {!!active && (
+          <View key={active.name} style={styles.group}>
+            {active.items.map(({ m, i }) => (
               <View key={i} style={[styles.item, sel === i && styles.itemOn]}>
                 {/* only the label picks the pad. A responder on the whole row
                     swallows the taps meant for the row's own keys: it toggled
@@ -381,7 +475,6 @@ function Library({ macros, labels, q, sel, onPress, onExecute, onEdit }) {
                       <Text style={styles.rowName} numberOfLines={1}>
                         {m.label}
                       </Text>
-                      {!!m.submit && <Text style={styles.fires}>AUTO-SUBMITS</Text>}
                     </View>
                     {m.text !== m.label && (
                       <Text style={styles.rowSub} numberOfLines={1}>
@@ -396,7 +489,7 @@ function Library({ macros, labels, q, sel, onPress, onExecute, onEdit }) {
                       label="run"
                       colour="#f03c3c"
                       lit
-                      onPress={() => onExecute(i)}
+                      onPress={() => runPrompt(m, i)}
                       style={styles.actKey}
                     />
                     <PushButton
@@ -406,14 +499,44 @@ function Library({ macros, labels, q, sel, onPress, onExecute, onEdit }) {
                       style={styles.actKey}
                     />
                   </View>
-                ) : (
-                  <Text style={styles.note}>{36 + i}</Text>
-                )}
+                ) : null}
               </View>
             ))}
           </View>
-        ))}
-    </ScrollView>
+      )}
+      </ScrollView>
+      <Modal visible={!!formPrompt} transparent animationType="fade" onRequestClose={() => setFormPrompt(null)}>
+        <Pressable style={styles.formBack} onPress={() => setFormPrompt(null)}>
+          <Pressable style={styles.formModal} onPress={() => {}}>
+            <Text style={styles.formTitle}>{formPrompt?.m.label || 'Prompt details'}</Text>
+            <Text style={styles.formHint}>
+              These values are appended to the stable cached prefix. After the prompt is added to the input, send it without editing its beginning so the prefix remains cacheable.
+            </Text>
+            <ScrollView contentContainerStyle={styles.formFields} keyboardShouldPersistTaps="handled">
+              {(formPrompt?.m.fields || []).map((field, i) => (
+                <View key={`${field.name}-${i}`} style={styles.formField}>
+                  <Text style={styles.formLabel}>{field.label || field.name}</Text>
+                  <TextInput
+                    value={formValues[field.name] || ''}
+                    onChangeText={(value) => setFormValues((all) => ({ ...all, [field.name]: value }))}
+                    placeholder={field.placeholder || `Enter ${field.label || field.name}`}
+                    placeholderTextColor={C.faint}
+                    style={styles.formInput}
+                    multiline
+                  />
+                </View>
+              ))}
+            </ScrollView>
+            <View style={styles.formActions}>
+              <Pressable onPress={() => setFormPrompt(null)} style={styles.formCancel}>
+                <Text style={styles.formCancelText}>cancel</Text>
+              </Pressable>
+              <PushButton label="add to input" colour={C.accentText} lit onPress={stageFormPrompt} style={styles.formSubmit} />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   );
 }
 
@@ -435,6 +558,9 @@ const styles = StyleSheet.create({
   spacer: { flex: 1 },
   key: { height: 32, minHeight: 32, minWidth: 70 },
   tabs: { flexDirection: 'row', gap: 14, paddingBottom: 2 },
+  masterTabs: { flexDirection: 'row', gap: 14, paddingBottom: 2 },
+  masterTab: { color: C.faint, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
+  masterTabOn: { color: C.accentText, fontWeight: '600' },
   add: { minHeight: 30, justifyContent: 'center', paddingHorizontal: 12, paddingTop: 8 },
   addText: { color: C.accentText, fontSize: 12 },
   subTabs: {
@@ -448,8 +574,24 @@ const styles = StyleSheet.create({
   subTab: { color: C.faint, fontSize: 11 },
   subTabOn: { color: C.accentText },
   subTabN: { color: C.edge, fontSize: 10 },
+  promptTab: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  promptTabDot: { width: 6, height: 6, borderRadius: 2 },
+  promptTabDotAll: { opacity: 0 },
+  formBack: { flex: 1, backgroundColor: 'rgba(0,0,0,.72)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  formModal: { width: '100%', maxWidth: 620, maxHeight: '84%', backgroundColor: C.panel, borderWidth: 1, borderColor: C.edge, borderRadius: S.radius, padding: 18, gap: 12 },
+  formTitle: { color: C.text, fontSize: 18, fontWeight: '600' },
+  formHint: { color: C.faint, fontSize: 12, lineHeight: 18 },
+  formFields: { gap: 12, paddingVertical: 4 },
+  formField: { gap: 5 },
+  formLabel: { color: C.dim, fontSize: 12, fontWeight: '600' },
+  formInput: { minHeight: 44, maxHeight: 120, color: C.text, backgroundColor: C.raised, borderWidth: 1, borderColor: C.line, borderRadius: 6, padding: 10, fontSize: 14 },
+  formActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 10 },
+  formCancel: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 12 },
+  formCancelText: { color: C.faint, fontSize: 12 },
+  formSubmit: { minHeight: 40, minWidth: 120 },
   tab: { color: C.faint, fontSize: 11, letterSpacing: 0.4 },
   tabOn: { color: C.text, fontWeight: '600' },
+  collapse: { minWidth: S.hit, minHeight: S.hit, alignItems: 'center', justifyContent: 'center', marginLeft: 'auto' },
   find: {
     height: 32,
     color: C.text,

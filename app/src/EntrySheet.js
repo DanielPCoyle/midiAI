@@ -156,7 +156,7 @@ function hasBadLine(text) {
 //                         that one" -- the server will only accept one of these
 //   onClose  () => void
 //   onSaved  () => void -- the panel should re-read /catalog
-export default function EntrySheet({ kind, row, base, cwd, projects = [], onClose, onSaved }) {
+export default function EntrySheet({ kind, row, initialScope, base, cwd, projects = [], labels = [], onClose, onSaved }) {
   const skill = kind === 'skill';
   const editing = !!row;
   // A plugin's skill is somebody else's file. It opens here to be read, to be
@@ -165,9 +165,13 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
   const locked = skill && row?.scope === 'plugin';
   const [toCwd, setToCwd] = useState(cwd);
 
-  const [scope, setScope] = useState(row?.scope || 'project');
+  const requestedScope = initialScope === 'global' ? 'user' : initialScope;
+  const [scope, setScope] = useState(
+    row?.scope || (skill && requestedScope === 'local' ? 'project' : requestedScope) || 'project'
+  );
   const [name, setName] = useState(row?.name || '');
   const [description, setDescription] = useState(row?.description || '');
+  const [label, setLabel] = useState(row?.label || '');
   const [body, setBody] = useState('');
   const [event, setEvent] = useState(row?.event || 'Stop');
   const [matcher, setMatcher] = useState(row?.matcher || '');
@@ -181,6 +185,7 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
   // guaranteed `command` (the one field the old single-shape editor knew
   // about).
   const entry = row?.entry || {};
+  const knownLabel = labels.some((item) => item.name === label) ? label : '';
   const [hookType, setHookType] = useState(row?.type || 'command');
   // command
   const [command, setCommand] = useState(entry.command ?? row?.command ?? '');
@@ -215,6 +220,7 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
       .then((d) => {
         if (!live) return;
         setDescription(d.description || '');
+        setLabel(d.label || '');
         setBody(d.body || '');
       })
       .catch((e) => live && setErr(e.message || String(e)))
@@ -242,7 +248,7 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
     try {
       if (skill) {
         await saveSkill(base, {
-          scope, name, description, body, cwd,
+          scope, name, description, label: knownLabel, body, cwd,
           // only an editor that opened this exact skill may overwrite it --
           // otherwise typing a name someone else used silently replaces it
           replace: editing && row.scope === scope && row.name === name,
@@ -253,7 +259,7 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
           scope, cwd, event: event.trim(), matcher,
           // the row's own address in its settings file; absent, this appends
           ...(editing && row.scope === scope ? { gi: row.gi, hi: row.hi } : {}),
-          name, description, type: hookType,
+          name, description, label: knownLabel, type: hookType,
         };
         // omitted rather than sent blank -- the server whitelists per type
         // and drops what it doesn't recognise, but a "" it does recognise
@@ -391,6 +397,27 @@ export default function EntrySheet({ kind, row, base, cwd, projects = [], onClos
                 ))}
               </View>
             )}
+
+            <Text style={styles.label}>label</Text>
+            <View style={styles.chips}>
+              <Text
+                accessibilityRole="button"
+                accessibilityState={{ selected: !knownLabel }}
+                onPress={() => !locked && setLabel('')}
+                style={[styles.chip, !knownLabel && styles.chipOn]}>
+                untagged
+              </Text>
+              {labels.map((item) => (
+                <Text
+                  key={item.name}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: knownLabel === item.name }}
+                  onPress={() => !locked && setLabel(item.name)}
+                  style={[styles.chip, knownLabel === item.name && styles.chipOn]}>
+                  {item.name}
+                </Text>
+              ))}
+            </View>
 
             {loading && <ActivityIndicator size="small" color={C.faint} />}
 

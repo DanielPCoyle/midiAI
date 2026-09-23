@@ -5,6 +5,8 @@
   "dependencies": {
     "@expo/metro-runtime": "~57.0.14",
     "@expo/vector-icons": "^15.0.2",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "expo": "~57.0.17",
     "expo-constants": "~57.0.15",
     "expo-image-picker": "~57.0.14",

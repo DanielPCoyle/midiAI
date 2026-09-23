@@ -5,7 +5,6 @@ import {
   TextInput,
   ScrollView,
   TouchableOpacity,
-  Switch,
   StyleSheet,
 } from 'react-native';
 import { C, PALETTE, hexFor, S } from './theme';
@@ -14,11 +13,13 @@ import { C, PALETTE, hexFor, S } from './theme';
 // anything else here would be noise on a pad that costs nothing to press.
 const CACHE_DROPPER = /\/(effort|model)\b/;
 
-export default function Inspector({ index, pad, labels, onSave, onClear, onAddLabel, onDelLabel }) {
+export default function Inspector({ index, pad, labels, promptRoot, promptPath, defaultScope = 'global', onSave, onClear, onAddLabel, onDelLabel }) {
   const [label, setLabel] = useState('');
+  const [prefix, setPrefix] = useState('');
   const [text, setText] = useState('');
+  const [fields, setFields] = useState([]);
   const [tag, setTag] = useState('');
-  const [submit, setSubmit] = useState(false);
+  const [scope, setScope] = useState('global');
   const [newName, setNewName] = useState('');
   const [newColour, setNewColour] = useState(PALETTE[0][1]);
 
@@ -26,10 +27,15 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
   // user's own keystrokes would get clobbered mid-edit.
   useEffect(() => {
     setLabel(pad?.label || '');
-    setText(pad?.text || '');
+    const savedPrefix = pad?.prefix || '';
+    setPrefix(savedPrefix);
+    setText(pad?.dynamic || (savedPrefix && (pad?.text || '').startsWith(savedPrefix)
+      ? (pad.text || '').slice(savedPrefix.length).trimStart()
+      : pad?.text || ''));
+    setFields(Array.isArray(pad?.fields) ? pad.fields : []);
     setTag(pad?.tag || '');
-    setSubmit(!!pad?.submit);
-  }, [index]);
+    setScope(pad?.scope || defaultScope);
+  }, [index, defaultScope]);
 
   if (index === null) {
     return (
@@ -41,19 +47,31 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
 
   const save = () => {
     const trimmed = text.trim();
-    if (!trimmed) {
+    const staticPrefix = prefix.trim();
+    const prompt = [staticPrefix, trimmed].filter(Boolean).join('\n\n');
+    if (!prompt) {
       onClear();
       return;
     }
     const lab = labels.find((l) => l.name === tag);
     onSave({
-      label: label.trim() || trimmed.split(/\s+/).slice(0, 2).join(' '),
-      text: trimmed,
+      label: label.trim() || (trimmed || staticPrefix).split(/\s+/).slice(0, 2).join(' '),
+      text: prompt,
+      prefix: staticPrefix,
+      dynamic: trimmed,
+      fields: fields.filter((field, i, all) =>
+        field.name && all.findIndex((item) => item.name === field.name) === i),
       tag: tag || null,
       colour: lab ? lab.colour : 125,
-      submit,
+      // Hardware-only behavior: the app neither exposes nor changes it.
+      submit: !!pad?.submit,
+      scope,
+      project: scope === 'project' ? promptRoot : '',
+      worktree: scope === 'local' ? promptPath : '',
     });
   };
+  const prefixTokens = Math.ceil(prefix.trim().length / 4);
+  const cacheReady = prefixTokens >= 1024;
 
   const addLabel = () => {
     const name = newName.trim();
@@ -74,13 +92,81 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
         placeholderTextColor={C.faint}
       />
 
-      <Text style={styles.label}>Text <Text style={styles.hint}>(inserted into the prompt)</Text></Text>
+      <View style={styles.cacheIntro}>
+        <Text style={styles.cacheTitle}>Cacheable prefix</Text>
+        <Text style={styles.hint}>
+          Put stable instructions, examples, and long reference material first. Reusing this exact beginning lets the model skip recalculating it.
+        </Text>
+        <View style={styles.cacheMeterRow}>
+          <View style={styles.cacheTrack}>
+            <View
+              style={[
+                styles.cacheFill,
+                { width: `${Math.min(100, prefixTokens / 10.24)}%` },
+                cacheReady && styles.cacheFillReady,
+              ]}
+            />
+          </View>
+          <Text style={[styles.cacheCount, cacheReady && styles.cacheCountReady]}>
+            ≈ {prefixTokens.toLocaleString()} / 1,024 tokens
+          </Text>
+        </View>
+        <Text style={styles.cacheStatus}>
+          {cacheReady
+            ? 'Prefix is large enough for caching on supported models.'
+            : 'Caching usually begins once the repeated prefix reaches 1,024 tokens.'}
+        </Text>
+      </View>
+      <TextInput
+        style={[styles.input, styles.prefixArea]}
+        value={prefix}
+        onChangeText={setPrefix}
+        multiline
+        placeholder="Stable instructions, examples, or documents"
+        placeholderTextColor={C.faint}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+
+      <Text style={styles.label}>Dynamic form <Text style={styles.hint}>(values are requested when this prompt runs)</Text></Text>
+      {fields.map((field, i) => (
+        <View key={i} style={styles.fieldCard}>
+          <TextInput
+            style={[styles.input, styles.fieldInput]}
+            value={field.label}
+            onChangeText={(value) => setFields((all) => all.map((item, k) => k === i ? { ...item, label: value } : item))}
+            placeholder="Field label"
+            placeholderTextColor={C.faint}
+          />
+          <TextInput
+            style={[styles.input, styles.fieldInput]}
+            value={field.name}
+            onChangeText={(value) => setFields((all) => all.map((item, k) => k === i ? { ...item, name: value.toLowerCase().replace(/[^a-z0-9_]/g, '') } : item))}
+            placeholder="variable_name"
+            placeholderTextColor={C.faint}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <TouchableOpacity
+            style={styles.fieldRemove}
+            onPress={() => setFields((all) => all.filter((_, k) => k !== i))}>
+            <Text style={styles.delText}>×</Text>
+          </TouchableOpacity>
+        </View>
+      ))}
+      <TouchableOpacity
+        style={[styles.btn, styles.addField]}
+        onPress={() => setFields((all) => [...all, { name: `field_${all.length + 1}`, label: '', placeholder: '' }])}>
+        <Text style={styles.btnText}>＋ add field</Text>
+      </TouchableOpacity>
+
+      <Text style={styles.label}>Dynamic template <Text style={styles.hint}>(insert fields with {'{{variable_name}}'}; this stays after the prefix)</Text></Text>
       <TextInput
         style={[styles.input, styles.textarea]}
         value={text}
         onChangeText={setText}
         multiline
-        placeholder="empty clears the pad"
+        placeholder={'Review {{topic}} for {{audience}}'}
         placeholderTextColor={C.faint}
       />
 
@@ -88,7 +174,7 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
           cache. These two are not: changing effort drops the messages cache,
           and a model switch drops all of it, because caches are model-scoped.
           Worth knowing before you put one on a pad you tap without thinking. */}
-      {CACHE_DROPPER.test(text) && (
+      {CACHE_DROPPER.test(`${prefix}\n${text}`) && (
         <Text style={styles.warn}>
           {/\/model\b/.test(text) ? 'Switches model' : 'Changes effort'} — drops
           this agent's cached prefix, which is re-read at full price on the
@@ -116,11 +202,20 @@ export default function Inspector({ index, pad, labels, onSave, onClear, onAddLa
         ))}
       </View>
 
-      <View style={styles.row}>
-        <Switch value={submit} onValueChange={setSubmit} />
-        <Text style={styles.rowLabel}>
-          Auto submit <Text style={styles.hint}>(fires at the agent on tap -- careful, this is live)</Text>
-        </Text>
+      <Text style={styles.label}>Scope</Text>
+      <View style={styles.chipRow}>
+        {[
+          ['global', 'global'],
+          ['project', 'project'],
+          ['local', 'project local'],
+        ].map(([key, word]) => (
+          <TouchableOpacity
+            key={key}
+            style={[styles.chip, scope === key && styles.chipSel]}
+            onPress={() => setScope(key)}>
+            <Text style={styles.chipText}>{word}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       <View style={styles.btnRow}>
@@ -213,6 +308,15 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginBottom: 12,
   },
+  cacheIntro: { marginTop: 14, gap: 7, padding: 11, borderWidth: 1, borderColor: C.line, borderRadius: S.radius, backgroundColor: C.bg },
+  cacheTitle: { color: C.text, fontSize: 13, fontWeight: '600' },
+  cacheMeterRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  cacheTrack: { flex: 1, height: 5, borderRadius: 3, backgroundColor: C.raised, overflow: 'hidden' },
+  cacheFill: { height: '100%', backgroundColor: '#e0a03c' },
+  cacheFillReady: { backgroundColor: '#3cd05a' },
+  cacheCount: { color: '#e0a03c', fontSize: 10, minWidth: 112, textAlign: 'right' },
+  cacheCountReady: { color: '#3cd05a' },
+  cacheStatus: { color: C.faint, fontSize: 10, lineHeight: 15 },
   input: {
     backgroundColor: C.raised,
     color: C.text,
@@ -227,6 +331,11 @@ const styles = StyleSheet.create({
     height: 120,
     textAlignVertical: 'top',
   },
+  prefixArea: { height: 190, marginTop: 8, textAlignVertical: 'top' },
+  fieldCard: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 7 },
+  fieldInput: { flex: 1, minWidth: 0 },
+  fieldRemove: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
+  addField: { alignSelf: 'flex-start', minHeight: 34, marginTop: 8, paddingHorizontal: 10 },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

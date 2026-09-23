@@ -15,6 +15,7 @@ import {
 
 import { baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
 import EntrySheet from './src/EntrySheet';
+import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
 import Pads from './src/Pads';
 import Pane from './src/Pane';
@@ -22,7 +23,7 @@ import { inside } from './src/Projects';
 import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
 import Rail from './src/Rail';
-import { BREAK, C, KEY, S, SEAT_HEX } from './src/theme';
+import { BREAK, C, KEY, S, SEAT_HEX, mono } from './src/theme';
 
 const SURFACE_MS = 400; // the mirror and the views both; anything slower lags
 const TARGET_MS = 2500; // which session is selected, and whether push_cc is up
@@ -101,20 +102,31 @@ export default function App() {
   // (Push mirror) both need to have already given way by here, not one
   // pixel later.
   const narrow = width <= BREAK.mid;
-  // The prompt library is 19 always-on items competing with the one thing
-  // you're actually reading -- collapsed is the resting state everywhere,
-  // freeing that width for the transcript. Only at `wide` is there room to
-  // read one and glance at the other at the same time, so only there does
-  // it default open. Re-evaluated whenever the breakpoint is crossed, not
-  // held forever -- short of that, whichever way it was last toggled stands.
-  const [padsOpen, setPadsOpen] = useState(wide);
+  // The prompt library is 19 always-on items competing with the one thing you
+  // are actually reading. Collapsed is the resting state at every width now --
+  // it is a 56px strip of keys rather than nothing, so it costs a tap to open
+  // and never costs 344px to ignore. It used to default open above `wide` on
+  // the grounds that there was room for both; there was, and the transcript
+  // still wanted it more.
+  const [padsOpen, setPadsOpen] = useState(false);
+  // Focusing the composer opens the library -- until you shut it yourself.
+  // Without this every tap back into the input undid the close.
+  const padsShut = useRef(false);
+  const collapsePads = () => {
+    padsShut.current = true;
+    setPadsOpen(false);
+  };
+  const composerFocus = () => padsShut.current || setPadsOpen(true);
 
   const total = Math.max(surface.pages ?? pages.length, 1);
   const page = Math.min(surface.page ?? ownPage, total - 1);
   const macros = pages[page] || EMPTY;
   const opts = surface.opts || [];
   const asking = opts.length > 0;
-  const views = surface.views || [];
+  // These are product navigation, not a capability probe. Keeping the stable
+  // contract visible while push_cc reconnects also lets the app-owned Git and
+  // test endpoints continue to work in headless/server-only use.
+  const views = surface.views || ['focus', 'sessions', 'tests', 'prs', 'usage'];
   const cols = surface.cols || [];
   // Every pad fires into "whichever session the Push is pointed at" -- with no
   // agent anywhere there is no such session, and the server answers a fire with
@@ -128,17 +140,24 @@ export default function App() {
   // Which worktree the focused agent is sitting in, and therefore which repo
   // and which branch. Longest match, same rule Projects uses for its own rows.
   const place = (() => {
-    if (!here?.cwd) return null;
+    // The focused agent's cwd if there is one, otherwise the worktree picked
+    // in the rail. A repo's tests and its git state are facts about the
+    // checkout, not about who happens to be sitting in it -- reading them
+    // needed an agent only because this was the one thing that answered
+    // "which checkout", and it only ever asked the agents.
+    const from = here?.cwd || pick?.path;
+    if (!from) return null;
     let best = null;
     for (const p of projects)
       for (const w of p.worktrees || []) {
-        if (!inside(here.cwd, w.path)) continue;
+        if (!inside(from, w.path)) continue;
         if (!best || w.path.length > best.w.path.length) best = { p, w };
       }
     if (!best) return null;
     const { p, w } = best;
     return {
       repo: p.name,
+      root: p.path,
       branch: w.detached ? (w.head || '').slice(0, 7) : w.branch || '',
       // the worktree itself, so the rail can ask "is this agent in here too"
       path: w.path,
@@ -165,15 +184,23 @@ export default function App() {
   // there is only surface.data -- whatever the hardware itself is showing,
   // which is the fallback rather than the source now.
   const viewData = surface.views_data && surface.views_data[viewName];
-  const data = (viewData && viewData[mode]) || surface.data || {};
+  const wireData = (viewData && viewData[mode]) || surface.data || {};
+  const data = wireData.kind ? wireData : { kind: viewName };
 
   // The view name is a wire contract (VIEWS in push_cc.py, a views_data key)
   // -- only the word drawn on the tab changes here, never the key anything
   // is looked up by.
   // The view name is the wire contract; only the word drawn changes here.
-  // `prs` reads GIT because the view is the repo's state, not just its pull
-  // requests, and PRS was the one tab whose name had to be decoded.
-  const TAB_LABEL = { prs: 'git' };
+  // Both of these are wider than the key underneath them. `prs` reads GIT
+  // because pull requests are one of four things on it -- what has not left
+  // this machine yet, what is waiting on a person, what the push set running,
+  // and what runs before a commit is allowed to leave. It read CI/CD while
+  // the first of those did not exist; a working tree is not CI, so the wider
+  // word had to get wider still. `tests` reads GUARDRAILS because the view is
+  // everything standing between a change and main, not the test files it
+  // lists today.
+  const TAB_LABEL = { prs: 'git', tests: 'guardrails' };
+
   // `sessions` and its subagents split are no longer tabs: the rail's AGENTS
   // group is a better answer to "who is running" than a tab that had to be
   // clicked to find out, and it is on screen the whole time. The view itself
@@ -184,7 +211,11 @@ export default function App() {
   // focus and usage have no one number that sums them up, so they stay bare.
   const testsCount = (surface.views_data?.tests?.[0]?.items || []).length;
   const prsCount = (surface.views_data?.prs?.[0]?.rows || []).length;
-  const TAB_COUNT = { tests: testsCount, prs: prsCount };
+  // ...but both are read off the Push's own focused agent. With a worktree
+  // picked in the rail the pane below is about a different checkout, and a
+  // badge counting the other one is worse than no badge: GIT read 0 next to
+  // a pane listing five open PRs.
+  const TAB_COUNT = picked ? {} : { tests: testsCount, prs: prsCount };
   const filled = macros.filter(Boolean).length;
 
   // Two different facts were being read as one status. Whether push_cc
@@ -216,13 +247,6 @@ export default function App() {
     const at = surface.at || [];
     if (at.length) setLocalModes(Object.fromEntries(at.map((m, i) => [i, m])));
   }, [effectiveFollow, surface.at]);
-  // A resize past the breakpoint puts the panel back to its default for the
-  // new width; short of that this leaves whatever the toggle or the composer
-  // last set alone, rather than fighting every render.
-  useEffect(() => {
-    setPadsOpen(wide);
-  }, [wide]);
-
   const say = useCallback((text) => {
     setNote(text);
     clearTimeout(noteAt.current);
@@ -426,11 +450,18 @@ export default function App() {
   );
 
   const firePad = useCallback(
-    (i) =>
-      post(base, '/fire', { index: i, page })
+    (i, renderedText) => {
+      const prompt = macros[i];
+      if (!prompt || !here?.tid) return Promise.resolve(say('nothing there, or no agent selected'));
+      return post(base, '/prompt', {
+        text: renderedText || prompt.text,
+        submit: false,
+        terminal_id: here.tid,
+      })
         .then((r) => say(r))
-        .catch(() => say('nothing there, or no agent selected')),
-    [base, page, say]
+        .catch(() => say('nothing there, or no agent selected'));
+    },
+    [base, here?.tid, macros, say]
   );
 
   const editPad = useCallback((i) => {
@@ -510,7 +541,6 @@ export default function App() {
   // edge with nothing to catch it -- wrapping here costs nothing extra once
   // it triggers, so it triggers as soon as the row can no longer promise it.
   const headerTight = !wide;
-
   // Built here rather than up with `picked`: `refresh` is a useCallback
   // declared further down, and reading it above its own declaration is a
   // temporal-dead-zone throw that takes the whole app blank on first render.
@@ -519,6 +549,7 @@ export default function App() {
   // panel it will come back on.
   const showPanel = (which, open) => {
     setPanel(which);
+    padsShut.current = !open;
     setPadsOpen(open);
   };
   // The catalog is files on disk, so nothing tells the app they changed but
@@ -539,46 +570,66 @@ export default function App() {
     setEditing(true);
   }, [macros, say]);
 
+  // Every pad fires into "whichever session the Push is pointed at" -- with
+  // no agent anywhere there is no such session, and the server answers a fire
+  // with 409. A panel whose every button is a guaranteed error is not worth
+  // the width, collapsed or open.
+  //
+  // And it is focus's panel, not the app's: guardrails, CI/CD and usage are
+  // read, not typed into, so a column of things to say to an agent is 56px of
+  // furniture with nothing to fire at on any of them. A question on the glass
+  // takes it too -- the answer pads are what that moment is for.
+  const showPads = !picked && anyAgent && viewName === 'focus' && !asking;
+
   const panelCounts = {
     prompts: filled,
     skills: catalog.skills.length,
     hooks: catalog.hooks.length,
   };
 
-  const noAgent = picked ? (
-    <NoAgent pick={picked} base={base} onClose={() => setPick(null)} onChanged={refresh} />
-  ) : null;
+  // An empty worktree has no transcript to show and no one to send to, which
+  // is what NoAgent answers -- so it stands in for `focus` alone. Tests and
+  // git describe the checkout itself and are worth reading before anyone is
+  // living in it; they used to be replaced by an offer to start an agent,
+  // which made picking a repo to look at it impossible.
+  const noAgent =
+    picked && viewName === 'focus' ? (
+      <NoAgent pick={picked} base={base} onClose={() => setPick(null)} onChanged={refresh} />
+    ) : null;
 
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar barStyle="light-content" />
 
-      <View style={[styles.header, headerTight && styles.headerWrap]}>
+      {/* One band where there were two. A header naming the app and a repo bar
+          naming the checkout were 83px of chrome saying two things that belong
+          on one line -- and the second of them existed only because the first
+          had no room left. The checkout is a chip here rather than a band of
+          its own: it is a fact about what you are looking at, the same size as
+          the rest of them. */}
+      <View style={[styles.band, headerTight && styles.bandWrap]}>
+        <View style={[styles.dot, { backgroundColor: dot }]} />
         <Text style={styles.brand}>midiAI</Text>
-        <View style={styles.status}>
-          <View style={[styles.dot, { backgroundColor: dot }]} />
-          {/* no numberOfLines: this used to crop mid-sentence with no way to
-              read the rest. The pill wraps to a second line instead now --
-              room for the whole thing beats a truncation nobody can undo. */}
-          <Text style={[styles.why, !reachable && styles.whyBad]}>{why}</Text>
-        </View>
-        {/* Headless is the launcher's own supported mode, not a fault -- the
-            red dot and banner above are for push_cc being unreachable, and
-            this is the separate, quiet fact that no Push is on the cable. */}
-        {headless && (
-          <View style={styles.headless}>
-            <Text style={styles.headlessText}>headless</Text>
-          </View>
-        )}
+
+        {/* Spend is account-wide, so usage gets no checkout chip -- a repo name
+            over it would be claiming those were that repo's tokens. */}
+        {viewName !== 'usage' &&
+          (place ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipRepo}>{place.repo}</Text>
+              {!!place.branch && <Text style={styles.chipBranch}>{place.branch}</Text>}
+            </View>
+          ) : (
+            <Text style={styles.chipNone}>no checkout — pick a worktree, or focus an agent</Text>
+          ))}
 
         {!mirror && (
           <View style={styles.tabs}>
             {/* Every mode a tab could be sitting in used to hang off it as an
                 "N/M" counter -- a number nobody could act on without pressing
                 the tab to find out what the other one was. Gone now except
-                for the three counts below, which are the ones you can act on
-                without a click: usage's modes are their own pressable row
-                inside the pane, and focus's mode is pinned off above. */}
+                for the counts below, which are the ones you can act on
+                without a click. */}
             {views.map((name, i) => {
               // mapped, not filtered: `i` is the wire index a /press carries,
               // and a filtered array would renumber it.
@@ -607,9 +658,19 @@ export default function App() {
 
         <View style={styles.spacer} />
 
+        {/* The status pill's whole content was this sentence -- why push_cc is
+            not answering. A red dot that cannot say why is worse than no light,
+            so the sentence outlived the pill; the dot beside the brand is the
+            rest of it. */}
+        {!reachable && (
+          <Text style={styles.whyBad} numberOfLines={2}>
+            {why}
+          </Text>
+        )}
+
         {/* Below 1200 the rail moves behind this and the pane header already
-            names the current agent, so there is always an answer to "who
-            am I looking at" without it. */}
+            names the current agent, so there is always an answer to "who am I
+            looking at" without it. */}
         {!wide && (
           <PushButton
             label="agents"
@@ -619,18 +680,14 @@ export default function App() {
             style={styles.key}
           />
         )}
-        {/* Headless, there's no hardware for this to mean anything about --
-            push_cc's view only ever moves because this app pressed it, so
-            "follow" would be the app following its own presses. The stored
-            value is untouched underneath (see effectiveFollow above), so a
-            Push plugged in mid-session brings this back exactly as it was
-            left, rather than resetting to "following". */}
-        {!headless && (
+        {/* Headless is the launcher's own supported mode, not a fault, and
+            there is no hardware for "follow" to mean anything about. The
+            stored value is untouched underneath, so a Push plugged in
+            mid-session brings this back exactly as it was left. */}
+        {headless ? (
+          <Text style={styles.headlessText}>headless</Text>
+        ) : (
           <PushButton
-            // On (the default) is the behaviour this app always had: your tab
-            // is the Push's tab. Off, the two are independent -- the mirror
-            // still drives the hardware regardless, because mirroring it is
-            // the one thing the mirror is for.
             label={followPush ? 'following the Push' : 'independent view'}
             colour={C.accentText}
             lit={followPush}
@@ -638,12 +695,15 @@ export default function App() {
             style={styles.key}
           />
         )}
-        {/* reconnect, the mirror and the host field used to sit out here and
-            drop out of the row one at a time as it narrowed -- the host field
-            above 1200 only, the mirror above 820 -- so two of the three things
-            you reach for when something is wrong were the two the width took
-            away. Behind one ⋮ they are all there at every width, and the row
-            keeps what you read rather than what you press. */}
+        {!!place && (
+          <Text style={styles.pathText} numberOfLines={1}>
+            {place.path.replace(HOME_RE, '~')}
+          </Text>
+        )}
+        {/* reconnect, the mirror and the host field behind one key, so the
+            three things you reach for when something is wrong are all there at
+            every width and the row keeps what you read rather than what you
+            press. */}
         <PushButton
           label="⋮"
           accessibilityLabel="more controls"
@@ -722,62 +782,58 @@ export default function App() {
           />
         </View>
       ) : narrow ? (
-        // The rail and the pads panel are both fixed-width furniture (268
-        // and 344-528) that cannot shrink to fit a column this narrow -- so
-        // rather than let them overlap the pane, as they did, the whole
-        // thing becomes one scrollable column and the pads panel keeps its
-        // own width behind a sideways scroll scoped to just that block,
-        // which is not the page scrolling sideways.
+        // The rail and the pads panel are both fixed-width furniture the
+        // column cannot shrink to fit, so below `mid` the whole thing is one
+        // scrollable column and the pads keep their own width behind a
+        // sideways scroll scoped to that block.
         <ScrollView contentContainerStyle={styles.bodyNarrow}>
           {noAgent || (
-          <Pane
-            data={data}
-            opts={opts}
-            cols={cols}
-            current={surface.current}
-            onAnswer={(k) => press({ answer: k })}
-            base={base}
-            onSent={refresh}
-            mode={mode}
-            onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
-            reachable={reachable}
-            onComposerFocus={() => setPadsOpen(true)}
-            padsOpen={padsOpen}
-            padsCount={filled}
-            onTogglePads={anyAgent ? () => setPadsOpen((o) => !o) : undefined}
-            panel={panel}
-            onPanel={showPanel}
-            counts={panelCounts}
-            place={place}
-            subs={subs}
-          />
+            <Pane
+                data={data}
+                opts={opts}
+                cols={cols}
+                current={surface.current}
+                onSeat={(i) => press({ seat: i })}
+                onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+                base={base}
+                onSent={refresh}
+                mode={mode}
+                onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
+                reachable={reachable}
+                onComposerFocus={composerFocus}
+                place={place}
+                subs={subs}
+              />
           )}
-          {!picked && anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
+          {showPads &&
             (ready ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <Pads
-                  kind={data.kind}
-                  data={data}
-                  opts={opts}
-                  onAnswer={(k) => press({ answer: k })}
-                  macros={macros}
-                  labels={labels}
-                  panel={panel}
-                  onPanel={showPanel}
-                  catalog={catalog}
-                  onEntry={(kind, row) => setEntry({ kind, row })}
-                  onNewPad={newPad}
-                  sel={sel}
-                  editing={editing && sel !== null}
-                  onPress={tapPad}
-                  onExecute={firePad}
-                  onEdit={editPad}
-                  onSave={savePad}
-                  onClear={clearPad}
-                  onAddLabel={addLabel}
-                  onDelLabel={delLabel}
-                  onClose={() => setEditing(false)}
-                />
+                kind={data.kind}
+                data={data}
+                opts={opts}
+                onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+                macros={macros}
+                labels={labels}
+                promptRoot={place?.root || ''}
+                promptPath={place?.path || ''}
+                panel={panel}
+                onPanel={showPanel}
+                catalog={catalog}
+                onEntry={(kind, row, scope) => setEntry({ kind, row, scope })}
+                onNewPad={newPad}
+                sel={sel}
+                editing={editing && sel !== null}
+                onPress={tapPad}
+                onExecute={firePad}
+                onEdit={editPad}
+                onSave={savePad}
+                onClear={clearPad}
+                onAddLabel={addLabel}
+                onDelLabel={delLabel}
+                onClose={() => setEditing(false)}
+                onCollapse={collapsePads}
+              />
               </ScrollView>
             ) : (
               <View style={styles.waitingNarrow}>
@@ -804,42 +860,51 @@ export default function App() {
           )}
           <View style={styles.centre}>
             {noAgent || (
-            <Pane
-              data={data}
-              opts={opts}
-              cols={cols}
-              current={surface.current}
-              onAnswer={(k) => press({ answer: k })}
-              base={base}
-              onSent={refresh}
-              mode={mode}
-              onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
-              reachable={reachable}
-              onComposerFocus={() => setPadsOpen(true)}
-            padsOpen={padsOpen}
-            padsCount={filled}
-            panel={panel}
-            onPanel={showPanel}
-            counts={panelCounts}
-            place={place}
-            subs={subs}
-            onTogglePads={anyAgent ? () => setPadsOpen((o) => !o) : undefined}
-            />
+              <Pane
+                data={data}
+                opts={opts}
+                cols={cols}
+                current={surface.current}
+                onSeat={(i) => press({ seat: i })}
+                onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+                base={base}
+                onSent={refresh}
+                mode={mode}
+                onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
+                reachable={reachable}
+                onComposerFocus={composerFocus}
+                place={place}
+                subs={subs}
+              />
             )}
           </View>
-          {!picked && anyAgent && !(asking && data.kind === 'focus') && (padsOpen || asking) &&
-            (ready ? (
+          {/* The prompt library used to hold 344px open whether or not you
+              were looking at it -- a third of the screen next to the one thing
+              you were actually reading. Collapsed it is a 56px strip of keys:
+              still on screen, still one tap from open, and the transcript gets
+              the width back. */}
+          {showPads &&
+            (!ready ? (
+              <View style={styles.waiting}>
+                <ActivityIndicator color={C.accentText} />
+                <Text style={styles.waitingText}>
+                  no answer from {host}:{PORT}
+                </Text>
+              </View>
+            ) : padsOpen ? (
               <Pads
                 kind={data.kind}
                 data={data}
                 opts={opts}
-                onAnswer={(k) => press({ answer: k })}
+                onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
                 macros={macros}
                 labels={labels}
+                promptRoot={place?.root || ''}
+                promptPath={place?.path || ''}
                 panel={panel}
                 onPanel={showPanel}
                 catalog={catalog}
-                onEntry={(kind, row) => setEntry({ kind, row })}
+                onEntry={(kind, row, scope) => setEntry({ kind, row, scope })}
                 onNewPad={newPad}
                 sel={sel}
                 editing={editing && sel !== null}
@@ -851,13 +916,33 @@ export default function App() {
                 onAddLabel={addLabel}
                 onDelLabel={delLabel}
                 onClose={() => setEditing(false)}
+                onCollapse={collapsePads}
               />
             ) : (
-              <View style={styles.waiting}>
-                <ActivityIndicator color={C.accentText} />
-                <Text style={styles.waitingText}>
-                  no answer from {host}:{PORT}
-                </Text>
+              <View style={styles.strip}>
+                {PANELS.map(([key, word]) => (
+                  <Pressable
+                    key={key}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${word} · ${panelCounts[key]}`}
+                    accessibilityState={{ selected: panel === key }}
+                    onPress={() => showPanel(key, true)}
+                    style={[styles.stripKey, panel === key && styles.stripKeyOn]}>
+                    <Icon
+                      name={key}
+                      size={20}
+                      color={panel === key ? C.accentText : C.faint}
+                    />
+                    {/* A zero is a settled fact, not a warning, so it stays
+                        off the strip entirely -- a faint "0" and a faint "3"
+                        read the same at a glance (MIDI-014). */}
+                    {panelCounts[key] > 0 && (
+                      <View style={styles.stripBadge}>
+                        <Text style={styles.stripBadgeText}>{panelCounts[key]}</Text>
+                      </View>
+                    )}
+                  </Pressable>
+                ))}
               </View>
             ))}
         </View>
@@ -898,9 +983,11 @@ export default function App() {
         <EntrySheet
           kind={entry.kind === 'skills' ? 'skill' : 'hook'}
           row={entry.row}
+          initialScope={entry.scope}
           base={base}
           cwd={hereCwd}
           projects={projects}
+          labels={labels}
           onClose={() => setEntry(null)}
           onSaved={() => {
             setEntry(null);
@@ -918,17 +1005,20 @@ export default function App() {
   );
 }
 
+// Paths read from home, the way they are said out loud.
+const HOME_RE = /^\/Users\/[^/]+/;
+
+// The three panels the collapsed strip offers, in the order they sit in it.
+// The word is the accessible name; the strip itself draws only the glyph.
+const PANELS = [
+  ['prompts', 'prompts'],
+  ['skills', 'skills'],
+  ['hooks', 'hooks'],
+];
+
 // One tab. The caller decides the label, the count and what "on" means; this
 // just draws it. Uppercasing is a style on the drawn Text rather than on the
 // string, so the accessible name stays the word as written.
-//
-// The touch target is a Pressable wrapping the Text, not the Text itself.
-// `styles.tabs` puts 18px of `gap` between tabs for looks, and a bare Text's
-// hit box stops at its own edge -- so half of every gap was dead, and a
-// click there landed on the row's own View with nowhere to send a /press
-// (MIDI-012). `tabHit` pads the Pressable out by half that gap and pulls it
-// back in with an equal negative margin, so the tappable box grows to meet
-// the neighbour while the drawn box never moves.
 //
 // The accessible name lives on the Pressable, not the two Text nodes inside
 // it -- nested Text used to leave assistive tech (and the QA recorder)
@@ -966,53 +1056,28 @@ function Tab({ label, count, hue, on, onPress }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  header: {
-    minHeight: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: S.gap,
-    paddingHorizontal: S.pad,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: C.line,
-  },
-  // Below `wide` there are eleven-odd controls and nowhere to put them in one
-  // line -- wrapping is the whole fix, and it costs nothing at a width where
-  // everything already fit on one row.
-  headerWrap: { flexWrap: 'wrap', rowGap: 8 },
+  spacer: { flex: 1 },
   brand: { color: C.text, fontSize: 16, fontWeight: '600' },
-  status: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    minHeight: 32,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: KEY.edge,
-    backgroundColor: KEY.face,
-    maxWidth: 440,
-  },
   dot: { width: 8, height: 8, borderRadius: 4 },
-  // no numberOfLines -- a clipped "why" used to be unreadable and
-  // unrecoverable; wrapping inside the pill's own maxWidth is room enough.
-  why: { color: C.dim, fontSize: 12, flexShrink: 1 },
-  whyBad: { color: C.bad },
-  // Quiet on purpose: headless is a supported way to run, not the red
-  // banner above it. Same pill shape, no colour that reads as trouble.
-  headless: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: KEY.edge,
-    backgroundColor: KEY.face,
-  },
+  // Quiet on purpose: headless is a supported way to run, not a fault.
   headlessText: { color: C.faint, fontSize: 11, letterSpacing: 0.3 },
-  tabs: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', alignSelf: 'stretch', gap: 18, marginLeft: 4 },
-  // Half of `tabs`' own 18px gap, padded on and pulled back off -- see the
-  // comment on Tab above. Purely a hit-area move: nothing here is visible.
+  whyBad: { color: C.bad, fontSize: 12, flexShrink: 1, maxWidth: 320 },
+  pathText: { color: C.edge, fontSize: 10, flexShrink: 1, ...mono },
+  key: { height: S.control, minHeight: S.control, minWidth: 96 },
+  dots: { height: S.control, minHeight: S.control, minWidth: S.control, paddingHorizontal: 0 },
+  // `tabs` puts 18px of gap between tabs for looks, and a bare Text's hit box
+  // stops at its own edge -- so half of every gap was dead, and a click there
+  // landed on the row's own View with nowhere to send a /press (MIDI-012).
+  tabs: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'stretch',
+    alignSelf: 'stretch',
+    gap: 18,
+    marginLeft: 4,
+  },
+  // Half of `tabs`' own gap, padded on and pulled back off. Purely a hit-area
+  // move: nothing here is visible.
   tabHit: { paddingHorizontal: 9, marginHorizontal: -9 },
   tab: {
     fontSize: 13,
@@ -1022,21 +1087,45 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     borderBottomWidth: 2,
     textAlignVertical: 'center',
-    paddingTop: 20,
+    paddingTop: 18,
     paddingHorizontal: 2,
   },
   tabOn: { fontWeight: '600' },
   // A zero here is a settled fact, not a warning, so it stays this quiet by
-  // default. But quiet was all it ever was -- the tester hit an empty tab
-  // twice in the same 21 seconds with the count on screen the whole time,
-  // because a faint "0" and a faint "3" read the same at a glance (MIDI-014).
-  // Whenever there's something behind the tab, Tab above lifts this to the
-  // tab's own hue and bold -- a glance now tells "nothing" from "something"
-  // without reading the digit, and zero still never shouts.
+  // default -- but quiet was all it ever was, and a faint "0" and a faint "3"
+  // read the same at a glance (MIDI-014). Tab lifts it to the tab's own hue
+  // and bold whenever there is something behind the tab.
   tabCount: { color: C.faint, fontSize: 12 },
-  spacer: { flex: 1 },
-  key: { height: S.control, minHeight: S.control, minWidth: 96 },
-  dots: { height: S.control, minHeight: S.control, minWidth: S.control, paddingHorizontal: 0 },
+  // One row, wrapping rather than truncating: at a phone width the lenses drop
+  // to a second line, which costs 40px once instead of hiding a control.
+  band: {
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: C.line,
+    backgroundColor: C.panel,
+  },
+  // Below `wide` there are more controls than fit in one line, and wrapping is
+  // the whole fix -- it costs nothing at a width where everything already fit.
+  bandWrap: { flexWrap: 'wrap', rowGap: 8 },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: KEY.edge,
+    backgroundColor: KEY.face,
+  },
+  chipRepo: { color: C.text, fontSize: 12, fontWeight: '600' },
+  chipBranch: { color: C.accentText, fontSize: 11, ...mono },
+  chipNone: { color: C.faint, fontSize: 11 },
   menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' },
   menu: {
     position: 'absolute',
@@ -1085,11 +1174,42 @@ const styles = StyleSheet.create({
   body: { flex: 1, flexDirection: 'row' },
   centre: { flex: 1, minWidth: 0 },
   mirror: { flex: 1, padding: S.pad },
-  // One column below 820: the pane sizes to its own content instead of
-  // fighting a flex:1 chain it no longer sits inside, and the page's own
-  // scroll -- not a nested one -- carries you from the transcript down
-  // through the composer to the pads.
+  // One column below `mid`: the pane sizes to its own content and the page's
+  // own scroll carries you from the transcript down through the composer.
   bodyNarrow: { flexGrow: 1 },
+  // 56, not 344. The library is still on screen and still one tap from open;
+  // what it stops doing is holding a third of the width for a list you are
+  // not reading.
+  strip: {
+    width: 56,
+    borderLeftWidth: 1,
+    borderLeftColor: C.line,
+    backgroundColor: C.panel,
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: S.pad,
+  },
+  stripKey: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stripKeyOn: { backgroundColor: C.raised, borderWidth: 1, borderColor: C.edge },
+  stripBadge: {
+    position: 'absolute',
+    top: 1,
+    right: 1,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: C.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stripBadgeText: { color: C.text, fontSize: 10, fontWeight: '700' },
   waiting: {
     width: 344,
     borderLeftWidth: 1,
@@ -1107,6 +1227,10 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
   },
   waitingText: { color: C.dim, fontSize: 13, textAlign: 'center' },
+  // One column below 820: the pane sizes to its own content instead of
+  // fighting a flex:1 chain it no longer sits inside, and the page's own
+  // scroll -- not a nested one -- carries you from the transcript down
+  // through the composer to the pads.
   // The rail as a drawer: a dimmed backdrop the width of the screen, and the
   // rail itself pinned to the left edge at its own fixed width -- it never
   // had to learn to be anything else, only to sit somewhere that isn't a

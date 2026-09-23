@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { closeAgent, forgetProject, listProjects, openWorktree, removeWorktree } from './api';
 import { Menu, MenuButton } from './Menu';
 import SessionSheet from './SessionSheet';
@@ -47,6 +55,11 @@ const pickOf = (project, row) => ({
 });
 
 export default function Projects({ cols, base, beat, onSeat, onChanged, onPick }) {
+  // 30% of the window, not of the rail: the rail is one scroll holding this
+  // and the agents below it, so a percentage here would measure against a
+  // parent that grows with the list and never cap anything. Thirty-one
+  // worktrees pushed AGENTS off the bottom of the screen entirely.
+  const roof = Math.round(useWindowDimensions().height * 0.30);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(false);
   const [shut, setShut] = useState({});   // project path -> collapsed
@@ -175,6 +188,11 @@ export default function Projects({ cols, base, beat, onSeat, onChanged, onPick }
 
       {!projects.length && !loading && <Text style={styles.empty}>no projects yet</Text>}
 
+      {/* The header above and ＋ add project below stay put; only the list
+          moves. A key that slides further away the more projects you have is
+          a key you stop finding -- the same reason ＋ new agent sits at the
+          top of the agent list rather than after eight cards. */}
+      <ScrollView style={{ maxHeight: roof }} nestedScrollEnabled>
       {projects.map((p) => {
         const open = !shut[p.path];
         const at = seatsIn(p);
@@ -285,6 +303,7 @@ export default function Projects({ cols, base, beat, onSeat, onChanged, onPick }
           </View>
         );
       })}
+      </ScrollView>
 
       <Pressable
         accessibilityRole="button"
