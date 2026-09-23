@@ -4078,6 +4078,24 @@ function Usage({ data, mode, onMode }) {
           ))}
         </View>
       </View>
+      {/* above the mode switch's content, in every mode: how full each
+          agent's context is right now, as phone bars -- the glance that
+          says who is about to need a compact */}
+      {(data.fill || []).length > 0 && (
+        <View style={styles.fillStrip}>
+          <Text style={styles.head}>CONTEXT</Text>
+          {data.fill.map((f, i) => (
+            <View
+              key={i}
+              style={styles.fillAgent}
+              accessibilityLabel={`${f.name}: context ${Math.round(f.frac * 100)}% full, ${f.used.toLocaleString()} of ${f.limit.toLocaleString()} tokens`}>
+              <SignalBars frac={f.frac} />
+              <Text style={styles.fillName} numberOfLines={1}>{f.name}</Text>
+              <Text style={[styles.fillPct, mono, { color: fillHue(f.frac) }]}>{Math.round(f.frac * 100)}%</Text>
+            </View>
+          ))}
+        </View>
+      )}
       <ScrollView contentContainerStyle={styles.rows} style={narrow ? styles.rowsNarrow : undefined}>
         {at === 0 &&
           (data.bars || []).map((b, i) => (
@@ -4130,6 +4148,29 @@ function Usage({ data, mode, onMode }) {
 // two places deciding the same thing is what put a 0 here in the first place.
 const PLAN_RAMP = ['#3cd05a', '#e0d02c', '#e03c3c'];
 const SEVERITY_FLOOR = { warning: 1, critical: 2 };
+
+// Context as a phone's signal: five bars rising left to right, lit from the
+// left in proportion to how full it is. Unlike a phone, more is worse, so
+// the colour carries that -- the plan bars' own ramp, same thresholds.
+const fillHue = (frac) => PLAN_RAMP[frac < 0.6 ? 0 : frac < 0.85 ? 1 : 2];
+
+function SignalBars({ frac, size = 18 }) {
+  const lit = frac > 0 ? Math.max(1, Math.ceil(Math.min(1, frac) * 5)) : 0;
+  const hue = fillHue(frac);
+  return (
+    <View style={[styles.signal, { height: size }]}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <View
+          key={n}
+          style={[
+            styles.signalBar,
+            { height: (size * n) / 5, backgroundColor: n <= lit ? hue : C.line },
+          ]}
+        />
+      ))}
+    </View>
+  );
+}
 
 function Bar({ bar }) {
   const pct = Math.max(0, Math.min(1, Number(bar.used ?? bar.frac ?? bar[1] ?? 0)));
@@ -4543,6 +4584,12 @@ const styles = StyleSheet.create({
   subModel: { color: C.accentText, fontSize: 11, borderWidth: 1, borderColor: C.edge, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, ...mono },
   subOpen: { color: C.faint, fontSize: 11 },
   subTypes: { gap: 6, paddingBottom: 8 },
+  fillStrip: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 18, paddingVertical: 10, paddingHorizontal: 2 },
+  fillAgent: { flexDirection: 'row', alignItems: 'flex-end', gap: 7 },
+  fillName: { color: C.text, fontSize: 13, maxWidth: 160 },
+  fillPct: { fontSize: 12 },
+  signal: { flexDirection: 'row', alignItems: 'flex-end', gap: 2 },
+  signalBar: { width: 4, borderRadius: 1 },
   pinned: { flexDirection: 'row', alignItems: 'baseline', gap: 10, paddingHorizontal: 16, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: C.panel },
   pinnedHead: { color: C.faint, fontSize: 10, letterSpacing: 1.2 },
   pinnedText: { flex: 1, color: C.text, fontSize: 13, lineHeight: 19 },

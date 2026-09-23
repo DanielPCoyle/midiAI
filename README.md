@@ -822,6 +822,16 @@ Web only, and on purpose: iOS hands React Native no paste event and no
 clipboard image without another dependency. In Expo Go the composer still
 takes typed paths.
 
+## Context bars
+
+Every mode of the Usage tab opens with a **CONTEXT** strip: each seated
+agent with five phone-style bars, lit from the left in proportion to how
+full its context window is right now (`push_cc.usage_fill`, the same
+`context_for` the focus view's context bar reads), and the percentage. More
+bars is worse here, so the colour says so -- the plan bars' ramp, green to
+red at 60% and 85%. It rides beside the usage rows rather than inside them:
+`display.py` unpacks those as exactly five fields for the Push's own screen.
+
 ## Commit messages from the diff
 
 Beside the commit key in GIT › Work, **✨ write it** drafts a message:

@@ -1852,6 +1852,22 @@ def cache_rate(u):
     return round(100 * u.get("cread", 0) / seen) if seen else None
 
 
+def usage_fill(slots, by_id):
+    """How full each seated agent's context is, for the app's usage bars.
+
+    Apart from usage_col on purpose: display.py unpacks that row as exactly
+    five fields for the Push's own screen, and this is the app's alone."""
+    out = []
+    for s in range(SLOTS):
+        agent = by_id.get(slots.get(s))
+        if agent is None:
+            continue
+        used, limit = context_for(agent)
+        out.append({"name": agent_name(agent), "used": used, "limit": limit,
+                    "frac": round(used / max(1, limit), 3)})
+    return out
+
+
 def usage_col(agent):
     if agent is None:
         return None
@@ -2424,23 +2440,24 @@ def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
         # one question -- what is being spent -- answered at three altitudes:
         # the account's plan, the models it spent on, then the agents that
         # did the spending
+        fill = usage_fill(slots, by_id)
         if mode == 1:
             tot = model_totals(live)
-            data = {"kind": "usage", "at": mode, "models": sorted(tot.items())}
-            state = (view_name, "tokens", repr(sorted(tot.items())), mode)
+            data = {"kind": "usage", "at": mode, "models": sorted(tot.items()), "fill": fill}
+            state = (view_name, "tokens", repr(sorted(tot.items())), mode, repr(fill))
             drawn = (lambda t=tot, m=mode:
                      disp_mod.render_models(t, m, USAGE_MODES))
         elif mode == 2:
             cols = tuple(usage_col(by_id.get(slots.get(s)))
                          for s in range(SLOTS))
-            data = {"kind": "usage", "at": mode, "agents": cols}
-            state = (view_name, "agents", cols, mode)
+            data = {"kind": "usage", "at": mode, "agents": cols, "fill": fill}
+            state = (view_name, "agents", cols, mode, repr(fill))
             drawn = (lambda c=cols, m=mode:
                      disp_mod.render_usage(c, m, USAGE_MODES))
         else:                       # first: what you glance at
             bars, uerr = plan_usage(now)
-            data = {"kind": "usage", "at": mode, "bars": bars, "err": uerr}
-            state = (view_name, "plan", repr(bars), uerr, mode)
+            data = {"kind": "usage", "at": mode, "bars": bars, "err": uerr, "fill": fill}
+            state = (view_name, "plan", repr(bars), uerr, mode, repr(fill))
             drawn = (lambda b=bars, e=uerr, m=mode:
                      disp_mod.render_plan(b, e, m, USAGE_MODES))
     elif view_name == "sessions" and mode == 1:
