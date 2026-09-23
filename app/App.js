@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 
 import {
+  listPrs,
   getDirty, baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
 import EntrySheet from './src/EntrySheet';
 import Icon from './src/Icon';
@@ -234,10 +235,28 @@ export default function App() {
     const timer = setInterval(pull, 5000);
     return () => { live = false; clearInterval(timer); };
   }, [base, scopePath]);
+  // ...and its open pull requests, for the same checkout. Once a minute: it
+  // is a `gh` call, a second or so against GitHub, not a local git status.
+  const [openPrs, setOpenPrs] = useState(null);
+  useEffect(() => {
+    setOpenPrs(null);
+    // only once the checkout is known to be a repo: before that answer it
+    // would ask twice, and a folder with no repo has no pull requests
+    if (!base || !scopePath || dirty?.git !== true) return undefined;
+    let live = true;
+    const pull = () => listPrs(base, scopePath)
+      .then((d) => live && setOpenPrs(d.err ? null : (d.rows || []).length))
+      .catch(() => live && setOpenPrs(null));
+    pull();
+    const timer = setInterval(pull, 60000);
+    return () => { live = false; clearInterval(timer); };
+  }, [base, scopePath, dirty?.git]);
   const TAB_COUNT = {
     ...(picked ? {} : { tests: testsCount }),
     ...(dirty?.git ? { prs: dirty.count } : {}),
   };
+  // GIT reads "changed | open pull requests"; the second number only once known
+  const TAB_COUNT2 = { prs: dirty?.git ? openPrs : null };
   // a project folder with no repo yet: GIT wears a warning, and opening it
   // is where `git init` is offered
   const TAB_WARN = { prs: dirty?.git === false };
@@ -669,6 +688,7 @@ export default function App() {
                   key={name}
                   label={TAB_LABEL[name] || name}
                   count={TAB_COUNT[name]}
+                  count2={TAB_COUNT2[name]}
                   warn={TAB_WARN[name]}
                   hue={hue}
                   on={i === viewIdx}
@@ -1074,12 +1094,14 @@ const PANELS = [
 // landing on whichever node the pointer was actually over, sometimes just
 // the count on its own ("· 0", nothing to say what it counted) (MIDI-015).
 // The inner Text is aria-hidden so that name isn't read out a second time.
-function Tab({ label, count, warn, hue, on, onPress }) {
-  const has = count != null && count > 0;
+function Tab({ label, count, count2, warn, hue, on, onPress }) {
+  const has = (count != null && count > 0) || (count2 != null && count2 > 0);
   return (
     <Pressable
       accessibilityRole="tab"
-      accessibilityLabel={warn ? `${label} · no repository yet` : count != null ? `${label} · ${count}` : label}
+      accessibilityLabel={warn ? `${label} · no repository yet`
+        : count2 != null ? `${label} · ${count} changed, ${count2} open pull request${count2 === 1 ? '' : 's'}`
+        : count != null ? `${label} · ${count}` : label}
       accessibilityState={{ selected: on }}
       onPress={onPress}
       style={styles.tabHit}>
@@ -1097,6 +1119,7 @@ function Tab({ label, count, warn, hue, on, onPress }) {
           <Text style={[styles.tabCount, has && { color: hue, fontWeight: '700' }]}>
             {' '}
             · {count}
+            {count2 != null && ` | ${count2}`}
           </Text>
         )}
       </Text>

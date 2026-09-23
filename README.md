@@ -714,10 +714,12 @@ Guardrails and CI/CD are unaffected and keep reading that checkout — they used
 to be replaced by this too, which made picking a repo just to look at its tests
 or its pull requests impossible. GUARDRAILS' count goes quiet while a pick
 is up: it is read off the Push's own focused agent, so beside a picked
-worktree it would be counting a different checkout. GIT's count is files
-changed and not committed (`/work/dirty` -- staged or not, untracked
-included, a file counted once) in whichever checkout is in view, picked or
-focused, so it stays. It
+worktree it would be counting a different checkout. GIT reads **changed | pull
+requests**: files changed and not committed (`/work/dirty` -- staged or
+not, untracked included, a file counted once, polled every 5s) and then the
+checkout's open pull requests (`/prs`, a `gh` call, so once a minute and
+only once the checkout is known to be a repo), both for whichever checkout
+is in view, picked or focused, so they stay. It
 is also where you land after closing an agent, which otherwise left you staring
 at whichever seat the Push happened to be on with no sign of what you had just
 emptied. A dirty tree comes back as git's own refusal, with a second key to
