@@ -59,5 +59,23 @@ for (const f of files) {
   }
 }
 
+// A style key written twice in one StyleSheet.create is legal JS, so the
+// transform above says nothing: the later one silently wins. That is how a
+// new `grAdd` gave the guardrail add row the form's solid border instead of
+// its own dashed one. Keys sit at two spaces inside the block.
+for (const f of files) {
+  const src = fs.readFileSync(path.join(app, f), 'utf8');
+  for (const block of src.matchAll(/StyleSheet\.create\(\{\n([\s\S]*?)\n\}\);/g)) {
+    const seen = new Set();
+    for (const m of block[1].matchAll(/^  ([A-Za-z_$][\w$]*):/gm)) {
+      if (seen.has(m[1])) {
+        bad += 1;
+        console.log(`FAIL  ${f} defines style ${m[1]} twice; the second one wins`);
+      }
+      seen.add(m[1]);
+    }
+  }
+}
+
 console.log(bad ? `\nFAIL (${bad})` : '\nOVERALL: PASS');
 process.exit(bad ? 1 : 0);

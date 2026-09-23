@@ -1639,9 +1639,11 @@ function PhasesPanel({ phases, items, onPhases }) {
 // One item's three fields, in the one form that both writes a new guardrail
 // and edits an existing one. Two forms would be two places for the phase
 // picker to fall out of step with the phase list.
-function GuardrailForm({ form, onForm, onSave, onCancel, onRevert }) {
+// bare: inside the add modal, whose own panel is the frame -- a second
+// border inside it just boxes the form twice
+function GuardrailForm({ form, onForm, onSave, onCancel, onRevert, bare }) {
   return (
-    <View style={styles.grAdd}>
+    <View style={[styles.grAdd, bare && styles.grAddBare]}>
       <Text style={styles.grLabel}>{form.isNew ? 'a guardrail of our own' : 'editing'}</Text>
       <View style={styles.walk}>
         {form.phases.map((p) => (
@@ -1967,27 +1969,34 @@ function Overview({ base, cwd }) {
                 </View>
               );
             })}
-            {/* where a new one is added is where it will live: the form opens
-                under this phase with the phase already chosen, and stays here
-                (form.at) even if you move it to another phase in the form */}
-            {form?.isNew && form.at === p.key ? (
-              <GuardrailForm
-                form={form}
-                onForm={setForm}
-                onSave={commit}
-                onCancel={() => setForm(null)}
-              />
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`add a guardrail to ${p.name}`}
-                onPress={() => setForm({ id: '', phase: p.key, at: p.key, title: '', implemented: '', validate: '', phases, isNew: true })}
-                style={styles.grAdd}>
-                <Text style={styles.grAddText}>＋ add a guardrail to {p.name.toLowerCase()}</Text>
-              </Pressable>
-            )}
+            {/* the phase comes pre-chosen from the row you tapped; the form
+                itself is a modal, below */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`add a guardrail to ${p.name}`}
+              onPress={() => setForm({ id: '', phase: p.key, title: '', implemented: '', validate: '', phases, isNew: true })}
+              style={styles.grAddRow}>
+              <Text style={styles.grAddText}>＋ add a guardrail to {p.name.toLowerCase()}</Text>
+            </Pressable>
           </View>
         ))}
+        <Modal visible={!!form?.isNew} transparent animationType="fade" onRequestClose={() => setForm(null)}>
+          <Pressable style={styles.modalBack} onPress={() => setForm(null)}>
+            <Pressable style={styles.receipt} onPress={() => {}}>
+              <ScrollView keyboardShouldPersistTaps="handled">
+                {!!form?.isNew && (
+                  <GuardrailForm
+                    bare
+                    form={form}
+                    onForm={setForm}
+                    onSave={commit}
+                    onCancel={() => setForm(null)}
+                  />
+                )}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
         {!!needle && shown.length === 0 && (
           <Empty what={`nothing matches "${q.trim()}"`} />
         )}
@@ -3928,7 +3937,8 @@ const styles = StyleSheet.create({
   grFill: { height: 3, backgroundColor: '#3cd05a' },
   grPhase: { gap: 5, paddingTop: 6 },
   grPhaseHead: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingBottom: 2 },
-  grAdd: { borderWidth: 1, borderStyle: 'dashed', borderColor: C.edge, borderRadius: S.radius, paddingVertical: 9, paddingHorizontal: 12 },
+  grAddRow: { borderWidth: 1, borderStyle: 'dashed', borderColor: C.edge, borderRadius: S.radius, paddingVertical: 9, paddingHorizontal: 12 },
+  grAddBare: { borderWidth: 0, padding: 0 },
   grAddText: { color: C.faint, fontSize: 12 },
   grPhaseName: { color: C.text, fontSize: 13, fontWeight: '700', letterSpacing: 0.4 },
   grPhaseWhat: { color: C.faint, fontSize: 11, fontStyle: 'italic' },
