@@ -67,7 +67,7 @@ _SLUG_RE = re.compile(r"[^a-z0-9-]")
 # at all means (the Run button, or run(ids=...)/run(phase=...) with no
 # event= given).
 EVENTS = ("agent:stop", "git:pre-commit", "git:commit-msg", "git:pre-push",
-          "git:post-merge")
+          "git:post-merge", "deploy:promote")
 
 # The evidence kinds a rail can declare it "needs". ("ticket" comes with the
 # tracker adapter -- not in this build.)
@@ -75,12 +75,16 @@ EVIDENCE = ("diff", "files", "commit-msg")
 
 # What each event can actually supply. A need not in this set for the firing
 # event is unsatisfiable this run (na, or fail if the rail is blocking).
+# deploy:promote isn't a git hook -- mapui's /deploy/action fires it directly,
+# before calling a provider's promote/rollback, with the two shas involved
+# (see _collect_evidence).
 _EVENT_EVIDENCE = {
     "agent:stop": ("diff", "files"),
     "git:pre-commit": ("diff", "files"),
     "git:commit-msg": ("diff", "files", "commit-msg"),
     "git:pre-push": ("diff", "files"),
     "git:post-merge": ("diff", "files"),
+    "deploy:promote": ("diff", "files"),
 }
 
 # v1's `triggers: {phase: T}` -> v2's `bindings`, and the deprecated
@@ -453,11 +457,29 @@ def _diff_base(root):
     return ""
 
 
-def _collect_evidence(root, event):
+def _collect_evidence(root, event, shas=None):
     """(diff text, files text, base used) for whichever event is firing this
     run. `event` is None for a manual run (Run button, bare run(ids=...)),
-    which is handled the same as agent:stop."""
+    which is handled the same as agent:stop. `shas` is only used for
+    deploy:promote: (current production sha, target sha), both or either of
+    which may be missing or not exist in this checkout."""
     base = ""
+    if event == "deploy:promote":
+        from_sha, to_sha = (shas or (None, None))
+        to_ok = bool(to_sha) and _git(root, "cat-file", "-e", f"{to_sha}^{{commit}}").returncode == 0
+        from_ok = bool(from_sha) and _git(root, "cat-file", "-e", f"{from_sha}^{{commit}}").returncode == 0
+        if not to_ok:
+            return "", "", ""
+        if from_ok:
+            diff = _git(root, "diff", f"{from_sha}...{to_sha}", "--no-color").stdout
+            files = _git(root, "diff", f"{from_sha}...{to_sha}", "--name-only").stdout.strip()
+        else:
+            # no known current-production sha locally (or it doesn't exist
+            # here) -- the target commit's own diff is the closest thing to
+            # "what does this change" available
+            diff = _git(root, "show", to_sha, "--no-color").stdout
+            files = _git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", to_sha).stdout.strip()
+        return diff, files, from_sha or ""
     if event in ("git:pre-commit", "git:commit-msg"):
         diff = _git(root, "diff", "--cached", "--no-color").stdout
         files = _git(root, "diff", "--cached", "--name-only").stdout.strip()
@@ -493,12 +515,12 @@ def _collect_evidence(root, event):
     return diff, files, base
 
 
-def _build_evidence(root, event, msg_file):
+def _build_evidence(root, event, msg_file, shas=None):
     """One evidence dir for the whole run -- diff.patch, files.txt, an
     event.json, and (only when the firing event supplies it) commit-msg.txt.
     Caller is responsible for removing the dir (try/finally in run())."""
     d = tempfile.mkdtemp(prefix="guardrail-evidence-")
-    diff, files, base = _collect_evidence(root, event)
+    diff, files, base = _collect_evidence(root, event, shas=shas)
     _write_text(os.path.join(d, "diff.patch"), diff)
     _write_text(os.path.join(d, "files.txt"), files)
     commit_msg = None
@@ -610,13 +632,15 @@ def _save_results(root, results):
 
 
 def run(root, ids=None, phase=None, event=None, trust=False, run_model=None,
-        msg_file=None, trigger=None):
+        msg_file=None, trigger=None, shas=None):
     """Runs the selected rails -- scripts serially, agent reviews in up to 4
     parallel threads -- and saves each result. Selection: by explicit ids, by
     phase, or (event given) by every rail whose (phase, gate) binds that
     event. `trigger` is a deprecated alias for `event`, mapped through the
     old trigger name table (a bare "manual" maps to no event at all, i.e. no
-    event-based filtering -- same as leaving event unset).
+    event-based filtering -- same as leaving event unset). `shas` is only
+    meaningful for event="deploy:promote": (current production sha, target
+    sha) -- see _collect_evidence.
 
     Builds one evidence dir for the whole call (removed in a finally, even
     if a check throws) and hands scripts its path via GUARDRAIL_EVIDENCE,
@@ -641,7 +665,7 @@ def run(root, ids=None, phase=None, event=None, trust=False, run_model=None,
                 continue
         selected.append((rid, entry))
 
-    evidence_dir, diff, files, commit_msg = _build_evidence(root, event, msg_file)
+    evidence_dir, diff, files, commit_msg = _build_evidence(root, event, msg_file, shas=shas)
     try:
         available = set(_EVENT_EVIDENCE.get(event, ("diff", "files", "commit-msg")))
         results = [None] * len(selected)

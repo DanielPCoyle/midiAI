@@ -8,6 +8,7 @@ import {
   setClaudeSettings,
 } from './api';
 import Icon from './Icon';
+import Integrations from './Integrations';
 import { McpManager } from './Mcps';
 import PushButton from './PushButton';
 import { C, S } from './theme';
@@ -15,6 +16,7 @@ import { C, S } from './theme';
 const SECTIONS = [
   ['claude', 'Claude'],
   ['mcps', 'MCPs'],
+  ['integrations', 'Integrations'],
 ];
 
 const MODES = [
@@ -304,7 +306,7 @@ function ClaudeSettings({ base }) {
 //                                          "about" -- the picked worktree's
 //                                          path, else the focused agent's.
 //                                          MCPs reads this one place's MCPs.
-//   section    'claude' | 'mcps' | null
+//   section    'claude' | 'mcps' | 'integrations' | null
 //   onSection  (section) => void       -- switch which section is showing
 //   onClose    () => void
 export default function Settings({ visible, base, cwd, cwds, section, onSection, onClose }) {
@@ -344,6 +346,7 @@ export default function Settings({ visible, base, cwd, cwds, section, onSection,
             keyboardShouldPersistTaps="handled">
             {visible && section === 'claude' && <ClaudeSettings base={base} />}
             {visible && section === 'mcps' && <McpManager base={base} cwds={cwds || (cwd ? [cwd] : [])} />}
+            {visible && section === 'integrations' && <Integrations base={base} cwd={cwd} />}
           </ScrollView>
         </Pressable>
       </Pressable>

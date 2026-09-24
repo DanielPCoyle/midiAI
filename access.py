@@ -103,12 +103,44 @@ def update(patch):
 
 # ---------------------------------------------------------------- the key
 
-def key_saved():
-    # without -w, find-generic-password prints the item's attributes and not
-    # the secret: this asks "is it there", it never reads the key
-    out = _run([SECURITY, "find-generic-password", "-s", KC_SERVICE, "-a", KC_ACCOUNT],
+def keychain_exists(service, account):
+    """Is there an item at (service, account)? Without -w, find-generic-password
+    prints the item's attributes and not the secret: this asks "is it there",
+    it never reads it. Shared by access.py's own key and integrations.py's
+    per-integration secrets."""
+    out = _run([SECURITY, "find-generic-password", "-s", service, "-a", account],
                capture_output=True, text=True, timeout=10)
     return out.returncode == 0
+
+
+def keychain_get(service, account):
+    """The secret at (service, account), or None. Never logged, never
+    returned to a caller that turns around and sends it anywhere but the
+    provider it's for."""
+    out = _run([SECURITY, "find-generic-password", "-s", service, "-a", account, "-w"],
+               capture_output=True, text=True, timeout=10)
+    if out.returncode != 0:
+        return None
+    return out.stdout.rstrip("\n")
+
+
+def keychain_set(service, account, value, label=""):
+    """Store `value` via `security -i` on stdin -- never on argv, where a
+    process listing would show it. Returns whether the Keychain took it."""
+    out = _run([SECURITY, "-i"], input=(
+        f'add-generic-password -U -s {service} -a {account} '
+        f'-l "{label}" -w "{value}"\n'),
+        capture_output=True, text=True, timeout=15)
+    return out.returncode == 0 and keychain_exists(service, account)
+
+
+def keychain_delete(service, account):
+    _run([SECURITY, "delete-generic-password", "-s", service, "-a", account],
+         capture_output=True, text=True, timeout=10)
+
+
+def key_saved():
+    return keychain_exists(KC_SERVICE, KC_ACCOUNT)
 
 
 def _tls():
@@ -143,13 +175,7 @@ def save_key(key):
     if not _KEY_RE.match(key):
         raise ValueError("that doesn't look like an Anthropic API key (sk-ant-…)")
     verify_key(key)
-    # `security -i` reads its command from stdin, so the key is never in a
-    # process list the way `-w <key>` on argv would put it
-    out = _run([SECURITY, "-i"], input=(
-        f'add-generic-password -U -s {KC_SERVICE} -a {KC_ACCOUNT} '
-        f'-l "midiAI Anthropic API key" -w "{key}"\n'),
-        capture_output=True, text=True, timeout=15)
-    if out.returncode != 0 or not key_saved():
+    if not keychain_set(KC_SERVICE, KC_ACCOUNT, key, label="midiAI Anthropic API key"):
         raise RuntimeError("the Keychain would not take it")
     cfg = load()
     cfg["hint"] = f"{key[:7]}…{key[-4:]}"
@@ -157,8 +183,7 @@ def save_key(key):
 
 
 def delete_key():
-    _run([SECURITY, "delete-generic-password", "-s", KC_SERVICE, "-a", KC_ACCOUNT],
-         capture_output=True, text=True, timeout=10)
+    keychain_delete(KC_SERVICE, KC_ACCOUNT)
     cfg = load()
     cfg["hint"] = ""
     _save(cfg)

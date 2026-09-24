@@ -280,8 +280,8 @@ since (a recompile, a pull, another agent). An approve with no sha is a 400.
 that phase's two **gates** -- `entry` or `exit` (`POST /guardrails/gate {id,
 gate}`). A gate is **bound** to zero or more **events** -- things that
 actually happen: `agent:stop`, `git:pre-commit`, `git:commit-msg`,
-`git:pre-push`, `git:post-merge` (the `EVENTS` constant; `POST
-/guardrails/binding {phase, gate, events}`). `manual` is not an event you
+`git:pre-push`, `git:post-merge`, `deploy:promote` (the `EVENTS` constant;
+`POST /guardrails/binding {phase, gate, events}`). `manual` is not an event you
 bind -- the Run buttons, and a bare `run --id`/`--phase`, always fire
 regardless of bindings; only `run --event E` (or a hook) selects by binding.
 This layer is tool-, project- and method-agnostic: phases stay
@@ -300,6 +300,7 @@ supplies a commit message. What each event can supply:
 | `git:commit-msg` | staged | staged | the file git passes as `$1` |
 | `git:pre-push` | `<merge-base>...HEAD` | ✓ | |
 | `git:post-merge` | `ORIG_HEAD..HEAD` (if it exists) | ✓ | |
+| `deploy:promote` | `<current production sha>...<target sha>` when both exist locally, else the target's own `git show`, else nothing | ✓ | |
 
 A rail declares which of `diff`, `files`, `commit-msg` it reads as `needs`
 (the `EVIDENCE` constant; compile asks the model for this, told which events
@@ -462,6 +463,109 @@ memory.py's `sessions` table and its latest `summary` entry, plus `live_tid`
 if a current agent's own session matches), and `spec` (the `Spec` trailer,
 resolved through the same `read_spec` containment check). Any of the three
 can be null; a commit with none of them draws nothing.
+
+### Integrations and DEPLOY
+
+An **integration** is a folder with a `manifest.json` and one executable
+(`run`):
+```json
+{"name": "vercel", "title": "Vercel", "run": "vercel.py",
+ "secrets": [{"key": "token", "label": "Access token", "help": "vercel.com/account/tokens"}],
+ "config": [{"key": "team", "label": "Team id (optional)"}],
+ "capabilities": ["auth.check", "resources.list", "deploy.list", "deploy.get",
+                  "deploy.promote", "deploy.rollback", "deploy.cancel"]}
+```
+Built-ins ship in the repo at `integrations/<name>/` (Vercel is the first);
+the user's own go in `~/.midiai/integrations/<name>/`, and a user folder
+overrides a built-in of the same name. Both the folder name and
+`manifest["name"]` have to match `^[a-z0-9-]{1,40}$` *and* agree with each
+other -- a folder is never trusted to say it's someone else, and `run` has
+to resolve to a file inside its own folder or the whole integration is
+dropped from discovery.
+
+`integrations.call(name, op, args)` execs `run` (a `.py` under
+`sys.executable`, anything else must already be executable) with cwd = its
+own folder, a 30s timeout, and stdin = one JSON object:
+```json
+{"op": "deploy.list", "args": {"resource": "prj_123"},
+ "secrets": {"token": "..."}, "config": {"team": "..."}}
+```
+It answers with one JSON object on stdout, `{"ok": true, "data": ...}` or
+`{"ok": false, "error": "..."}`. **Secrets never go on argv or in an
+environment variable** -- only on that stdin payload -- and an op the
+manifest's `capabilities` doesn't list is refused before anything execs.
+
+**Secrets** live in the macOS Keychain, service `midiai-integration-<name>`,
+account = the secret's key, written with `security -i` on stdin exactly as
+`access.py` stores the Anthropic API key -- `access.keychain_set/get/exists/
+delete` are the shared helper, factored out of `access.py` for this so there
+is one place that ever shells out to `security`. A value is checked against
+`^[A-Za-z0-9_.\-]{8,400}$` before it goes anywhere near that shell-out.
+Setting a secret runs `auth.check` first when the integration declares that
+capability, with the candidate value substituted in but nothing written yet
+-- a failed check stores nothing. The app only ever sees `{"set": bool,
+"hint": "...last4"}`; a secret's value is never echoed back by any route.
+
+Non-secret **state** -- per-integration config, and which resource each
+checkout maps to -- lives outside the repo at `~/.midiai/integrations.json`:
+`{name: {"config": {...}, "map": {"<checkout root>": {"resource": "<id>",
+"label": "<name>"}}}}`.
+
+**Routes** (`mapui.py`, all through `integrations.py`):
+
+| route | does |
+|---|---|
+| `GET /integrations` | one row per discovered integration: capabilities, each secret's `{key, label, help, set, hint}`, config values, and `ok`/`error` from a cached `auth.check` (60s). |
+| `POST /integrations/secret {name, key, value}` | validates, runs `auth.check` first when declared, stores via the Keychain; 400 with the reason on failure. |
+| `POST /integrations/secret/delete {name, key}` | removes it. |
+| `POST /integrations/config {name, config}` | replaces the integration's config. |
+| `GET /integrations/resources?name=` | `resources.list` -- what a project can be mapped to. |
+| `POST /integrations/map {name, cwd, resource, label}` | maps (or, `resource: null`, unmaps) a checkout to a resource; `cwd` goes through the same plain-folder-friendly resolution the rules routes use. |
+| `GET /deploy?cwd=` | `{"providers": [...], "deploys": [...]}` -- every integration with `deploy.list` mapped to this checkout, newest first, cached 10s per checkout. Each deploy carries `"provenance"`: the same shape `/work/commit-meta` returns for its `sha`, when that commit exists locally, else `null`. |
+| `GET /deploy/get?cwd=&provider=&id=` | one deployment's full detail (`deploy.get`) plus provenance. |
+| `POST /deploy/action {cwd, provider, op, id}` | `op` is `promote`, `rollback` or `cancel` -- see the gate below. |
+
+**The Vercel adapter** (`integrations/vercel/vercel.py`, stdlib only, the
+same `/etc/ssl/cert.pem` TLS fallback `access.py` uses) talks to
+`api.vercel.com` with `Authorization: Bearer <token>` and `teamId=<team>`
+when `config.team` is set:
+
+| op | endpoint |
+|---|---|
+| `auth.check` | `GET /v2/user` |
+| `resources.list` | `GET /v10/projects` |
+| `deploy.list {resource, limit}` | `GET /v7/deployments?projectId=` |
+| `deploy.get {id}` | `GET /v13/deployments/{id}?withGitRepoInfo=true` + `GET /v3/deployments/{id}/events` for the log tail |
+| `deploy.promote {resource, id}` | `POST /v10/projects/{resource}/promote/{id}` |
+| `deploy.rollback {resource, id}` | `POST /v1/projects/{resource}/rollback/{id}` |
+| `deploy.cancel {id}` | `PATCH /v12/deployments/{id}/cancel` |
+
+Two of these are newer than first planned -- `resources.list` and
+`deploy.list` were going to be `/v9/projects` and `/v6/deployments`; those
+have since moved to `/v10` and `/v7` in Vercel's own docs, which is what the
+adapter calls. Vercel's deployment schema types `meta` as a bare string map
+rather than naming its git fields, so the adapter reads the conventional
+`githubCommitSha`/`githubCommitRef`/`githubCommitMessage`/
+`githubCommitAuthorName` keys (and their `gitlabCommit*`/`bitbucketCommit*`
+equivalents) defensively rather than asserting one is *the* name. There is
+also no cheap "is this what the production alias is serving right now" flag
+-- `readySubstate: PROMOTED` means "has ever seen production traffic", not
+"is serving it this second" -- so `current` falls back to the newest `READY`
+production deployment, which the spec for this adapter explicitly allows.
+
+**The `deploy:promote` gate.** Before `POST /deploy/action` reaches a
+provider for `promote` or `rollback` (never for `cancel`, which the gate
+does not cover), it runs `guardrails.run(root, event="deploy:promote",
+shas=(current_production_sha, target_sha))` -- both shas come from the
+provider itself (the target's `deploy.get`, and whichever `deploy.list` row
+has `env: "production"` and `current: true`). Any rail bound to that event
+whose verdict comes back `fail`, `error` or `unapproved` **while
+`blocking`** answers the whole call with 409 `{"blocked": true, "results":
+[...]}`, and the provider is never called -- the same fail-closed rule
+every other event follows. Otherwise the provider is called and the answer
+is `{"ok": true, "results": [...]}`, carrying the same gate results either
+way so a clean run is visible too. The app labels this "before promote /
+rollback".
 
 Manage lists every workflow with the two facts that identify it, what fires it
 and what secret it needs, and opens one into its own YAML. **＋ new workflow**

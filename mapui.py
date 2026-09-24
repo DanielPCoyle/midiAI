@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import access
 import guardrails
+import integrations
 import memory
 import ptybridge
 import push_cc
@@ -656,6 +657,176 @@ def git(root, *argv, timeout=30):
     lean on."""
     return subprocess.run(["git", "-C", root, *argv],
                           capture_output=True, text=True, timeout=timeout)
+
+
+def commit_exists(root, sha):
+    """Whether `sha` names a commit reachable in this checkout -- cheap
+    enough to call per-row when building /deploy's provenance."""
+    if not sha or not re.fullmatch(r"[0-9a-fA-F]{4,40}", str(sha)):
+        return False
+    return git(root, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+
+
+def commit_meta(root, sha):
+    """What one commit's provenance strip shows: the guardrails that ran
+    against it (a refs/notes/guardrails note), who made it (the
+    Agent-Session trailer, enriched from memory.py's sessions table), and
+    why (the Spec trailer). Any of the three can be None -- a commit with
+    none of them draws nothing. Shared by /work/commit-meta and /deploy's
+    (and /deploy/get's) provenance, which is the same lookup for a
+    deployment's sha, when that commit exists locally."""
+    note = git(root, "notes", "--ref=guardrails", "show", sha)
+    guardrails_meta = None
+    if note.returncode == 0 and note.stdout.strip():
+        try:
+            guardrails_meta = json.loads(note.stdout).get("predicate")
+        except json.JSONDecodeError:
+            guardrails_meta = None
+
+    session_meta = None
+    out = git(root, "log", "-1", "--format=%(trailers:key=Agent-Session,valueonly)", sha)
+    session_id = out.stdout.strip() if out.returncode == 0 else ""
+    if session_id:
+        live_tid, name = None, None
+        for a in push_cc.agents():
+            if (a.get("agent_session") or {}).get("value") == session_id:
+                live_tid, name = a.get("terminal_id"), a.get("name")
+                break
+        conn = memory.connect()
+        try:
+            srow = conn.execute(
+                "SELECT first_ts, last_ts FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            summary = conn.execute(
+                "SELECT title FROM entries WHERE session = ? AND kind = 'summary' "
+                "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+        finally:
+            conn.close()
+        session_meta = {"id": session_id, "live_tid": live_tid, "name": name,
+                        "first_ts": srow["first_ts"] if srow else None,
+                        "last_ts": srow["last_ts"] if srow else None,
+                        "summary": summary["title"] if summary else None}
+
+    spec_meta = None
+    out = git(root, "log", "-1", "--format=%(trailers:key=Spec,valueonly)", sha)
+    spec_path = out.stdout.strip() if out.returncode == 0 else ""
+    if spec_path:
+        real_path, text = guardrails.read_spec(root, spec_path)
+        if real_path:
+            spec_meta = {"path": real_path, "title": guardrails.spec_title(text) or real_path}
+
+    return {"guardrails": guardrails_meta, "session": session_meta, "spec": spec_meta}
+
+
+DEPLOY_CACHE_TTL = 10
+_deploy_cache = {}
+_deploy_cache_lock = threading.Lock()
+
+
+def deploy_forget(root):
+    with _deploy_cache_lock:
+        _deploy_cache.pop(root, None)
+
+
+def _deploy_provenance(root, sha):
+    return commit_meta(root, sha) if commit_exists(root, sha) else None
+
+
+def deploy_rows(root):
+    """{"providers": [...], "deploys": [...]} for GET /deploy?cwd= -- every
+    integration with deploy.list in its capabilities and mapped to this
+    checkout, newest first, cached DEPLOY_CACHE_TTL seconds per checkout."""
+    with _deploy_cache_lock:
+        cached = _deploy_cache.get(root)
+        if cached and time.time() - cached["at"] < DEPLOY_CACHE_TTL:
+            return cached["data"]
+
+    discovered = integrations.discover()
+    providers, deploys = [], []
+    for name, mapping in integrations.mapped_for(root):
+        integ = discovered.get(name)
+        if not integ or "deploy.list" not in (integ["manifest"].get("capabilities") or []):
+            continue
+        title = integ["manifest"].get("title") or name
+        resource, label = mapping.get("resource"), mapping.get("label")
+        result = integrations.call(name, "deploy.list", {"resource": resource, "limit": 20})
+        if not result.get("ok"):
+            providers.append({"name": name, "title": title, "resource": resource,
+                              "label": label, "error": result.get("error")})
+            continue
+        providers.append({"name": name, "title": title, "resource": resource,
+                          "label": label, "error": None})
+        for d in result.get("data") or []:
+            row = dict(d)
+            row["provider"] = name
+            row["provenance"] = _deploy_provenance(root, row.get("sha"))
+            deploys.append(row)
+    deploys.sort(key=lambda r: r.get("created") or 0, reverse=True)
+    data = {"providers": providers, "deploys": deploys}
+    with _deploy_cache_lock:
+        _deploy_cache[root] = {"at": time.time(), "data": data}
+    return data
+
+
+def deploy_get(root, provider, id):
+    """deploy.get + provenance for GET /deploy/get. (row, error) -- error is
+    None on success."""
+    result = integrations.call(provider, "deploy.get", {"id": id})
+    if not result.get("ok"):
+        return None, result.get("error") or "the integration failed"
+    row = dict(result.get("data") or {})
+    row["provider"] = provider
+    row["provenance"] = _deploy_provenance(root, row.get("sha"))
+    return row, None
+
+
+def deploy_action(root, provider, op, id):
+    """The whole of POST /deploy/action, minus the HTTP plumbing, so it can
+    be exercised directly without a live server. Before promote or rollback,
+    runs the guardrails deploy:promote gate -- evidence is the diff between
+    the current production sha and the target's, when both are known and
+    exist locally in this checkout (else the target commit's own diff, else
+    nothing to diff at all; see guardrails._collect_evidence). Any blocking
+    fail/error/unapproved blocks the call: the provider is never reached.
+
+    Returns a dict: {"blocked": bool, "results": [...]} plus "error" when
+    the provider call itself failed (after passing the gate, for
+    promote/rollback, or for cancel, which the gate never covers)."""
+    # an op this does not name is refused, not read as a rollback
+    if op not in ("promote", "rollback", "cancel"):
+        return {"blocked": False, "results": [], "error": f"unknown action {op!r}"}
+    mapping = integrations.get_map(provider, root)
+    resource = (mapping or {}).get("resource")
+
+    if op == "cancel":
+        result = integrations.call(provider, "deploy.cancel", {"id": id})
+        out = {"blocked": False, "results": []}
+        if not result.get("ok"):
+            out["error"] = result.get("error")
+        return out
+
+    target = integrations.call(provider, "deploy.get", {"id": id})
+    target_sha = (target.get("data") or {}).get("sha") if target.get("ok") else None
+    current_sha = None
+    if resource:
+        listing = integrations.call(provider, "deploy.list", {"resource": resource, "limit": 20})
+        if listing.get("ok"):
+            for row in listing.get("data") or []:
+                if row.get("env") == "production" and row.get("current"):
+                    current_sha = row.get("sha")
+                    break
+
+    results = guardrails.run(root, event="deploy:promote", shas=(current_sha, target_sha))
+    blocked = [r for r in results if r.get("blocking") and r.get("verdict") in
+              ("fail", "error", "unapproved")]
+    if blocked:
+        return {"blocked": True, "results": results}
+
+    op_name = "deploy.promote" if op == "promote" else "deploy.rollback"
+    result = integrations.call(provider, op_name, {"resource": resource, "id": id})
+    out = {"blocked": False, "results": results}
+    if not result.get("ok"):
+        out["error"] = result.get("error")
+    return out
 
 
 def _session_for_terminal(tid):
@@ -1791,6 +1962,14 @@ class Handler(BaseHTTPRequestHandler):
             self._rules_effective()
         elif self.path == "/catalog" or self.path.startswith("/catalog?"):
             self._catalog()
+        elif self.path == "/integrations" or self.path.startswith("/integrations?"):
+            self._integrations_read()
+        elif self.path == "/integrations/resources" or self.path.startswith("/integrations/resources?"):
+            self._integrations_resources()
+        elif self.path == "/deploy/get" or self.path.startswith("/deploy/get?"):
+            self._deploy_get_read()
+        elif self.path == "/deploy" or self.path.startswith("/deploy?"):
+            self._deploy_read()
         else:
             self._send(200, API_NOTE, "text/plain")
 
@@ -1830,6 +2009,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._rules_move()
         if self.path == "/rules/review":
             return self._rules_review()
+        if self.path == "/integrations/secret":
+            return self._integrations_secret_set()
+        if self.path == "/integrations/secret/delete":
+            return self._integrations_secret_delete()
+        if self.path == "/integrations/config":
+            return self._integrations_config_set()
+        if self.path == "/integrations/map":
+            return self._integrations_map()
+        if self.path == "/deploy/action":
+            return self._deploy_action_route()
         if self.path == "/hook/toggle":
             return self._hook_toggle()
         if self.path == "/plugin/toggle":
@@ -2160,6 +2349,118 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._send(502, str(e)[:500], "text/plain")
         self._send(200, json.dumps(result), "application/json")
+
+    # ------------------------------------------------------ integrations
+
+    def _integrations_read(self):
+        self._send(200, json.dumps({"rows": integrations.rows()}), "application/json")
+
+    def _integrations_secret_set(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        try:
+            integrations.secret_set(str(body.get("name") or ""), str(body.get("key") or ""),
+                                    body.get("value"))
+        except (ValueError, RuntimeError) as e:
+            return self._send(400, str(e), "text/plain")
+        self._send(200, json.dumps({"rows": integrations.rows()}), "application/json")
+
+    def _integrations_secret_delete(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        integrations.secret_delete(str(body.get("name") or ""), str(body.get("key") or ""))
+        self._send(200, json.dumps({"rows": integrations.rows()}), "application/json")
+
+    def _integrations_config_set(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        try:
+            integrations.set_config(str(body.get("name") or ""), body.get("config") or {})
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        self._send(200, json.dumps({"rows": integrations.rows()}), "application/json")
+
+    def _integrations_resources(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        name = (q.get("name") or [""])[0]
+        if name not in integrations.discover():
+            return self._send(400, "no such integration", "text/plain")
+        result = integrations.call(name, "resources.list", {})
+        if not result.get("ok"):
+            return self._send(502, (result.get("error") or "failed")[:500], "text/plain")
+        self._send(200, json.dumps({"resources": result.get("data") or []}), "application/json")
+
+    def _integrations_map(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            integrations.set_map(str(body.get("name") or ""), root,
+                                 body.get("resource"), body.get("label"))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        deploy_forget(root)
+        self._send(200, json.dumps({"rows": integrations.rows()}), "application/json")
+
+    # ----------------------------------------------------------- deploys
+
+    def _deploy_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        self._send(200, json.dumps(deploy_rows(root)), "application/json")
+
+    def _deploy_get_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        provider = (q.get("provider") or [""])[0]
+        if provider not in integrations.discover():
+            return self._send(400, "no such integration", "text/plain")
+        row, err = deploy_get(root, provider, (q.get("id") or [""])[0])
+        if err:
+            return self._send(502, err[:500], "text/plain")
+        self._send(200, json.dumps(row), "application/json")
+
+    def _deploy_action_route(self):
+        """POST /deploy/action {cwd, provider, op, id} -- op is one of
+        promote|rollback|cancel. Before promote/rollback, deploy_action()
+        runs the deploy:promote guardrail gate; any blocking fail/error/
+        unapproved answers 409 with {"blocked": true, "results": [...]} and
+        the provider is never called ("before promote / rollback" in the
+        app). Otherwise the provider is called and this answers
+        {"ok": true, "results": [...]}."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        provider = str(body.get("provider") or "")
+        op = str(body.get("op") or "")
+        id_ = str(body.get("id") or "")
+        if provider not in integrations.discover():
+            return self._send(400, "no such integration", "text/plain")
+        if op not in ("promote", "rollback", "cancel"):
+            return self._send(400, "op must be promote, rollback or cancel", "text/plain")
+        if not id_:
+            return self._send(400, "no deployment id", "text/plain")
+        outcome = deploy_action(root, provider, op, id_)
+        deploy_forget(root)
+        if outcome.get("blocked"):
+            return self._send(409, json.dumps({"blocked": True, "results": outcome["results"]}),
+                              "application/json")
+        if outcome.get("error"):
+            return self._send(502, str(outcome["error"])[:500], "text/plain")
+        self._send(200, json.dumps({"ok": True, "results": outcome["results"]}), "application/json")
 
     def _pr_read(self):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -3054,48 +3355,7 @@ class Handler(BaseHTTPRequestHandler):
         sha = (q.get("sha") or [""])[0]
         if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
             return self._send(400, "bad sha", "text/plain")
-
-        note = git(root, "notes", "--ref=guardrails", "show", sha)
-        guardrails_meta = None
-        if note.returncode == 0 and note.stdout.strip():
-            try:
-                guardrails_meta = json.loads(note.stdout).get("predicate")
-            except json.JSONDecodeError:
-                guardrails_meta = None
-
-        session_meta = None
-        out = git(root, "log", "-1", "--format=%(trailers:key=Agent-Session,valueonly)", sha)
-        session_id = out.stdout.strip() if out.returncode == 0 else ""
-        if session_id:
-            live_tid, name = None, None
-            for a in push_cc.agents():
-                if (a.get("agent_session") or {}).get("value") == session_id:
-                    live_tid, name = a.get("terminal_id"), a.get("name")
-                    break
-            conn = memory.connect()
-            try:
-                srow = conn.execute(
-                    "SELECT first_ts, last_ts FROM sessions WHERE id = ?", (session_id,)).fetchone()
-                summary = conn.execute(
-                    "SELECT title FROM entries WHERE session = ? AND kind = 'summary' "
-                    "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
-            finally:
-                conn.close()
-            session_meta = {"id": session_id, "live_tid": live_tid, "name": name,
-                            "first_ts": srow["first_ts"] if srow else None,
-                            "last_ts": srow["last_ts"] if srow else None,
-                            "summary": summary["title"] if summary else None}
-
-        spec_meta = None
-        out = git(root, "log", "-1", "--format=%(trailers:key=Spec,valueonly)", sha)
-        spec_path = out.stdout.strip() if out.returncode == 0 else ""
-        if spec_path:
-            real_path, text = guardrails.read_spec(root, spec_path)
-            if real_path:
-                spec_meta = {"path": real_path, "title": guardrails.spec_title(text) or real_path}
-
-        self._send(200, json.dumps({"guardrails": guardrails_meta, "session": session_meta,
-                                    "spec": spec_meta}), "application/json")
+        self._send(200, json.dumps(commit_meta(root, sha)), "application/json")
 
     def _work_diff(self):
         """The raw patch for one commit or one file, sent back unparsed --

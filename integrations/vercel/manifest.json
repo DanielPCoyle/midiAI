@@ -1,0 +1,5 @@
+{"name": "vercel", "title": "Vercel", "run": "vercel.py",
+ "secrets": [{"key": "token", "label": "Access token", "help": "vercel.com/account/tokens"}],
+ "config": [{"key": "team", "label": "Team id (optional)"}],
+ "capabilities": ["auth.check", "resources.list", "deploy.list", "deploy.get",
+                  "deploy.promote", "deploy.rollback", "deploy.cancel"]}

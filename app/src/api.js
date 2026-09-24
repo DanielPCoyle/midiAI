@@ -542,3 +542,72 @@ export const agentNext = (base, terminal_id) =>
 
 export const claudeLogin = async (base) =>
   JSON.parse(await post(base, '/settings/claude/login', {}));
+
+// Integrations: one row per manifest found under integrations/<name>/ (built
+// in) or ~/.midiai/integrations/<name>/ (a user folder of the same name
+// overrides the built-in). `ok` is a cached auth.check (60s), null when the
+// integration has no such capability or has not been asked yet.
+export const listIntegrations = async (base) =>
+  (await getJSON(base, '/integrations')).rows || [];
+
+// Each of these writes answers with the same {"rows": [...]} shape the GET
+// does (the same "a write hands back the fresh read" idiom /skill, /hook and
+// /guardrails/* already use) -- unwrapped here so a caller can drop the
+// result straight into whatever state holds listIntegrations' rows.
+//
+// Checked against the integration's own auth.check first (when it has one)
+// before it ever reaches the Keychain -- a failed check stores nothing, the
+// same bargain saveClaudeKey makes for the Anthropic key. A 400 carries the
+// reason as e.message.
+export const setIntegrationSecret = async (base, name, key, value) =>
+  (JSON.parse(await post(base, '/integrations/secret', { name, key, value })).rows) || [];
+
+export const deleteIntegrationSecret = async (base, name, key) =>
+  (JSON.parse(await post(base, '/integrations/secret/delete', { name, key })).rows) || [];
+
+export const setIntegrationConfig = async (base, name, config) =>
+  (JSON.parse(await post(base, '/integrations/config', { name, config })).rows) || [];
+
+// Whatever the adapter's resources.list op hands back, e.g.
+// [{"id","name","framework"}] for Vercel -- read defensively (`.resources`,
+// or the bare array some servers might answer with) since the route's own
+// wrapper shape is not pinned down in the contract the way /integrations is.
+export const integrationResources = async (base, name) => {
+  const r = await getJSON(base, `/integrations/resources?name=${encodeURIComponent(name)}`);
+  return Array.isArray(r) ? r : r.resources || r.rows || [];
+};
+
+// resource: null unmaps. label rides along so a card can say what it is
+// mapped to without a second lookup.
+export const mapIntegration = async (base, name, cwd, resource, label) =>
+  (JSON.parse(await post(base, '/integrations/map', { name, cwd, resource, label })).rows) || [];
+
+// DEPLOY tab: every provider mapped to this checkout, and every deploy across
+// them, newest first -- each carrying `provenance` (the same shape
+// /work/commit-meta answers for its sha) when that commit exists locally.
+export const getDeploys = (base, cwd) =>
+  getJSON(base, `/deploy?cwd=${encodeURIComponent(cwd || '')}`);
+
+export const getDeploy = (base, cwd, provider, id) =>
+  getJSON(
+    base,
+    `/deploy/get?cwd=${encodeURIComponent(cwd || '')}` +
+      `&provider=${encodeURIComponent(provider || '')}` +
+      `&id=${encodeURIComponent(id || '')}`
+  );
+
+// promote | rollback | cancel. A deploy:promote gate that blocks comes back
+// as 409 with {blocked:true, results} -- structured, not the plain-text
+// reason ask()'s generic Error(status+text) is built for -- so this reads
+// the body itself rather than going through post(), and Deploy.js can show
+// which guardrails blocked it instead of a bare error string.
+export const deployAction = async (base, cwd, provider, op, id) => {
+  const res = await fetch(`${base}/deploy/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cwd, provider, op, id }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok && !body.blocked) throw new Error(body.error || `${res.status}`);
+  return body; // {ok:true, results} or {blocked:true, results}
+};

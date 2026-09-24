@@ -15,7 +15,8 @@ import {
 
 import {
   listPrs,
-  getDirty, addToQueue, agentNext, baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+  getDirty, addToQueue, agentNext, baseFor, defaultHost, getDeploys, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+import Deploy from './src/Deploy';
 import EntrySheet from './src/EntrySheet';
 import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
@@ -65,6 +66,11 @@ export default function App() {
   const [followPush, setFollowPush] = useState(true);
   const [localView, setLocalView] = useState(0);
   const [localModes, setLocalModes] = useState({});
+  // DEPLOY is app-only: it has no wire index at all, never rides a `tab`
+  // press to the Push, and does not touch localView/viewIdx -- switching to
+  // it and back leaves the wire tab exactly where it was. This is the one
+  // flag that says "draw Deploy instead of Pane", independent of `views`.
+  const [deployOpen, setDeployOpen] = useState(false);
   // The session rail is a fixed 268px the header and pads panel cannot both
   // afford below 1200 -- rather than shrink it into uselessness it moves
   // behind this toggle, since the pane header already names the current
@@ -258,6 +264,28 @@ export default function App() {
     const timer = setInterval(pull, 60000);
     return () => { live = false; clearInterval(timer); };
   }, [base, scopePath, dirty?.git]);
+  // DEPLOY's own badge: how many deploys are building or queued, kept live
+  // on every tab the same way dirty/openPrs are -- not only while DEPLOY is
+  // the one showing. Deploy.js runs its own richer poll of the same route,
+  // only while it is mounted, the same split Mcps.js's useMcpDown (this) and
+  // McpManager (the panel someone is actually looking at) already use.
+  const [deployBuilding, setDeployBuilding] = useState(0);
+  useEffect(() => {
+    setDeployBuilding(0);
+    if (!base || !scopePath) return undefined;
+    let live = true;
+    let timer;
+    const pull = () => getDeploys(base, scopePath)
+      .then((d) => {
+        if (!live) return;
+        const n = (d.deploys || []).filter((x) => x.state === 'building' || x.state === 'queued').length;
+        setDeployBuilding(n);
+        timer = setTimeout(pull, n ? 4000 : 15000);
+      })
+      .catch(() => { if (live) timer = setTimeout(pull, 15000); });
+    pull();
+    return () => { live = false; clearTimeout(timer); };
+  }, [base, scopePath]);
   const TAB_COUNT = {
     ...(picked ? {} : { tests: testsCount }),
     ...(dirty?.git ? { prs: dirty.count } : {}),
@@ -641,7 +669,7 @@ export default function App() {
   // read, not typed into, so a column of things to say to an agent is 56px of
   // furniture with nothing to fire at on any of them. A question on the glass
   // takes it too -- the answer pads are what that moment is for.
-  const showPads = !picked && anyAgent && viewName === 'focus' && !asking;
+  const showPads = !picked && anyAgent && viewName === 'focus' && !asking && !deployOpen;
 
   const panelCounts = {
     prompts: filled,
@@ -659,6 +687,44 @@ export default function App() {
     picked && viewName === 'focus' ? (
       <NoAgent pick={picked} base={base} onClose={() => setPick(null)} onChanged={refresh} />
     ) : null;
+
+  // DEPLOY replaces the pane entirely rather than living inside it -- it has
+  // no `data`/`opts`/composer of its own, and the wire's `data`/`viewName`
+  // underneath are untouched while it's open (see `deployOpen`). One value,
+  // used in both the narrow and wide layouts below, so they cannot drift.
+  const mainBody = deployOpen ? (
+    <Deploy
+      base={base}
+      cwd={scopePath}
+      cols={cols}
+      onSeat={(i) => press({ seat: i })}
+      onOpenIntegrations={() => setSettings('integrations')}
+    />
+  ) : (
+    noAgent || (
+      <Pane
+        data={data}
+        opts={opts}
+        question={surface.question}
+        cols={cols}
+        current={surface.current}
+        onSeat={(i) => press({ seat: i })}
+        onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+        onNext={() => here?.tid && agentNext(base, here.tid).catch(() => {})}
+        base={base}
+        onSent={refresh}
+        mode={mode}
+        onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
+        reachable={reachable}
+        onComposerFocus={composerFocus}
+        onQueue={() => showPanel('queue', true)}
+        skills={catalog.skills}
+        place={place}
+        subs={subs}
+        onSub={(i) => press({ sub: i })}
+      />
+    )
+  );
 
   return (
     <SafeAreaView style={styles.root}>
@@ -708,17 +774,33 @@ export default function App() {
                   warn={TAB_WARN[name]}
                   parts={TAB_PARTS[name]}
                   hue={hue}
-                  on={i === viewIdx}
+                  // deployOpen wins the highlight while it's showing -- i
+                  // === viewIdx alone would otherwise still read "on" for
+                  // whichever wire tab was selected before DEPLOY was opened.
+                  on={i === viewIdx && !deployOpen}
                   onPress={() => {
                     // instant, always -- following or not, the tab you just
                     // hit is the one you see. Following additionally tells
                     // the Push to move there, same as it always did.
+                    setDeployOpen(false);
                     setLocalView(i);
                     if (effectiveFollow) press({ tab: i });
                   }}
                 />
               );
             })}
+            {/* App-only: no wire index, never a `tab` press to the Push (see
+                App.js's `deployOpen` and the render below). count is how
+                many are building/queued, live on every tab via
+                deployBuilding, not only while this one is showing. */}
+            <Tab
+              key="deploy"
+              label="deploy"
+              count={scopePath ? deployBuilding : null}
+              hue={SEAT_HEX.done}
+              on={deployOpen}
+              onPress={() => setDeployOpen(true)}
+            />
           </View>
         )}
 
@@ -735,7 +817,7 @@ export default function App() {
           const shown = [['session', pick(/session/i)], ['week', pick(/week/i)]]
             .filter(([, b]) => b);
           const pct = (b) => Math.round(Math.max(0, Math.min(1, Number(b.used) || 0)) * 100);
-          const on = ui === viewIdx;
+          const on = ui === viewIdx && !deployOpen;
           return (
             <Pressable
               accessibilityRole="button"
@@ -744,6 +826,7 @@ export default function App() {
                 : 'usage'}
               accessibilityState={{ selected: on }}
               onPress={() => {
+                setDeployOpen(false);
                 setLocalView(ui);
                 if (effectiveFollow) press({ tab: ui });
               }}
@@ -902,29 +985,7 @@ export default function App() {
         // scrollable column and the pads keep their own width behind a
         // sideways scroll scoped to that block.
         <ScrollView contentContainerStyle={styles.bodyNarrow}>
-          {noAgent || (
-            <Pane
-                data={data}
-                opts={opts}
-                question={surface.question}
-                cols={cols}
-                current={surface.current}
-                onSeat={(i) => press({ seat: i })}
-                onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
-                onNext={() => here?.tid && agentNext(base, here.tid).catch(() => {})}
-                base={base}
-                onSent={refresh}
-                mode={mode}
-                onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
-                reachable={reachable}
-                onComposerFocus={composerFocus}
-                onQueue={() => showPanel('queue', true)}
-                skills={catalog.skills}
-                place={place}
-                subs={subs}
-                onSub={(i) => press({ sub: i })}
-              />
-          )}
+          {mainBody}
           {showPads &&
             (ready ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -988,29 +1049,7 @@ export default function App() {
             />
           )}
           <View style={styles.centre}>
-            {noAgent || (
-              <Pane
-                data={data}
-                opts={opts}
-                question={surface.question}
-                cols={cols}
-                current={surface.current}
-                onSeat={(i) => press({ seat: i })}
-                onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
-                onNext={() => here?.tid && agentNext(base, here.tid).catch(() => {})}
-                base={base}
-                onSent={refresh}
-                mode={mode}
-                onMode={(i) => setLocalModes((prev) => ({ ...prev, [viewIdx]: i }))}
-                reachable={reachable}
-                onComposerFocus={composerFocus}
-                onQueue={() => showPanel('queue', true)}
-                skills={catalog.skills}
-                place={place}
-                subs={subs}
-                onSub={(i) => press({ sub: i })}
-              />
-            )}
+            {mainBody}
           </View>
           {/* The prompt library used to hold 344px open whether or not you
               were looking at it -- a third of the screen next to the one thing
