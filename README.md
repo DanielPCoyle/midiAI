@@ -1429,6 +1429,15 @@ CERTIFICATE_VERIFY_FAILED ("couldn't reach Anthropic") while curl worked.
   `push_cc` dies at `import mido` while mapui keeps answering as if all were
   well. And its `pkill -f push_cc.py` matches any process whose command line
   holds that string -- including the shell that asked for the relaunch.
+- FOCUS › subagents read 0 while background agents were working. Claude
+  Code stopped writing a `.meta.json` beside each subagent log, and an async
+  Agent call returns at once ("Async agent launched · agentId: …"), so the old
+  reader never listed those logs and called any it did list finished at
+  launch. `push_cc.task_index` now reads launches, agent ids and
+  `<task-notification>` endings off the parent transcript; every
+  `subagents/agent-*.jsonl` is listed, and background shells stay listed until
+  their notification. An agent launched before a compact lives in an older
+  transcript, so its label falls back to the name its notification quotes.
 - The focus info the app gets carries the agent's `tid`. It once did not, and
   nothing failed loudly: drafts shared one key, `/history` was never asked,
   and the queue polled `terminal_id=undefined`.
