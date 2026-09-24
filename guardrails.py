@@ -50,6 +50,8 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import telemetry
+
 APPROVALS_FILE = os.path.expanduser("~/.midiai/guardrail-approvals.json")
 RUNS_FILE = os.path.expanduser("~/.midiai/guardrail-runs.json")
 ACTIVE_SPECS_FILE = os.path.expanduser("~/.midiai/active-specs.json")
@@ -354,9 +356,8 @@ def _compile_prompt(root, item):
     )
 
 
-def _call_claude(cmd, prompt, cwd, timeout):
-    done = subprocess.run(cmd, input=prompt, text=True, capture_output=True,
-                          timeout=timeout, cwd=cwd)
+def _call_claude(purpose, cmd, prompt, cwd, timeout):
+    done = telemetry.run_model(purpose, cmd, prompt, timeout, cwd=cwd)
     if done.returncode:
         raise RuntimeError((done.stderr or "the model call failed").strip()[-300:])
     return done.stdout
@@ -371,7 +372,7 @@ def compile_rail(root, item, run=None):
         raise ValueError("guardrail has no usable id")
     gate = item.get("gate") if item.get("gate") in ("entry", "exit") else "exit"
     prompt = _compile_prompt(root, item)
-    out = run(prompt) if run else _call_claude(COMPILE_CMD, prompt, root, 240)
+    out = run(prompt) if run else _call_claude("guardrail.compile", COMPILE_CMD, prompt, root, 240)
     parsed = _parse_json_object(out)
     needs = _clean_needs(parsed.get("needs"))
     kind = parsed.get("kind")
@@ -607,8 +608,8 @@ def _run_agent(root, rid, entry, event, run_model, diff, files, commit_msg):
     _, brief = rail_file(root, rid)
     prompt = _review_prompt(entry, brief, needs, diff, files, commit_msg)
     try:
-        out = run_model(prompt) if run_model else _call_claude(REVIEW_CMD, prompt,
-                                                                 tempfile.gettempdir(), 180)
+        out = run_model(prompt) if run_model else _call_claude(
+            "guardrail.review", REVIEW_CMD, prompt, tempfile.gettempdir(), 180)
         parsed = _parse_json_object(out)
         verdict = parsed.get("verdict")
         reason = str(parsed.get("reason", ""))[:1500]
@@ -687,12 +688,25 @@ def run(root, ids=None, phase=None, event=None, trust=False, run_model=None,
 
         script_idx = [i for i in runnable if selected[i][1].get("kind") != "agent"]
         agent_idx = [i for i in runnable if selected[i][1].get("kind") == "agent"]
+
+        def _traced(rid, entry, fn, *a):
+            with telemetry.span(f"guardrail {rid}", "guardrail",
+                                event=event or "manual") as s:
+                r = fn(*a)
+                s.set("gate", r.get("gate") or "")
+                s.set("kind", r.get("kind") or "")
+                s.set("verdict", r.get("verdict") or "")
+                s.set("blocking", bool(r.get("blocking")))
+                return r
+
         for i in script_idx:
             rid, entry = selected[i]
-            results[i] = _run_script(root, rid, entry, event, trust, evidence_dir)
+            results[i] = _traced(rid, entry, _run_script, root, rid, entry, event,
+                                 trust, evidence_dir)
         if agent_idx:
             with ThreadPoolExecutor(max_workers=4) as ex:
-                futs = {ex.submit(_run_agent, root, selected[i][0], selected[i][1],
+                futs = {ex.submit(_traced, selected[i][0], selected[i][1], _run_agent,
+                                  root, selected[i][0], selected[i][1],
                                   event, run_model, diff, files, commit_msg): i
                        for i in agent_idx}
                 for fut in as_completed(futs):

@@ -44,6 +44,7 @@ import threading
 import time
 
 import access
+import telemetry
 
 BUILTIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations")
 USER_DIR = os.path.expanduser("~/.midiai/integrations")
@@ -254,6 +255,14 @@ def secret_delete(name, key):
 # -------------------------------------------------------------- execution
 
 def _exec(integ, op, args, secrets, config):
+    name = integ.get("manifest", {}).get("name", "")
+    with telemetry.span(f"integration {name} {op}", "integration") as s:
+        result = _exec_inner(integ, op, args, secrets, config)
+        s.set("ok", bool(result.get("ok")))
+        return result
+
+
+def _exec_inner(integ, op, args, secrets, config):
     run_path = integ["run_path"]
     argv = [sys.executable, run_path] if run_path.endswith(".py") else [run_path]
     payload = json.dumps({"op": op, "args": args or {}, "secrets": secrets, "config": config})

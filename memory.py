@@ -33,6 +33,8 @@ import tempfile
 from collections import Counter
 from datetime import datetime
 
+import telemetry
+
 DB_PATH = os.environ.get("MIDIAI_MEMORY_DB") or os.path.expanduser("~/.midiai/memory.db")
 PROJECTS_ROOT = os.path.expanduser("~/.claude/projects")
 
@@ -336,8 +338,8 @@ def due_for_summary(conn, idle_s=600, min_prompts=2, max_age_s=2 * 86400, now=No
 
 
 def _run_summary_cmd(prompt):
-    result = subprocess.run(SUMMARY_CMD, input=prompt, text=True, capture_output=True,
-                             timeout=180, cwd=tempfile.gettempdir())
+    result = telemetry.run_model("memory.summary", SUMMARY_CMD, prompt, 180,
+                                 cwd=tempfile.gettempdir())
     if result.returncode != 0:
         raise RuntimeError(f"summary command exited {result.returncode}: {result.stderr[:500]}")
     return result.stdout

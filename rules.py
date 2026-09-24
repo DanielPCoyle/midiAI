@@ -38,6 +38,8 @@ import subprocess
 import tempfile
 import time
 
+import telemetry
+
 MANAGED_POLICY = "/Library/Application Support/ClaudeCode/CLAUDE.md"
 
 # Same isolation guardrails.REVIEW_CMD uses -- no tools, no session, nothing
@@ -689,8 +691,7 @@ def _review_prompt(blob):
 
 
 def _call_claude(cmd, prompt, cwd, timeout):
-    done = subprocess.run(cmd, input=prompt, text=True, capture_output=True,
-                          timeout=timeout, cwd=cwd)
+    done = telemetry.run_model("rules.review", cmd, prompt, timeout, cwd=cwd)
     if done.returncode:
         raise RuntimeError((done.stderr or "the model call failed").strip()[-300:])
     return done.stdout

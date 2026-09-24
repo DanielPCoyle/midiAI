@@ -32,6 +32,7 @@ import memory
 import ptybridge
 import push_cc
 import rules
+import telemetry
 
 PORT = 8765
 PUSH_CC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push_cc.py")
@@ -333,6 +334,7 @@ def queue_tick():
         if pane.get("opts") or (pane.get("pending") or "").strip():
             continue
         push_cc.herdr("agent", "send", tid, head["text"] + "\r")
+        telemetry.event("queue.send", kind="queue")
         _queue_last[tid] = time.time()
         _queue_once.discard(tid)
         with _queue_lock:
@@ -375,9 +377,8 @@ def summarize_prompt(text, run=None):
         if run:
             line = run(ask)
         else:
-            out = subprocess.run(memory.SUMMARY_CMD, input=ask, text=True,
-                                 capture_output=True, timeout=60,
-                                 cwd=tempfile.gettempdir())
+            out = telemetry.run_model("prompt.summary", memory.SUMMARY_CMD, ask, 60,
+                                      cwd=tempfile.gettempdir())
             if out.returncode:
                 raise RuntimeError(out.stderr[-200:])
             line = out.stdout
@@ -655,8 +656,12 @@ def git(root, *argv, timeout=30):
     a path or message with spaces or shell metacharacters in it can never be
     reinterpreted, the same guarantee _repo_request and _pr_read already
     lean on."""
-    return subprocess.run(["git", "-C", root, *argv],
-                          capture_output=True, text=True, timeout=timeout)
+    sub = argv[0] if argv else ""
+    with telemetry.span(f"exec git {sub}", "client") as s:
+        out = subprocess.run(["git", "-C", root, *argv],
+                             capture_output=True, text=True, timeout=timeout)
+        s.set("process.exit_code", out.returncode)
+        return out
 
 
 def commit_exists(root, sha):
@@ -1036,8 +1041,8 @@ def commit_message(root, run=None):
     if run:
         out = run(ask)
     else:
-        done = subprocess.run(memory.SUMMARY_CMD, input=ask, text=True,
-                              capture_output=True, timeout=120, cwd=tempfile.gettempdir())
+        done = telemetry.run_model("commit.message", memory.SUMMARY_CMD, ask, 120,
+                                   cwd=tempfile.gettempdir())
         if done.returncode:
             raise RuntimeError((done.stderr or "the model call failed")[-300:])
         out = done.stdout
@@ -1828,6 +1833,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
 
     def _send(self, code, body, ctype):
+        self._telemetry_status = code
         body = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -1837,6 +1843,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _raw(self, code, body, ctype):
+        self._telemetry_status = code
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
@@ -1854,6 +1861,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        self._telemetry_status = None
+        path = self.path.split("?", 1)[0]
+        is_poll = path == "/surface" or self.path.startswith("/queue?")
+        with telemetry.span(f"http GET {path}", "server", **{"midiai.poll": is_poll}) as s:
+            try:
+                self._do_GET()
+            finally:
+                s.set("http.response.status_code", self._telemetry_status or 0)
+
+    def _do_GET(self):
         if self.path.startswith("/frame.png"):
             try:
                 with open(push_cc.FRAME_FILE, "rb") as f:
@@ -1970,10 +1987,21 @@ class Handler(BaseHTTPRequestHandler):
             self._deploy_get_read()
         elif self.path == "/deploy" or self.path.startswith("/deploy?"):
             self._deploy_read()
+        elif self.path == "/telemetry" or self.path.startswith("/telemetry?"):
+            self._telemetry_read()
         else:
             self._send(200, API_NOTE, "text/plain")
 
     def do_POST(self):
+        self._telemetry_status = None
+        path = self.path.split("?", 1)[0]
+        with telemetry.span(f"http POST {path}", "server") as s:
+            try:
+                self._do_POST()
+            finally:
+                s.set("http.response.status_code", self._telemetry_status or 0)
+
+    def _do_POST(self):
         if self.path == "/fire":
             return self._fire()
         if self.path == "/press":
@@ -2409,6 +2437,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"rows": integrations.rows()}), "application/json")
 
     # ----------------------------------------------------------- deploys
+
+    def _telemetry_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            since = float((q.get("since") or ["86400"])[0])
+        except ValueError:
+            since = 86400
+        self._send(200, json.dumps(telemetry.summary(since)), "application/json")
 
     def _deploy_read(self):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)

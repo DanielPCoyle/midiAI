@@ -611,3 +611,10 @@ export const deployAction = async (base, cwd, provider, op, id) => {
   if (!res.ok && !body.blocked) throw new Error(body.error || `${res.status}`);
   return body; // {ok:true, results} or {blocked:true, results}
 };
+
+// TELEMETRY tab: midiAI's own health, not the checked-out project's -- one
+// summary of telemetry.py's spans over the trailing `since` seconds (server
+// default 86400 when omitted). {http, models, tools, guardrails,
+// integrations, queue, errors, totals}; see telemetry.py's `summary()`.
+export const getTelemetry = (base, since) =>
+  getJSON(base, `/telemetry${since ? `?since=${Number(since)}` : ''}`);

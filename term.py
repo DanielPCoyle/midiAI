@@ -15,6 +15,8 @@ import subprocess
 import threading
 import time
 
+import telemetry
+
 PANE_FORMAT = ("#{pane_id}\t#{pane_pid}\t#{pane_current_path}\t"
                "#{pane_active}\t#{window_active}\t#{session_attached}\t"
                "#{@agent_name}")
@@ -35,10 +37,13 @@ def _branch_slug(branch):
 
 def _run(cmd, timeout=10):
     """every subprocess call lands here so dispatch() never has to catch."""
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError) as e:
-        return subprocess.CompletedProcess(cmd, 1, "", str(e))
+    with telemetry.span(telemetry.exec_name(cmd), "client") as s:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.SubprocessError) as e:
+            out = subprocess.CompletedProcess(cmd, 1, "", str(e))
+        s.set("process.exit_code", out.returncode)
+        return out
 
 
 def _ok(result):

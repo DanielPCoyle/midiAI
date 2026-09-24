@@ -1312,6 +1312,75 @@ sha256 of what was sent.
 
 Gate: `test_rules.py`.
 
+## Telemetry
+
+midiAI instruments itself, not the projects it manages -- the pain this was
+built for: `/projects` at 11.6s (uncached `claude agents --json`), `/catalog`
+at 19s (a glob), and a background guardrail run, queue send or integration
+call that fails with nobody watching. `telemetry.py` (stdlib) is the one
+place any of that lands: SQLite at `~/.midiai/telemetry.db`, one row per
+`span` (a timed block) or `event` (an instant fact) -- WAL + a busy timeout so
+mapui and push_cc, which both import modules that record, can write from
+separate processes without stepping on each other. Writes go through a
+bounded in-process queue drained by one daemon thread in batches at most a
+second apart; past 10,000 queued, a new span is dropped, never blocked on.
+Rows older than 7 days are swept on the first write and hourly after that.
+
+**What is recorded, and where:**
+
+- **Every HTTP request** mapui serves -- `do_GET`/`do_POST` wrap the whole
+  dispatch, span `http <METHOD> <path>` (query string stripped), kind
+  `server`, `http.response.status_code` set from whatever `_send`/`_raw`
+  actually sent. `/surface` and `/queue?...` (the app's poll routes) are
+  still recorded, just tagged `midiai.poll=true` so the app can hide them
+  from the "what's slow" table without losing the count.
+- **Every `tmux`/`git` exec** -- term.py's `_run` (every tmux and worktree
+  call `push_cc.herdr()` makes) and mapui's own `git()` helper, span
+  `exec <program> <first subcommand>` (e.g. `exec tmux list-panes`, `exec git
+  worktree`), kind `client`, `process.exit_code`.
+- **Every isolated `claude -p` call** -- `telemetry.run_model(purpose, cmd,
+  input, timeout, cwd=None)` is the one way any of them run: memory.py's
+  session summaries (`memory.summary`), mapui's pinned-prompt summary
+  (`prompt.summary`) and commit-message draft (`commit.message`), guardrails'
+  compile (`guardrail.compile`) and agent review (`guardrail.review`), and
+  rules' conflict review (`rules.review`). It appends `--output-format json`
+  if the caller didn't, and returns a `subprocess.CompletedProcess` shaped
+  like a plain `claude -p` call (`.stdout` is the model's `result`; an
+  `is_error` reply comes back as returncode 1 with `.stderr` set to that
+  `result`) so every existing `run=`/`run_model=` test seam still works
+  unchanged. Span `gen_ai.chat`, kind `model`, attributes named after the
+  OpenTelemetry GenAI semantic conventions where one exists:
+  `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`,
+  `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, plus
+  `midiai.cache_read_tokens`, `midiai.cost_usd`, `midiai.ttft_ms`,
+  `midiai.purpose`, `midiai.prompt_chars`.
+- **Every guardrail run** -- one span per rail, `guardrail <id>`, kind
+  `guardrail`, attrs `event`, `gate`, `kind`, `verdict`, `blocking`.
+- **Every integration call** -- `integrations._exec`, span `integration
+  <name> <op>`, kind `integration`, attr `ok`. Never the call's `args`.
+- **Every queue send** -- `mapui.queue_tick`, instant event `queue.send`.
+
+**What is never recorded, anywhere, no exceptions:** prompt text, model
+output, request/response bodies, secrets, env vars, or command-line
+arguments beyond a program's name and its first subcommand. A path is only
+ever recorded as a checkout root. An attribute value is a `str` (cut to 200
+characters), `int`, `float` or `bool` -- a dict, a list, `None`, or anything
+else handed to `.set()`/`span(**attrs)`/`event(**attrs)` is silently
+dropped, never stored. Every entry point is exception-safe around its own
+bookkeeping: a telemetry failure never raises into, blocks, or measurably
+slows the code it wraps, and the writer thread never touches the caller's.
+
+**Off switch and overrides:** `MIDIAI_TELEMETRY=0` disables recording
+entirely (reads still work against whatever is already in the DB);
+`TELEMETRY_DB` overrides the DB path, mainly so tests never touch the real
+one.
+
+`GET /telemetry?since=<seconds, default 86400>` returns `telemetry.summary()`
+-- routes by p95 (with the `poll` flag above), model calls by purpose (count,
+p50, cost, tokens, model), external execs by p95, guardrails (runs, fail,
+error), integrations, the queue send count, the last 50 errors, and totals --
+sorted throughout by what hurts (p95 desc, cost desc). Gate: `test_telemetry.py`.
+
 ## Slash commands
 
 Start the composer with `/` and a menu opens above it: Claude Code's own

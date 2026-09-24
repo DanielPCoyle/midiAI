@@ -15,7 +15,7 @@ import {
 
 import {
   listPrs,
-  getDirty, addToQueue, agentNext, baseFor, defaultHost, getDeploys, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+  getDirty, addToQueue, agentNext, baseFor, defaultHost, getDeploys, getJSON, getTelemetry, listCatalog, listProjects, PORT, post } from './src/api';
 import Deploy from './src/Deploy';
 import EntrySheet from './src/EntrySheet';
 import Icon from './src/Icon';
@@ -28,7 +28,8 @@ import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
 import Rail from './src/Rail';
 import Settings from './src/Settings';
-import { BREAK, C, KEY, S, SEAT_HEX, fillHue, mono } from './src/theme';
+import Telemetry from './src/Telemetry';
+import { BREAK, C, KEY, PAD_HEX, S, SEAT_HEX, fillHue, mono } from './src/theme';
 
 const SURFACE_MS = 400; // the mirror and the views both; anything slower lags
 const TARGET_MS = 2500; // which session is selected, and whether push_cc is up
@@ -71,6 +72,10 @@ export default function App() {
   // it and back leaves the wire tab exactly where it was. This is the one
   // flag that says "draw Deploy instead of Pane", independent of `views`.
   const [deployOpen, setDeployOpen] = useState(false);
+  // TELEMETRY: app-only exactly like DEPLOY (same reasoning, same
+  // never-a-`tab`-press rule) and mutually exclusive with it -- every setter
+  // that opens one closes the other, and both close on any wire-tab press.
+  const [telemetryOpen, setTelemetryOpen] = useState(false);
   // The session rail is a fixed 268px the header and pads panel cannot both
   // afford below 1200 -- rather than shrink it into uselessness it moves
   // behind this toggle, since the pane header already names the current
@@ -286,6 +291,24 @@ export default function App() {
     pull();
     return () => { live = false; clearTimeout(timer); };
   }, [base, scopePath]);
+  // TELEMETRY's own badge: errors in the last hour, kept live on every tab
+  // the same way deployBuilding is -- midiAI's own health, not the checked-
+  // out project's, so this has no `scopePath` dependency at all.
+  const [telemetryErrors, setTelemetryErrors] = useState(0);
+  useEffect(() => {
+    setTelemetryErrors(0);
+    if (!base) return undefined;
+    let live = true;
+    const timer = setInterval(() => {
+      getTelemetry(base, 3600)
+        .then((d) => live && setTelemetryErrors(d?.totals?.errors || 0))
+        .catch(() => {});
+    }, 30000);
+    getTelemetry(base, 3600)
+      .then((d) => live && setTelemetryErrors(d?.totals?.errors || 0))
+      .catch(() => {});
+    return () => { live = false; clearInterval(timer); };
+  }, [base]);
   const TAB_COUNT = {
     ...(picked ? {} : { tests: testsCount }),
     ...(dirty?.git ? { prs: dirty.count } : {}),
@@ -669,7 +692,7 @@ export default function App() {
   // read, not typed into, so a column of things to say to an agent is 56px of
   // furniture with nothing to fire at on any of them. A question on the glass
   // takes it too -- the answer pads are what that moment is for.
-  const showPads = !picked && anyAgent && viewName === 'focus' && !asking && !deployOpen;
+  const showPads = !picked && anyAgent && viewName === 'focus' && !asking && !deployOpen && !telemetryOpen;
 
   const panelCounts = {
     prompts: filled,
@@ -688,11 +711,14 @@ export default function App() {
       <NoAgent pick={picked} base={base} onClose={() => setPick(null)} onChanged={refresh} />
     ) : null;
 
-  // DEPLOY replaces the pane entirely rather than living inside it -- it has
-  // no `data`/`opts`/composer of its own, and the wire's `data`/`viewName`
-  // underneath are untouched while it's open (see `deployOpen`). One value,
-  // used in both the narrow and wide layouts below, so they cannot drift.
-  const mainBody = deployOpen ? (
+  // DEPLOY and TELEMETRY both replace the pane entirely rather than living
+  // inside it -- neither has a `data`/`opts`/composer of its own, and the
+  // wire's `data`/`viewName` underneath are untouched while either is open
+  // (see `deployOpen`/`telemetryOpen`). One value, used in both the narrow
+  // and wide layouts below, so they cannot drift.
+  const mainBody = telemetryOpen ? (
+    <Telemetry base={base} />
+  ) : deployOpen ? (
     <Deploy
       base={base}
       cwd={scopePath}
@@ -774,15 +800,17 @@ export default function App() {
                   warn={TAB_WARN[name]}
                   parts={TAB_PARTS[name]}
                   hue={hue}
-                  // deployOpen wins the highlight while it's showing -- i
-                  // === viewIdx alone would otherwise still read "on" for
-                  // whichever wire tab was selected before DEPLOY was opened.
-                  on={i === viewIdx && !deployOpen}
+                  // deployOpen/telemetryOpen win the highlight while either
+                  // is showing -- i === viewIdx alone would otherwise still
+                  // read "on" for whichever wire tab was selected before an
+                  // app-only tab was opened.
+                  on={i === viewIdx && !deployOpen && !telemetryOpen}
                   onPress={() => {
                     // instant, always -- following or not, the tab you just
                     // hit is the one you see. Following additionally tells
                     // the Push to move there, same as it always did.
                     setDeployOpen(false);
+                    setTelemetryOpen(false);
                     setLocalView(i);
                     if (effectiveFollow) press({ tab: i });
                   }}
@@ -799,7 +827,20 @@ export default function App() {
               count={scopePath ? deployBuilding : null}
               hue={SEAT_HEX.done}
               on={deployOpen}
-              onPress={() => setDeployOpen(true)}
+              onPress={() => { setTelemetryOpen(false); setDeployOpen(true); }}
+            />
+            {/* App-only, same rule as deploy: no wire index, never a `tab`
+                press to the Push (see `telemetryOpen` and the render above).
+                count is errors in the last hour, live on every tab via
+                telemetryErrors -- red once there are any, the cyan the
+                approved design gave TELEMETRY otherwise. */}
+            <Tab
+              key="telemetry"
+              label="telemetry"
+              count={telemetryErrors || null}
+              hue={telemetryErrors > 0 ? C.bad : PAD_HEX[33]}
+              on={telemetryOpen}
+              onPress={() => { setDeployOpen(false); setTelemetryOpen(true); }}
             />
           </View>
         )}
@@ -817,7 +858,7 @@ export default function App() {
           const shown = [['session', pick(/session/i)], ['week', pick(/week/i)]]
             .filter(([, b]) => b);
           const pct = (b) => Math.round(Math.max(0, Math.min(1, Number(b.used) || 0)) * 100);
-          const on = ui === viewIdx && !deployOpen;
+          const on = ui === viewIdx && !deployOpen && !telemetryOpen;
           return (
             <Pressable
               accessibilityRole="button"
@@ -827,6 +868,7 @@ export default function App() {
               accessibilityState={{ selected: on }}
               onPress={() => {
                 setDeployOpen(false);
+                setTelemetryOpen(false);
                 setLocalView(ui);
                 if (effectiveFollow) press({ tab: ui });
               }}
