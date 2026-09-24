@@ -92,7 +92,7 @@ import { SlashMenu, slashCommands, slashMatches, slashQuery } from './Slash';
 const Term = Platform.OS === 'web' ? require('./Term').default : null;
 import { Menu, MenuButton } from './Menu';
 import PushButton from './PushButton';
-import { ANSWER_HEX, BREAK, C, S, SEAT_HEX, seatHue, seatWord, mono } from './theme';
+import { ANSWER_HEX, BREAK, C, PLAN_RAMP, S, SEAT_HEX, fillHue, seatHue, seatWord, mono } from './theme';
 
 // Below BREAK.mid the app is one scrollable column (App.js's own doing),
 // so a pane built to fill a flex:1 slot -- transcript included -- would
@@ -5346,13 +5346,11 @@ function Usage({ data, mode, onMode }) {
 // Colour comes off display.py's ramp rather than a threshold of our own:
 // severity can push it hotter than the number alone would, never cooler, and
 // two places deciding the same thing is what put a 0 here in the first place.
-const PLAN_RAMP = ['#3cd05a', '#e0d02c', '#e03c3c'];
 const SEVERITY_FLOOR = { warning: 1, critical: 2 };
 
 // Context as a phone's signal: five bars rising left to right, lit from the
 // left in proportion to how full it is. Unlike a phone, more is worse, so
-// the colour carries that -- the plan bars' own ramp, same thresholds.
-export const fillHue = (frac) => PLAN_RAMP[frac < 0.6 ? 0 : frac < 0.85 ? 1 : 2];
+// the colour carries that -- fillHue, from theme.js.
 
 // Exported: the top bar's usage indicator draws the same bars app-wide.
 export function SignalBars({ frac, size = 18 }) {

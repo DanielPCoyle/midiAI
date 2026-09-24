@@ -21,13 +21,13 @@ import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
 import Pads from './src/Pads';
 import { useQueue } from './src/Queue';
-import Pane, { SignalBars, fillHue } from './src/Pane';
+import Pane, { SignalBars } from './src/Pane';
 import { inside } from './src/Projects';
 import PushButton from './src/PushButton';
 import PushMirror from './src/PushMirror';
 import Rail from './src/Rail';
 import Settings from './src/Settings';
-import { BREAK, C, KEY, S, SEAT_HEX, mono } from './src/theme';
+import { BREAK, C, KEY, S, SEAT_HEX, fillHue, mono } from './src/theme';
 
 const SURFACE_MS = 400; // the mirror and the views both; anything slower lags
 const TARGET_MS = 2500; // which session is selected, and whether push_cc is up

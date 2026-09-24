@@ -24,7 +24,7 @@ import { Menu, MenuButton } from './Menu';
 import { useMcpDown } from './Mcps';
 import { inside } from './Projects';
 import SessionSheet from './SessionSheet';
-import { C, S, SEAT_HEX, seatHue, seatWord } from './theme';
+import { C, S, SEAT_HEX, fillHue, seatHue, seatWord } from './theme';
 
 // One worktree's name: the branch, or a short sha when it is detached. The
 // same rule Projects.js uses for its own rows -- not imported, because only
@@ -528,6 +528,9 @@ export default function Rail({
                         {shownHere.map(({ col, i }) => {
                           const hue = seatHue(col);
                           const on = i === current;
+                          // how full this agent's context is, 0..1 -- the same number
+                          // the conversation's context bar reads
+                          const ctx = Number.isFinite(col.context) ? Math.max(0, Math.min(1, col.context)) : null;
                           return (
                             <View key={i} style={styles.agentSlot}>
                               <Pressable
@@ -535,7 +538,7 @@ export default function Rail({
                                 // left to itself this announces as "midiAIidle" -- the
                                 // name and the status run together, same shape as the
                                 // tab that answered to "· 0"
-                                accessibilityLabel={`${col.name} · ${seatWord(col)}`}
+                                accessibilityLabel={`${col.name} · ${seatWord(col)}${ctx != null ? ` · context ${Math.round(ctx * 100)}% full` : ''}`}
                                 accessibilityState={{ selected: on }}
                                 onPress={() => onSeat(i)}
                                 style={[styles.agentRow, on && styles.agentRowOn]}>
@@ -552,6 +555,11 @@ export default function Rail({
                                       {k ? `· ${bit}` : bit}
                                     </Text>
                                   ))}
+                                {ctx != null && (
+                                  <View pointerEvents="none" style={styles.ctxTrack}>
+                                    <View style={[styles.ctxFill, { width: `${ctx * 100}%`, backgroundColor: fillHue(ctx) }]} />
+                                  </View>
+                                )}
                               </Pressable>
                               {/* the four keys are a 268px column's worth on their
                                   own once nested this deep, so only the selected
@@ -820,6 +828,9 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   agentRowOn: { backgroundColor: C.raised },
+  // under the name, from where the name starts to the row's end
+  ctxTrack: { position: 'absolute', left: 34, right: 4, bottom: 2, height: 2, borderRadius: 1, backgroundColor: C.line, overflow: 'hidden' },
+  ctxFill: { height: 2, borderRadius: 1 },
   dot: { width: 8, height: 8, borderRadius: 4 },
   name: { color: C.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
   nameOff: { color: C.dim },

@@ -64,6 +64,12 @@ export const ANSWER_HEX = [
 // its `unseen` flag is set, combined by seatHue below rather than looked up
 // by status alone. Violet: distinct from idle/working/blocked/unknown and
 // from every hue ANSWER_HEX already spends on an option chip.
+// Fullness, green / yellow / red at 60% and 85%: the plan bars' ramp, and
+// the one scale every context bar in the app is coloured by (Usage, the
+// top bar, the rail's per-agent bars). More is worse.
+export const PLAN_RAMP = ['#3cd05a', '#e0d02c', '#e03c3c'];
+export const fillHue = (frac) => PLAN_RAMP[frac < 0.6 ? 0 : frac < 0.85 ? 1 : 2];
+
 export const SEAT_HEX = {
   idle: '#3cd05a',
   working: '#f0c828',
