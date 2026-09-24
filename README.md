@@ -247,7 +247,7 @@ The checklist above is a claim and a way to check it by hand. `guardrails.py`
 (stdlib only) makes a guardrail actually run. Every rail is either a
 **script** -- any executable, exit 0 pass, exit 2 n/a, anything else fail,
 stdout+stderr tail is the reason -- or an **agent review**: a written brief
-that an isolated `claude -p` judges a diff against, answering
+that an isolated `claude -p` judges evidence against, answering
 `{"verdict":"pass|fail|na","reason":"..."}`. **Compile** (`POST
 /guardrails/compile`) reads one checklist item and asks a model to write
 whichever kind fits, preferring a script whenever the check is mechanical.
@@ -276,6 +276,52 @@ script on screen; `/guardrails/rail` hands back its sha256 with it, and
 `/guardrails/approve` requires that sha and refuses if the file has changed
 since (a recompile, a pull, another agent). An approve with no sha is a 400.
 
+**Gates, events and evidence.** A rail belongs to one phase and to one of
+that phase's two **gates** -- `entry` or `exit` (`POST /guardrails/gate {id,
+gate}`). A gate is **bound** to zero or more **events** -- things that
+actually happen: `agent:stop`, `git:pre-commit`, `git:commit-msg`,
+`git:pre-push`, `git:post-merge` (the `EVENTS` constant; `POST
+/guardrails/binding {phase, gate, events}`). `manual` is not an event you
+bind -- the Run buttons, and a bare `run --id`/`--phase`, always fire
+regardless of bindings; only `run --event E` (or a hook) selects by binding.
+This layer is tool-, project- and method-agnostic: phases stay
+user-editable, templates still carry phases and guardrails between repos,
+and this build adds the bindings each template also carries.
+
+Before a run, `guardrails.py` builds ONE **evidence** directory for the
+whole call -- `diff.patch`, `files.txt`, `event.json`
+(`{"event","root","base"}`), and `commit-msg.txt` only when the firing event
+supplies a commit message. What each event can supply:
+
+| event | diff | files | commit-msg |
+|---|---|---|---|
+| `agent:stop` (and a manual run) | `git diff HEAD` + untracked, falling back to the merge-base range | ✓ | |
+| `git:pre-commit` | staged | staged | |
+| `git:commit-msg` | staged | staged | the file git passes as `$1` |
+| `git:pre-push` | `<merge-base>...HEAD` | ✓ | |
+| `git:post-merge` | `ORIG_HEAD..HEAD` (if it exists) | ✓ | |
+
+A rail declares which of `diff`, `files`, `commit-msg` it reads as `needs`
+(the `EVIDENCE` constant; compile asks the model for this, told which events
+its gate is bound to and what each supplies). A need the firing event
+cannot supply is not run at all -- verdict `na`, or `fail` if the rail is
+**blocking** (fail closed), with a reason naming the missing evidence. A
+script reads `$GUARDRAIL_EVIDENCE/<file>` rather than recomputing anything,
+alongside `GUARDRAIL_ROOT`, `GUARDRAIL_EVENT`, `GUARDRAIL_GATE`,
+`GUARDRAIL_DIFF_BASE`, `GUARDRAIL_TRIGGER` (`=` the event, kept for
+compatibility) and `MIDIAI_GUARDRAILS=1`. The evidence directory is removed
+after every run, even when a check throws.
+
+**Manifest v1 → v2.** Older checkouts had `triggers: {phase: T}` where `T`
+was `manual | stop | pre-commit | pre-push`. `load_manifest` migrates this
+in memory on read -- `stop → agent:stop`, `pre-commit → git:pre-commit`,
+`pre-push → git:pre-push`, each landing on that phase's `exit` gate (`manual`
+had never been a real trigger, so it maps to no binding); rails gain
+`gate: "exit"` and `needs: []` if they lack them. Nothing is written back
+until the next save (a compile, an approve-adjacent edit, any `set_*` call),
+same as any other lazy migration in this codebase. Unknown events are
+dropped on load and on save (`clean_bindings`).
+
 Things found by testing it, so they are not rediscovered:
 - The model's JSON is read with `raw_decode(strict=False)`, not by counting
   braces: scripts are full of `}` inside strings, and models put raw newlines
@@ -291,23 +337,29 @@ Things found by testing it, so they are not rediscovered:
 
 Failures are advisory by default; **blocking** is opt-in per rail
 (`POST /guardrails/blocking`) and is what turns a fail, error, or unapproved
-script into something that actually stops a trigger -- fail closed. A phase
-fires its rails on **manual** (the run button), **stop** (a Claude Code
-agent finishing its turn), **pre-commit**, or **pre-push**
-(`POST /guardrails/trigger`); `POST /guardrails/hooks {install}` writes the
-git hooks and, for `stop`, merges a `hooks.Stop` entry into
-`.claude/settings.local.json` rather than replacing the file. Both kinds of
-hook refuse to touch anything they did not write themselves -- a git hook
-with no `# midiai-guardrails` marker is reported `exists` and left alone,
-same as a Stop entry that is not ours.
+script into something that actually stops an event -- fail closed. `POST
+/guardrails/hooks {install}` writes all four git hook shims (pre-commit,
+commit-msg, pre-push, post-merge) plus, for `agent:stop`, merges a
+`hooks.Stop` entry into `.claude/settings.local.json` rather than replacing
+the file. Every hook shim is generic now -- `hook git:<name> --cwd
+"$(git rev-parse --show-toplevel)" "$@"` -- so the same shim serves any rail
+bound to that event; the old bare names (`pre-commit`, `pre-push`, `stop`)
+still work as aliases, so a shim installed before this build keeps running
+without a reinstall. All hook kinds refuse to touch anything they did not
+write themselves -- a git hook with no `# midiai-guardrails` marker is
+reported `exists` and left alone, same as a Stop entry that is not ours.
 
-`python3 guardrails.py run --cwd . [--phase P] [--id I]... [--trigger T]
-[--trust] [--json]` is the CLI the hooks shell out to; it exits 1 iff a
-blocking rail came back fail, error, or unapproved. `python3 guardrails.py
-status --cwd .` and `python3 guardrails.py compile --cwd . --id I` (item
-JSON on stdin) are the other two entry points mapui's routes wrap.
-`test_guardrails.py` is its gate, and never calls the real `claude` CLI --
-every model call in it is faked.
+`python3 guardrails.py run --cwd . [--phase P] [--id I]... [--event E]
+[--trust] [--json]` is the CLI the hooks shell out to (`--trigger` still
+works, as a deprecated alias for `--event`); it exits 1 iff a blocking rail
+came back fail, error, or unapproved. `python3 guardrails.py status --cwd .`
+and `python3 guardrails.py compile --cwd . --id I` (item JSON on stdin) are
+the other two entry points mapui's routes wrap. `test_guardrails.py` is its
+gate, and never calls the real `claude` CLI -- every model call in it is
+faked.
+
+A tracker adapter -- turning a ticket into a fourth evidence kind -- is a
+later build; `EVIDENCE` deliberately does not carry it yet.
 
 Manage lists every workflow with the two facts that identify it, what fires it
 and what secret it needs, and opens one into its own YAML. **＋ new workflow**

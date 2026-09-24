@@ -121,8 +121,11 @@ export const saveGuardrails = (base, cwd, state) =>
 export const getGuardrailTemplates = (base) =>
   getJSON(base, '/guardrail-templates');
 
-export const saveGuardrailTemplate = (base, name, items, phases, replace = false) =>
-  post(base, '/guardrail-template', { name, items, phases, replace });
+// bindings: the checklist's own entry/exit events, `{phase: {entry:[...], exit:[...]}}`
+// -- carried alongside the items so a template reproduces the tool-agnostic
+// layer too, not just which guardrails exist.
+export const saveGuardrailTemplate = (base, name, items, phases, bindings, replace = false) =>
+  post(base, '/guardrail-template', { name, items, phases, bindings, replace });
 
 export const dropGuardrailTemplate = (base, name) =>
   post(base, '/guardrail-template/delete', { name });
@@ -157,8 +160,14 @@ export const runRails = (base, cwd, { ids, phase } = {}) =>
 export const setRailBlocking = (base, cwd, id, blocking) =>
   post(base, '/guardrails/blocking', { cwd, id, blocking: !!blocking }).then((t) => JSON.parse(t));
 
-export const setPhaseTrigger = (base, cwd, phase, trigger) =>
-  post(base, '/guardrails/trigger', { cwd, phase, trigger }).then((t) => JSON.parse(t));
+// A phase's gate (entry or exit) bound to whichever events should run it --
+// `events` is the whole list for that (phase, gate), not one added or removed.
+export const setBinding = (base, cwd, phase, gate, events) =>
+  post(base, '/guardrails/binding', { cwd, phase, gate, events }).then((t) => JSON.parse(t));
+
+// Which gate a single rail belongs to -- entry or exit of its phase.
+export const setRailGate = (base, cwd, id, gate) =>
+  post(base, '/guardrails/gate', { cwd, id, gate }).then((t) => JSON.parse(t));
 
 export const setGuardrailHooks = (base, cwd, install) =>
   post(base, '/guardrails/hooks', { cwd, install: !!install }).then((t) => JSON.parse(t));

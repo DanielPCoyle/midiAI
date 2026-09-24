@@ -66,9 +66,10 @@ import {
   runRails,
   runTests,
   sendKeys,
+  setBinding,
   setGuardrailHooks,
-  setPhaseTrigger,
   setRailBlocking,
+  setRailGate,
   startRecording,
   stopRecording,
   stopTests,
@@ -127,11 +128,38 @@ const VERDICT_HEX = {
   unapproved: C.warn,
 };
 
-// manual is the wire's default (absent = manual), so the cycle starts there
-// and "agent stop" is the trigger's app-facing name for the wire's "stop".
-const TRIGGER_CYCLE = ['manual', 'stop', 'pre-commit', 'pre-push'];
-const TRIGGER_LABEL = { manual: 'manual', stop: 'agent stop', 'pre-commit': 'pre-commit', 'pre-push': 'pre-push' };
-const nextTrigger = (cur) => TRIGGER_CYCLE[(TRIGGER_CYCLE.indexOf(cur || 'manual') + 1) % TRIGGER_CYCLE.length];
+// The events a gate can be bound to, tool-agnostic -- these are the whole
+// vocabulary the wire understands, human-labelled for the binding modal and
+// the hooks line.
+const EVENTS = ['agent:stop', 'git:pre-commit', 'git:commit-msg', 'git:pre-push', 'git:post-merge'];
+const EVENT_LABEL = {
+  'agent:stop': 'agent finishes',
+  'git:pre-commit': 'before commit',
+  'git:commit-msg': 'commit message',
+  'git:pre-push': 'before push',
+  'git:post-merge': 'after merge',
+};
+// A server not yet on manifest v2 answers with `triggers: {phase: T}` instead
+// of `bindings`, and a hooks payload keyed by the bare pre-v2 names -- both
+// fall back through these two tables rather than the app refusing to draw
+// until the other worker's server change ships.
+const TRIGGER_TO_EVENT = { stop: 'agent:stop', 'pre-commit': 'git:pre-commit', 'pre-push': 'git:pre-push' };
+const EVENT_TO_V1_HOOK = { 'agent:stop': 'stop', 'git:pre-commit': 'pre-commit', 'git:pre-push': 'pre-push' };
+const NEEDS_LABEL = { diff: 'diff', files: 'files', 'commit-msg': 'commit message' };
+
+// A phase's entry/exit binding, v2 read straight off the manifest, v1 read as
+// if its one trigger were that phase's exit binding.
+const phaseBindings = (enf, key) => {
+  const bindings = enf?.manifest?.bindings;
+  if (bindings) return bindings[key] || { entry: [], exit: [] };
+  const t = enf?.manifest?.triggers?.[key];
+  const ev = t && TRIGGER_TO_EVENT[t];
+  return { entry: [], exit: ev ? [ev] : [] };
+};
+const eventsLabel = (evs) => (evs && evs.length ? evs.map((e) => EVENT_LABEL[e] || e).join(', ') : 'manual');
+// Whether an event's hook is on, reading either a v2 hooks payload (keyed by
+// event name) or a v1 one (keyed by the bare pre-v2 name).
+const hookOn = (hooks, event) => !!(hooks && (hooks[event] || hooks[EVENT_TO_V1_HOOK[event]]));
 
 // The centre pane: the active view, drawn at sizes a person reads from a desk
 // rather than scaled up off a 960x160 strip meant to be read from a keyboard.
@@ -1934,7 +1962,7 @@ function Subs({ data }) {
 // Empty means "whatever the app ships": a team that never touches these keeps
 // getting new ones as the framework grows, and only taking ownership stops
 // that. That is why the panel writes the whole list the first time it is used.
-function PhasesPanel({ phases, items, onPhases }) {
+function PhasesPanel({ phases, items, onPhases, enf }) {
   const [name, setName] = useState('');
   const move = (i, by) => {
     const next = [...phases];
@@ -1962,47 +1990,56 @@ function PhasesPanel({ phases, items, onPhases }) {
       {phases.map((p, i) => {
         const holding = items.filter((it) => it.phase === p.key).length;
         return (
-          <View key={p.key} style={styles.grTplRow}>
-            <View style={styles.grPhaseEdit}>
-              <TextInput
-                value={p.name}
-                onChangeText={(v) => set(i, 'name', v)}
-                placeholder="phase"
-                placeholderTextColor={C.faint}
-                style={[styles.wfName, styles.grPhaseField]}
-              />
-              <TextInput
-                value={p.constrains}
-                onChangeText={(v) => set(i, 'constrains', v)}
-                placeholder="constrains…"
-                placeholderTextColor={C.faint}
-                style={[styles.wfName, styles.grPhaseField]}
-              />
-            </View>
-            <Text style={styles.hookSub}>{holding}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel={`move ${p.name} up`}
-              onPress={() => move(i, -1)} style={styles.reviewedKey}>
-              <Text style={styles.reviewedKeyText}>↑</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel={`move ${p.name} down`}
-              onPress={() => move(i, 1)} style={styles.reviewedKey}>
-              <Text style={styles.reviewedKeyText}>↓</Text>
-            </Pressable>
-            {/* A phase with guardrails in it does not delete. Removing it would
-                file them under a tab that no longer exists, and an item you
-                cannot see is worse than one you have to move first -- the edit
-                form's phase picker is where you move them. */}
-            {holding ? (
-              <Text style={styles.grWarn}>holds {holding}</Text>
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => onPhases(phases.filter((_, n) => n !== i))}
-                style={styles.reviewedKey}>
-                <Text style={styles.reviewedKeyText}>Remove</Text>
+          <React.Fragment key={p.key}>
+            <View style={styles.grTplRow}>
+              <View style={styles.grPhaseEdit}>
+                <TextInput
+                  value={p.name}
+                  onChangeText={(v) => set(i, 'name', v)}
+                  placeholder="phase"
+                  placeholderTextColor={C.faint}
+                  style={[styles.wfName, styles.grPhaseField]}
+                />
+                <TextInput
+                  value={p.constrains}
+                  onChangeText={(v) => set(i, 'constrains', v)}
+                  placeholder="constrains…"
+                  placeholderTextColor={C.faint}
+                  style={[styles.wfName, styles.grPhaseField]}
+                />
+              </View>
+              <Text style={styles.hookSub}>{holding}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel={`move ${p.name} up`}
+                onPress={() => move(i, -1)} style={styles.reviewedKey}>
+                <Text style={styles.reviewedKeyText}>↑</Text>
               </Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={`move ${p.name} down`}
+                onPress={() => move(i, 1)} style={styles.reviewedKey}>
+                <Text style={styles.reviewedKeyText}>↓</Text>
+              </Pressable>
+              {/* A phase with guardrails in it does not delete. Removing it would
+                  file them under a tab that no longer exists, and an item you
+                  cannot see is worse than one you have to move first -- the edit
+                  form's phase picker is where you move them. */}
+              {holding ? (
+                <Text style={styles.grWarn}>holds {holding}</Text>
+              ) : (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => onPhases(phases.filter((_, n) => n !== i))}
+                  style={styles.reviewedKey}>
+                  <Text style={styles.reviewedKeyText}>Remove</Text>
+                </Pressable>
+              )}
+            </View>
+            {/* read-only here -- editing a binding is on the phase header in
+                Overview, where the modal that writes it lives */}
+            {!!enf && (
+              <Text style={styles.hookSub}>
+                entry · {eventsLabel(phaseBindings(enf, p.key).entry)} · exit · {eventsLabel(phaseBindings(enf, p.key).exit)}
+              </Text>
             )}
-          </View>
+          </React.Fragment>
         );
       })}
       <View style={styles.manageRow}>
@@ -2135,6 +2172,7 @@ function Overview({ base, cwd }) {
   const [busy, setBusy] = useState({});         // id | `phase:key` | 'hooks' -> verb in flight
   const [msg, setMsg] = useState({});           // id -> a compile/approve/run failure, shown inline
   const [railView, setRailView] = useState({}); // id -> {loading|error|kind,file,content}
+  const [bindingModal, setBindingModal] = useState(null); // null | { phase, gate, events: Set }
 
   useEffect(() => {
     if (!base || !cwd) return;
@@ -2171,9 +2209,12 @@ function Overview({ base, cwd }) {
   const compile = (it) => {
     setMsgFor(it.id, '');
     setBusyFor(it.id, 'compiling');
+    // this is also the rewrite path, so an already-enforced rail keeps its
+    // gate rather than falling back to exit on every rewrite
+    const gate = enf?.manifest?.rails?.[it.id]?.gate || 'exit';
     compileRail(base, cwd, {
       id: it.id, phase: it.phase, title: it.title,
-      implemented: it.implemented, validate: it.validate,
+      implemented: it.implemented, validate: it.validate, gate,
     })
       .then(() => { setRailView((v) => { const n = { ...v }; delete n[it.id]; return n; }); loadEnf(); })
       .catch((e) => setMsgFor(it.id, e.message))
@@ -2205,8 +2246,17 @@ function Overview({ base, cwd }) {
   };
   const toggleBlocking = (id, blocking) =>
     setRailBlocking(base, cwd, id, !blocking).then(loadEnf).catch(() => {});
-  const cycleTrigger = (key) =>
-    setPhaseTrigger(base, cwd, key, nextTrigger(enf?.manifest?.triggers?.[key])).then(loadEnf).catch(() => {});
+  const toggleGate = (id, gate) =>
+    setRailGate(base, cwd, id, gate === 'entry' ? 'exit' : 'entry').then(loadEnf).catch(() => {});
+  // The chip's tap opens the modal pre-loaded with that (phase, gate)'s
+  // current events; saving there is the only thing that calls setBinding.
+  const openBinding = (key, gate) =>
+    setBindingModal({ phase: key, gate, events: new Set(phaseBindings(enf, key)[gate] || []) });
+  const saveBinding = () => {
+    const { phase: key, gate, events } = bindingModal;
+    setBindingModal(null);
+    setBinding(base, cwd, key, gate, [...events]).then(loadEnf).catch(() => {});
+  };
   const toggleHooks = (install) => {
     setBusyFor('hooks', install ? 'installing' : 'removing');
     setGuardrailHooks(base, cwd, install)
@@ -2321,8 +2371,9 @@ function Overview({ base, cwd }) {
     const name = tplName.trim();
     if (!name) return;
     try {
-      // the items, not the ticks -- see the note under the list
-      await saveGuardrailTemplate(base, name, items, phases, replace);
+      // the items, not the ticks -- see the note under the list. bindings
+      // travel too, whenever enforcement is available to have any.
+      await saveGuardrailTemplate(base, name, items, phases, enf?.manifest?.bindings, replace);
       setTplName('');
       setErr('');
       shelve();
@@ -2354,6 +2405,15 @@ function Overview({ base, cwd }) {
       // ours alone is right in that case, not blanking them
       phases: tpl.phases?.length ? tpl.phases : state.phases || [],
     });
+    // bindings only after the checklist write above, and only when there is
+    // enforcement to bind against -- a repo with none of this stays that way
+    if (enf && tpl.bindings) {
+      Promise.all(
+        Object.entries(tpl.bindings).flatMap(([key, gates]) =>
+          Object.entries(gates || {}).map(([gate, events]) =>
+            setBinding(base, cwd, key, gate, events || []).catch(() => {})))
+      ).then(loadEnf);
+    }
     setSure('');
     setOpen('');
   };
@@ -2365,32 +2425,40 @@ function Overview({ base, cwd }) {
           /guardrails/enforce route leaves this whole line out rather than
           showing a permanent "unknown" state. */}
       {!!enf && (() => {
-        const hooksOn = !!(enf.hooks && (enf.hooks['pre-commit'] || enf.hooks['pre-push'] || enf.hooks.stop));
-        const wantsHooks = Object.values(enf.manifest?.triggers || {}).some((t) => t && t !== 'manual');
-        if (hooksOn) {
-          return (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="hooks on, tap to remove"
-              onPress={() => toggleHooks(false)}
-              style={styles.hookLine}>
-              <Text style={styles.hookSub}>
-                {busy.hooks === 'removing' ? 'removing…'
-                  // which ones: a hook that already existed is never
-                  // overwritten, so "on" can be partial and should say so
-                  : `hooks on: ${['pre-commit', 'pre-push', 'stop'].filter((k) => enf.hooks[k]).map((k) => TRIGGER_LABEL[k]).join(', ')} · remove`}
-              </Text>
-            </Pressable>
-          );
-        }
-        if (!wantsHooks) return <Text style={styles.hookSub}>no guardrail hooks installed</Text>;
+        const installed = EVENTS.filter((ev) => hookOn(enf.hooks, ev));
+        // every event either gate of any phase is bound to, across the whole
+        // checklist -- what "install hooks" is offering to cover
+        const bound = new Set();
+        phases.forEach((p) => {
+          const b = phaseBindings(enf, p.key);
+          (b.entry || []).forEach((ev) => bound.add(ev));
+          (b.exit || []).forEach((ev) => bound.add(ev));
+        });
+        const needsInstall = bound.size > 0 && [...bound].some((ev) => !hookOn(enf.hooks, ev));
         return (
           <View style={styles.manageRow}>
-            <Text style={styles.hookSub}>no guardrail hooks installed</Text>
+            {installed.length ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="hooks on, tap to remove"
+                onPress={() => toggleHooks(false)}
+                style={styles.hookLine}>
+                <Text style={styles.hookSub}>
+                  {busy.hooks === 'removing' ? 'removing…'
+                    // which ones: a hook that already existed is never
+                    // overwritten, so "on" can be partial and should say so
+                    : `hooks on: ${installed.map((ev) => EVENT_LABEL[ev]).join(', ')} · remove`}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.hookSub}>no guardrail hooks installed</Text>
+            )}
             <View style={styles.spacer} />
-            <Pressable accessibilityRole="button" onPress={() => toggleHooks(true)} style={styles.reviewedKey}>
-              <Text style={styles.reviewedKeyText}>{busy.hooks === 'installing' ? 'installing…' : 'install hooks'}</Text>
-            </Pressable>
+            {needsInstall && (
+              <Pressable accessibilityRole="button" onPress={() => toggleHooks(true)} style={styles.reviewedKey}>
+                <Text style={styles.reviewedKeyText}>{busy.hooks === 'installing' ? 'installing…' : 'install hooks'}</Text>
+              </Pressable>
+            )}
           </View>
         );
       })()}
@@ -2463,13 +2531,24 @@ function Overview({ base, cwd }) {
                       {busy[`phase:${p.key}`] === 'running' ? 'running…' : 'run phase'}
                     </Text>
                   </Pressable>
+                  {/* siblings, not nested -- two quiet chips rather than one
+                      that cycled through every combination */}
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`${p.name} trigger: ${TRIGGER_LABEL[enf.manifest?.triggers?.[p.key] || 'manual']}, tap to change`}
-                    onPress={() => cycleTrigger(p.key)}
+                    accessibilityLabel={`${p.name} entry binding: ${eventsLabel(phaseBindings(enf, p.key).entry)}, tap to change`}
+                    onPress={() => openBinding(p.key, 'entry')}
                     style={styles.grPhaseBtn}>
                     <Text style={styles.grPhaseBtnText}>
-                      {TRIGGER_LABEL[enf.manifest?.triggers?.[p.key] || 'manual']}
+                      entry · {eventsLabel(phaseBindings(enf, p.key).entry)}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${p.name} exit binding: ${eventsLabel(phaseBindings(enf, p.key).exit)}, tap to change`}
+                    onPress={() => openBinding(p.key, 'exit')}
+                    style={styles.grPhaseBtn}>
+                    <Text style={styles.grPhaseBtnText}>
+                      exit · {eventsLabel(phaseBindings(enf, p.key).exit)}
                     </Text>
                   </Pressable>
                 </>
@@ -2535,6 +2614,7 @@ function Overview({ base, cwd }) {
                     {!!rail && (
                       <View style={styles.enfChip}>
                         {needsApproval && <Text style={styles.enfWarnText}>⚠ approve</Text>}
+                        <Text style={styles.enfKindText}>{rail.gate || 'exit'}</Text>
                         <Text style={styles.enfKindText}>{rail.kind}</Text>
                         {!!result && (
                           <View style={[styles.dot, styles.enfDot, { backgroundColor: VERDICT_HEX[result.verdict] || C.faint }]} />
@@ -2610,6 +2690,13 @@ function Overview({ base, cwd }) {
                             <>
                               <View style={styles.manageRow}>
                                 <Text style={styles.enfNote}>{rail.kind} · {rail.file}</Text>
+                                {/* what evidence this rail reads -- read-only
+                                    here, set by whatever wrote the script */}
+                                {!!rail.needs?.length && (
+                                  <Text style={styles.enfNote}>
+                                    needs {rail.needs.map((n) => NEEDS_LABEL[n] || n).join(' · ')}
+                                  </Text>
+                                )}
                                 <View style={styles.spacer} />
                                 <Pressable
                                   accessibilityRole="button"
@@ -2666,6 +2753,15 @@ function Overview({ base, cwd }) {
                                 </Pressable>
                                 <Pressable
                                   accessibilityRole="button"
+                                  accessibilityLabel={`gate: ${rail.gate || 'exit'}, tap to switch to ${rail.gate === 'entry' ? 'exit' : 'entry'}`}
+                                  onPress={() => toggleGate(it.id, rail.gate || 'exit')}
+                                  style={styles.reviewedKey}>
+                                  <Text style={styles.reviewedKeyText}>
+                                    {rail.gate === 'entry' ? 'entry' : 'exit'}
+                                  </Text>
+                                </Pressable>
+                                <Pressable
+                                  accessibilityRole="button"
                                   onPress={() => toggleBlocking(it.id, rail.blocking)}
                                   style={[styles.reviewedKey, rail.blocking && styles.reviewedKeyOn]}>
                                   <Text style={styles.reviewedKeyText}>
@@ -2716,6 +2812,44 @@ function Overview({ base, cwd }) {
             </Pressable>
           </Pressable>
         </Modal>
+        <Modal visible={!!bindingModal} transparent animationType="fade" onRequestClose={() => setBindingModal(null)}>
+          <View style={styles.modalBack}>
+            <View style={styles.receipt}>
+              <View style={styles.title}>
+                <Text style={styles.receiptTitle}>
+                  {bindingModal && `${sections.find((p) => p.key === bindingModal.phase)?.name || bindingModal.phase} · ${bindingModal.gate}`}
+                </Text>
+                <View style={styles.spacer} />
+                <Text accessibilityRole="button" onPress={() => setBindingModal(null)} style={styles.receiptClose}>close</Text>
+              </View>
+              <Text style={styles.grLabel}>runs this gate when</Text>
+              <View style={styles.manageRow}>
+                {EVENTS.map((ev) => {
+                  const on = !!bindingModal?.events.has(ev);
+                  return (
+                    <Pressable
+                      key={ev}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: on }}
+                      onPress={() => setBindingModal((m) => {
+                        const events = new Set(m.events);
+                        if (events.has(ev)) events.delete(ev); else events.add(ev);
+                        return { ...m, events };
+                      })}
+                      style={[styles.reviewedKey, on && styles.reviewedKeyOn]}>
+                      <Text style={styles.reviewedKeyText}>{EVENT_LABEL[ev]}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={styles.hookSub}>none ticked means manual -- the Run buttons still work</Text>
+              <View style={styles.manageRow}>
+                <PushButton label="cancel" onPress={() => setBindingModal(null)} style={styles.manageBtn} />
+                <PushButton label="save" colour={C.accentText} lit onPress={saveBinding} style={styles.manageBtn} />
+              </View>
+            </View>
+          </View>
+        </Modal>
         {!!needle && shown.length === 0 && (
           <Empty what={`nothing matches "${q.trim()}"`} />
         )}
@@ -2745,6 +2879,7 @@ function Overview({ base, cwd }) {
             phases={phases}
             items={items}
             onPhases={(next) => put({ ...state, phases: next })}
+            enf={enf}
           />
         )}
         {!!shelf && (

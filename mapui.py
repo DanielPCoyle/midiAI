@@ -1824,8 +1824,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._guardrails_run()
         if self.path == "/guardrails/blocking":
             return self._guardrails_blocking()
-        if self.path == "/guardrails/trigger":
-            return self._guardrails_trigger()
+        if self.path == "/guardrails/binding":
+            return self._guardrails_binding()
+        if self.path == "/guardrails/gate":
+            return self._guardrails_gate()
         if self.path == "/guardrails/hooks":
             return self._guardrails_hooks()
         if self.path == "/guardrail-template":
@@ -2112,7 +2114,8 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             rows.append({"name": name, "made": spot.get("made") or 0,
                          "items": clean_items(spot.get("items")),
-                         "phases": clean_phases(spot.get("phases"))})
+                         "phases": clean_phases(spot.get("phases")),
+                         "bindings": guardrails.clean_bindings(spot.get("bindings"))})
         self._send(200, json.dumps({"kind": "guardrail-templates", "rows": rows}),
                    "application/json")
 
@@ -2138,7 +2141,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(409, f"a template called {name} already exists",
                               "text/plain")
         everything[name] = {"made": int(time.time()), "items": items,
-                            "phases": clean_phases(body.get("phases"))}
+                            "phases": clean_phases(body.get("phases")),
+                            "bindings": guardrails.clean_bindings(body.get("bindings"))}
         try:
             save_templates(everything)
         except OSError as e:
@@ -2414,8 +2418,9 @@ class Handler(BaseHTTPRequestHandler):
         raw_ids = body.get("ids")
         ids = [str(i) for i in raw_ids] if isinstance(raw_ids, list) else None
         phase = body.get("phase") or None
+        event = str(body["event"]) if body.get("event") else None
         try:
-            results = guardrails.run(root, ids=ids, phase=phase)
+            results = guardrails.run(root, ids=ids, phase=phase, event=event)
         except Exception as e:
             return self._send(500, str(e)[:500], "text/plain")
         self._send(200, json.dumps({"results": results}), "application/json")
@@ -2433,7 +2438,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, str(e), "text/plain")
         self._send(200, json.dumps(guardrails.status(root)), "application/json")
 
-    def _guardrails_trigger(self):
+    def _guardrails_binding(self):
+        """Which events fire one phase's entry or exit gate."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        raw_events = body.get("events")
+        events = [str(e) for e in raw_events] if isinstance(raw_events, list) else []
+        try:
+            guardrails.set_binding(root, str(body.get("phase") or ""),
+                                   str(body.get("gate") or ""), events)
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        self._send(200, json.dumps(guardrails.status(root)), "application/json")
+
+    def _guardrails_gate(self):
+        """Which gate (entry/exit) one rail belongs to."""
         body = self._read_json_body()
         if body is None:
             return self._send(400, "bad request", "text/plain")
@@ -2441,7 +2464,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self._send(400, err, "text/plain")
         try:
-            guardrails.set_trigger(root, str(body.get("phase") or ""), str(body.get("trigger") or ""))
+            guardrails.set_gate(root, str(body.get("id") or ""), str(body.get("gate") or ""))
         except ValueError as e:
             return self._send(400, str(e), "text/plain")
         self._send(200, json.dumps(guardrails.status(root)), "application/json")
