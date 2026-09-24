@@ -406,6 +406,42 @@ export const draftCommit = async (base, cwd) =>
 export const doWork = (base, cwd, verb, fields = {}) =>
   post(base, '/work/do', { cwd, verb, ...fields });
 
+// Where a commit came from: its guardrail note (the in-toto statement, or
+// null), the agent session behind its `Agent-Session` trailer (enriched from
+// the memory DB, with `live_tid` when that agent is still around), and the
+// spec its `Spec` trailer names. Any of the three can be null -- most commits
+// have none of them -- and the route itself may not exist yet on an older
+// server, which callers read as "nothing to show" rather than an error.
+export const getCommitMeta = (base, cwd, sha) =>
+  getJSON(
+    base,
+    `/work/commit-meta?cwd=${encodeURIComponent(cwd || '')}&sha=${encodeURIComponent(sha || '')}`
+  );
+
+// Spec-first "why": a spec is a file under docs/specs/, written once and
+// never overwritten -- a title collision gets `-2`, `-3` instead. terminal_id
+// makes it that agent's active spec as the same call; tell also queues the
+// agent a nudge to go read it (the existing queue add, worded for this).
+export const createSpec = async (base, cwd, { title, why, done, terminal_id, tell } = {}) =>
+  JSON.parse(await post(base, '/specs', { cwd, title, why, done, terminal_id, tell }));
+
+export const listSpecs = async (base, cwd) =>
+  (await getJSON(base, `/specs?cwd=${encodeURIComponent(cwd || '')}`)).rows || [];
+
+export const readSpec = (base, cwd, path) =>
+  getJSON(
+    base,
+    `/specs/read?cwd=${encodeURIComponent(cwd || '')}&path=${encodeURIComponent(path || '')}`
+  );
+
+// Which spec (if any) is active for one agent session -- what the
+// prepare-commit-msg hook stamps its next commit with.
+export const getActiveSpec = (base, terminal_id) =>
+  getJSON(base, `/specs/active?terminal_id=${encodeURIComponent(terminal_id || '')}`);
+
+export const setActiveSpec = async (base, terminal_id, path) =>
+  JSON.parse(await post(base, '/specs/active', { terminal_id, path }));
+
 // midiAI's own memory: what an agent decided, tried and learned, mined from
 // transcripts and (where imported) claude-mem. `cwd` scopes a call to that
 // checkout's project; omitted, it reads every project. GET and JSON, like the

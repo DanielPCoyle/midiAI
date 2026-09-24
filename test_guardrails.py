@@ -19,6 +19,7 @@ GUARDRAILS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guardr
 # mapui.QUEUE_FILE.
 guardrails.APPROVALS_FILE = os.path.join(tempfile.mkdtemp(), "approvals.json")
 guardrails.RUNS_FILE = os.path.join(tempfile.mkdtemp(), "runs.json")
+guardrails.ACTIVE_SPECS_FILE = os.path.join(tempfile.mkdtemp(), "active-specs.json")
 
 
 def new_repo():
@@ -182,21 +183,29 @@ res = guardrails.install_hooks(repo2)
 assert res["git:pre-commit"] == "installed" and res["git:commit-msg"] == "installed"
 assert res["git:post-merge"] == "installed" and res["agent:stop"] == "installed"
 assert res["git:pre-push"] == "exists", "a hook with no marker is never touched"
+assert res["prepare-commit-msg"] == "installed" and res["post-commit"] == "installed", \
+    "the two provenance hooks install alongside the rest"
 assert open(foreign_path).read() == "#!/bin/sh\necho someone else's hook\n"
 assert "hook git:pre-commit" in open(os.path.join(hooks_dir, "pre-commit")).read()
 assert "hook git:commit-msg" in open(os.path.join(hooks_dir, "commit-msg")).read()
 assert "hook git:post-merge" in open(os.path.join(hooks_dir, "post-merge")).read()
+assert "hook prepare-commit-msg" in open(os.path.join(hooks_dir, "prepare-commit-msg")).read()
+assert "hook post-commit" in open(os.path.join(hooks_dir, "post-commit")).read()
 
 res2 = guardrails.install_hooks(repo2)
 assert res2 == {"git:pre-commit": "ours", "git:commit-msg": "ours", "git:pre-push": "exists",
-                "git:post-merge": "ours", "agent:stop": "ours"}, \
+                "git:post-merge": "ours", "agent:stop": "ours",
+                "prepare-commit-msg": "ours", "post-commit": "ours"}, \
     "installing twice is a no-op on what is already ours"
 
 un = guardrails.uninstall_hooks(repo2)
 assert un["git:pre-commit"] == "removed" and un["agent:stop"] == "removed"
 assert un["git:commit-msg"] == "removed" and un["git:post-merge"] == "removed"
 assert un["git:pre-push"] == "left alone"
+assert un["prepare-commit-msg"] == "removed" and un["post-commit"] == "removed"
 assert not os.path.exists(os.path.join(hooks_dir, "pre-commit"))
+assert not os.path.exists(os.path.join(hooks_dir, "prepare-commit-msg"))
+assert not os.path.exists(os.path.join(hooks_dir, "post-commit"))
 assert os.path.exists(foreign_path), "uninstall never removes a hook we did not write"
 assert guardrails.status(repo2)["hooks"]["agent:stop"] is False
 
@@ -451,5 +460,160 @@ guardrails.compile_rail(repo6, {"id": "msg", "phase": "implement", "gate": "exit
                                                   "script": "#!/bin/sh\ngrep -q first \"$GUARDRAIL_EVIDENCE/commit-msg.txt\""}))
 [r] = guardrails.run(repo6, trust=True)
 assert r["verdict"] == "pass", r
+
+# ==================================================================
+# Commit provenance: notes, trailers, specs
+# ==================================================================
+
+# ---- create_spec never overwrites; list_specs is newest first; read_spec
+#      refuses anything outside docs/specs/ ----
+repoS = new_repo()
+p1 = guardrails.create_spec(repoS, "Same Title!", "why one", "done one")
+p2 = guardrails.create_spec(repoS, "Same Title!", "why two", "done two")
+assert p1 != p2 and p1.endswith(".md") and p2.endswith("-2.md"), (p1, p2)
+assert p1.startswith("docs/specs/") and "same-title" in p1
+_, text1 = guardrails.read_spec(repoS, p1)
+assert text1.startswith("# Same Title!\n\n## Why\nwhy one\n\n## Done when\ndone one\n"), text1
+rows = guardrails.list_specs(repoS)
+assert {r["path"] for r in rows} == {p1, p2}
+assert rows[0]["title"] == "Same Title!" and rows[1]["title"] == "Same Title!"
+
+assert guardrails.read_spec(repoS, "../evil.md") == (None, "")
+assert guardrails.read_spec(repoS, "/etc/passwd") == (None, "")
+assert guardrails.read_spec(repoS, "docs/specs/../../../etc/passwd") == (None, "")
+assert guardrails.read_spec(repoS, "nonexistent.md") == (None, "")
+
+# ---- get/set_active_spec: round-trips, clears, and refuses a made-up path ----
+assert guardrails.get_active_spec(repoS, "no-such-session") is None
+guardrails.set_active_spec(repoS, "sess-1", p1)
+assert guardrails.get_active_spec(repoS, "sess-1") == p1
+guardrails.set_active_spec(repoS, "sess-1", None)
+assert guardrails.get_active_spec(repoS, "sess-1") is None
+try:
+    guardrails.set_active_spec(repoS, "sess-1", "not/a/real/spec.md")
+    raise AssertionError("an active spec pointing nowhere was accepted")
+except ValueError:
+    pass
+try:
+    guardrails.set_active_spec(repoS, "", p1)
+    raise AssertionError("an active spec with no session was accepted")
+except ValueError:
+    pass
+
+# ---- a real `git commit`, with real installed hooks: note, trailers,
+#      --no-verify, merge commits, pending cleanup ----
+repoP = new_repo()
+guardrails.install_hooks(repoP)
+rootP = guardrails._root(repoP)
+
+
+def compile_script_at(root, id_, script, phase="test"):
+    return guardrails.compile_rail(
+        root, {"id": id_, "phase": phase, "title": id_},
+        run=lambda p: json.dumps({"kind": "script", "lang": "sh", "script": script}))
+
+
+compile_script_at(rootP, "note-chk", "#!/bin/sh\necho fine\nexit 0\n")
+guardrails.set_binding(rootP, "test", "exit", ["git:pre-commit"])
+
+# The hook fires in a FRESH interpreter (a subprocess git spawns), which
+# does not see this process's monkeypatched APPROVALS_FILE/ACTIVE_SPECS_FILE
+# -- give it its own HOME, the same trick the bare-alias test above uses,
+# and pre-approve the script there.
+fake_homeP = tempfile.mkdtemp()
+_, note_chk_content = guardrails.rail_file(rootP, "note-chk")
+fake_approvalsP = os.path.join(fake_homeP, ".midiai", "guardrail-approvals.json")
+os.makedirs(os.path.dirname(fake_approvalsP), exist_ok=True)
+with open(fake_approvalsP, "w") as f:
+    json.dump({rootP: {"note-chk": guardrails.digest(note_chk_content)}}, f)
+
+envP = dict(os.environ, HOME=fake_homeP, CLAUDE_CODE_SESSION_ID="sess-abc")
+
+
+def commit_in(root, args, env=envP):
+    return subprocess.run(["git", "-C", root, "commit", *args], env=env,
+                          capture_output=True, text=True, timeout=30)
+
+
+open(os.path.join(repoP, "a.txt"), "w").write("changed\n")
+subprocess.run(["git", "-C", repoP, "add", "a.txt"], check=True, capture_output=True)
+done = commit_in(repoP, ["-m", "feat: with provenance"])
+assert done.returncode == 0, (done.returncode, done.stdout, done.stderr)
+
+note = subprocess.run(["git", "-C", repoP, "notes", "--ref=guardrails", "show", "HEAD"],
+                      capture_output=True, text=True, timeout=10)
+assert note.returncode == 0, (note.returncode, note.stdout, note.stderr)
+statement = json.loads(note.stdout)
+assert statement["_type"] == "https://in-toto.io/Statement/v1"
+head_sha = subprocess.run(["git", "-C", repoP, "rev-parse", "HEAD"],
+                          capture_output=True, text=True, timeout=10).stdout.strip()
+assert statement["subject"] == [{"name": "git-commit", "digest": {"gitCommit": head_sha}}]
+assert statement["predicateType"] == "https://midiai.local/guardrails/v1"
+assert "git:pre-commit" in statement["predicate"]["events"]
+results_by_id = {r["id"]: r for r in statement["predicate"]["results"]}
+assert results_by_id["note-chk"]["verdict"] == "pass"
+assert results_by_id["note-chk"]["kind"] == "script"
+assert "script_sha256" in results_by_id["note-chk"], "a script result carries its content hash"
+
+
+def trailer(root, key, sha="HEAD"):
+    out = subprocess.run(["git", "-C", root, "log", "-1",
+                          f"--format=%(trailers:key={key},valueonly)", sha],
+                         capture_output=True, text=True, timeout=10)
+    return out.stdout.strip()
+
+
+assert trailer(repoP, "Agent-Session") == "sess-abc"
+
+# pending is consumed: nothing left behind once post-commit has run
+pending_path = guardrails._pending_path(rootP)
+assert not os.path.exists(pending_path), "pending file must be cleared after post-commit"
+
+# ---- with no CLAUDE_CODE_SESSION_ID, no Agent-Session trailer ----
+open(os.path.join(repoP, "a.txt"), "w").write("no session this time\n")
+subprocess.run(["git", "-C", repoP, "add", "a.txt"], check=True, capture_output=True)
+env_no_session = dict(os.environ, HOME=fake_homeP)
+env_no_session.pop("CLAUDE_CODE_SESSION_ID", None)
+done_ns = commit_in(repoP, ["-m", "chore: no session"], env=env_no_session)
+assert done_ns.returncode == 0, (done_ns.returncode, done_ns.stdout, done_ns.stderr)
+assert trailer(repoP, "Agent-Session") == "", "no env var, no trailer"
+
+# ---- --no-verify skips pre-commit/commit-msg, so pending stays empty and
+#      post-commit (which still fires) writes no note ----
+open(os.path.join(repoP, "a.txt"), "w").write("skip the hooks\n")
+subprocess.run(["git", "-C", repoP, "add", "a.txt"], check=True, capture_output=True)
+done_nv = commit_in(repoP, ["--no-verify", "-m", "chore: skip hooks"])
+assert done_nv.returncode == 0, (done_nv.returncode, done_nv.stdout, done_nv.stderr)
+note_nv = subprocess.run(["git", "-C", repoP, "notes", "--ref=guardrails", "show", "HEAD"],
+                         capture_output=True, text=True, timeout=10)
+assert note_nv.returncode != 0, "a --no-verify commit gets no note"
+
+# ---- a spec made active before a commit becomes its Spec trailer ----
+spec_pathP = guardrails.create_spec(rootP, "Provenance work", "tests need it", "tests pass")
+orig_active_specs_file = guardrails.ACTIVE_SPECS_FILE
+guardrails.ACTIVE_SPECS_FILE = os.path.join(fake_homeP, ".midiai", "active-specs.json")
+try:
+    guardrails.set_active_spec(rootP, "sess-abc", spec_pathP)
+finally:
+    guardrails.ACTIVE_SPECS_FILE = orig_active_specs_file
+
+open(os.path.join(repoP, "a.txt"), "w").write("spec-linked change\n")
+subprocess.run(["git", "-C", repoP, "add", "a.txt", "docs/specs"], check=True, capture_output=True)
+done_spec = commit_in(repoP, ["-m", "feat: spec linked"])
+assert done_spec.returncode == 0, (done_spec.returncode, done_spec.stdout, done_spec.stderr)
+assert trailer(repoP, "Agent-Session") == "sess-abc"
+assert trailer(repoP, "Spec") == spec_pathP
+
+# ---- merge commits are untouched, even with CLAUDE_CODE_SESSION_ID set ----
+subprocess.run(["git", "-C", repoP, "checkout", "-b", "feature"], check=True, capture_output=True)
+open(os.path.join(repoP, "b.txt"), "w").write("feature work\n")
+subprocess.run(["git", "-C", repoP, "add", "b.txt"], check=True, capture_output=True)
+done_feat = commit_in(repoP, ["--no-verify", "-m", "feat: branch work"])
+assert done_feat.returncode == 0, (done_feat.returncode, done_feat.stdout, done_feat.stderr)
+subprocess.run(["git", "-C", repoP, "checkout", "main"], check=True, capture_output=True)
+merge = subprocess.run(["git", "-C", repoP, "merge", "--no-ff", "feature", "-m", "Merge feature"],
+                       env=envP, capture_output=True, text=True, timeout=30)
+assert merge.returncode == 0, (merge.returncode, merge.stdout, merge.stderr)
+assert trailer(repoP, "Agent-Session") == "", "a merge commit's message is not this hook's to stamp"
 
 print("ok")

@@ -27,9 +27,18 @@ git hook firing). `manual` is not an event you bind: the Run button (and
     python3 guardrails.py hook git:pre-commit|git:commit-msg|git:pre-push|git:post-merge|agent:stop --cwd .
     (old bare names pre-commit/pre-push/stop still work, as aliases)
 
+Two more git hooks, `prepare-commit-msg` and `post-commit`, are installed
+alongside those four but are not EVENTS -- no phase gate can bind to them.
+They are commit provenance: who made a commit (an Agent-Session trailer,
+from CLAUDE_CODE_SESSION_ID), why (a Spec trailer, from that session's
+active spec, see create_spec/get_active_spec/set_active_spec), and what
+guardrails ran against it (a `refs/notes/guardrails` note, in-toto
+Statement shaped). See README's "Commit provenance" section.
+
 mapui.py imports the functions below; keep their names and shapes.
 """
 import argparse
+import glob
 import hashlib
 import json
 import os
@@ -43,8 +52,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 APPROVALS_FILE = os.path.expanduser("~/.midiai/guardrail-approvals.json")
 RUNS_FILE = os.path.expanduser("~/.midiai/guardrail-runs.json")
+ACTIVE_SPECS_FILE = os.path.expanduser("~/.midiai/active-specs.json")
 
 HOOK_MARKER = "# midiai-guardrails"
+
+# docs/specs/<date>-<slug>.md -- the "why" a commit is scoped to. Kept
+# inside the repo (a spec is something a team reads, same reasoning as
+# .guardrails/) rather than beside guardrails.json.
+SPECS_DIR = "docs/specs"
+_SLUG_RE = re.compile(r"[^a-z0-9-]")
 
 # The only events this build knows about. A rail's gate binds a subset of
 # these; "manual" is never in this list -- it is what firing with no event
@@ -76,6 +92,12 @@ _TRIGGER_TO_EVENT = {"stop": "agent:stop", "pre-commit": "git:pre-commit",
 # The four real git hooks this build wires up, and the event each fires.
 _GIT_HOOK_EVENTS = {"pre-commit": "git:pre-commit", "commit-msg": "git:commit-msg",
                     "pre-push": "git:pre-push", "post-merge": "git:post-merge"}
+
+# Two more git hooks, for commit provenance -- installed/uninstalled
+# alongside the four above, but neither is a guardrail EVENT: nothing a
+# phase's gate can bind to them, they are internal machinery only. The
+# `hook <kind>` the shim calls is the hook's own filename.
+_PROVENANCE_HOOKS = ("prepare-commit-msg", "post-commit")
 
 # Old bare hook names (and the git hook filenames themselves) still work as
 # aliases for the event names on the `hook` CLI command.
@@ -728,9 +750,9 @@ def _git_hook_is_ours(hdir, name):
         return False
 
 
-def _install_git_hook(hdir, name):
+def _install_git_hook(hdir, name, kind):
     path = os.path.join(hdir, name)
-    shim = _git_hook_shim(_GIT_HOOK_EVENTS[name])
+    shim = _git_hook_shim(kind)
     if os.path.exists(path):
         try:
             with open(path) as f:
@@ -825,8 +847,10 @@ def _uninstall_stop_hook(root):
 
 def install_hooks(root):
     hdir = _hooks_dir(root)
-    out = {ev: _install_git_hook(hdir, name) for name, ev in _GIT_HOOK_EVENTS.items()}
+    out = {ev: _install_git_hook(hdir, name, ev) for name, ev in _GIT_HOOK_EVENTS.items()}
     out["agent:stop"] = _install_stop_hook(root)
+    for name in _PROVENANCE_HOOKS:
+        out[name] = _install_git_hook(hdir, name, name)
     return out
 
 
@@ -834,7 +858,252 @@ def uninstall_hooks(root):
     hdir = _hooks_dir(root)
     out = {ev: _uninstall_git_hook(hdir, name) for name, ev in _GIT_HOOK_EVENTS.items()}
     out["agent:stop"] = _uninstall_stop_hook(root)
+    for name in _PROVENANCE_HOOKS:
+        out[name] = _uninstall_git_hook(hdir, name)
     return out
+
+
+# ------------------------------------------------------------- provenance
+#
+# A commit gets stamped with three things, each optional: what ran against
+# it (a git note under refs/notes/guardrails), who ran it (an Agent-Session
+# trailer), and why (a Spec trailer). Two internal git hooks do the work --
+# prepare-commit-msg writes the trailers before the message is shown,
+# post-commit writes the note once the commit exists to attach it to.
+# Neither hook may ever fail a commit: every entry point below swallows
+# its own errors.
+
+def _review_model():
+    if "--model" in REVIEW_CMD:
+        i = REVIEW_CMD.index("--model")
+        if i + 1 < len(REVIEW_CMD):
+            return REVIEW_CMD[i + 1]
+    return ""
+
+
+def _pending_path(root):
+    """One pending-results file per worktree, never committed -- the same
+    `git rev-parse --git-path` trick _hooks_dir uses, so a worktree gets its
+    own file rather than fighting the main checkout's."""
+    out = _git(root, "rev-parse", "--git-path", "midiai-guardrails-pending.json")
+    path = out.stdout.strip() if out.returncode == 0 and out.stdout.strip() \
+        else "midiai-guardrails-pending.json"
+    return path if os.path.isabs(path) else os.path.join(root, path)
+
+
+def _provenance_result(root, r):
+    """One run() result, reduced to what the note actually keeps -- a
+    reason is truncated the same way run() already truncates a review's,
+    and a script's identity is its content hash (the same digest approval
+    hashes), an agent review's is the model that judged it."""
+    out = {"id": r.get("id", ""), "phase": r.get("phase", ""), "gate": r.get("gate", ""),
+           "event": r.get("event", ""), "kind": r.get("kind", ""),
+           "verdict": r.get("verdict", ""), "blocking": bool(r.get("blocking", False)),
+           "reason": str(r.get("reason", ""))[:300]}
+    if r.get("kind") == "script":
+        _, content = rail_file(root, r.get("id", ""))
+        if content:
+            out["script_sha256"] = digest(content)
+    elif r.get("kind") == "agent":
+        out["model"] = _review_model()
+    return out
+
+
+def _pending_append(root, event, results):
+    path = _pending_path(root)
+    pending = _load_json_file(path)
+    events = pending.get("events") if isinstance(pending.get("events"), list) else []
+    if event not in events:
+        events.append(event)
+    items = pending.get("results") if isinstance(pending.get("results"), list) else []
+    items.extend(_provenance_result(root, r) for r in results)
+    _save_json_file(path, {"events": events, "results": items})
+
+
+def _run_and_record_pending(root, event, msg_file):
+    """The same run() every hook already made, plus -- for the two
+    commit-time events only -- folding the results into the pending file
+    post-commit will read. git:pre-commit resets pending first: a fresh
+    commit attempt starts from nothing, even one that stalled this far
+    before (an aborted editor, a blocking failure) and left pending behind."""
+    if event == "git:pre-commit":
+        try:
+            os.remove(_pending_path(root))
+        except OSError:
+            pass
+    results = run(root, event=event, msg_file=msg_file)
+    if event in ("git:pre-commit", "git:commit-msg"):
+        _pending_append(root, event, results)
+    return results
+
+
+def _cli_hook_post_commit(root):
+    """post-commit is not a bindable EVENT -- this always runs, for every
+    commit. No pending (nothing ran, or --no-verify skipped pre-commit and
+    commit-msg both) means no note. Never raises: a broken note must not
+    make git report the commit itself as having failed."""
+    path = _pending_path(root)
+    try:
+        pending = _load_json_file(path)
+        results = pending.get("results")
+        if not isinstance(results, list) or not results:
+            return
+        sha = _git(root, "rev-parse", "HEAD").stdout.strip()
+        if not sha:
+            return
+        statement = {
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": [{"name": "git-commit", "digest": {"gitCommit": sha}}],
+            "predicateType": "https://midiai.local/guardrails/v1",
+            "predicate": {"at": _now_iso(),
+                          "events": pending.get("events") or [],
+                          "results": results},
+        }
+        fd, tmp = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(statement, f)
+            _git(root, "notes", "--ref=guardrails", "add", "-f", "-F", tmp, "HEAD")
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    except Exception:
+        pass
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _cli_hook_prepare_commit_msg(root, extra):
+    """Stamps who (Agent-Session, from CLAUDE_CODE_SESSION_ID -- set in
+    every Claude Code agent's shell, absent from a human's) and why
+    (Spec, from that session's active spec) onto the message before the
+    editor even opens. Skips a merge/squash message -- that text is not
+    this commit's own story to tell. Never raises."""
+    try:
+        if not extra:
+            return
+        msg_file = extra[0]
+        source = extra[1] if len(extra) > 1 else ""
+        if source in ("merge", "squash"):
+            return
+        session_id = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+        if not session_id or "\n" in session_id:
+            return
+        _git(root, "interpret-trailers", "--in-place", "--if-exists", "doNothing",
+             "--trailer", f"Agent-Session: {session_id}", msg_file)
+        spec_path = get_active_spec(root, session_id)
+        if spec_path:
+            _git(root, "interpret-trailers", "--in-place", "--if-exists", "doNothing",
+                 "--trailer", f"Spec: {spec_path}", msg_file)
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------- specs
+
+def _spec_slug(title):
+    slug = _SLUG_RE.sub("-", str(title or "").strip().lower())
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug[:60] or "spec"
+
+
+def spec_title(text):
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[2:].strip() if line.startswith("# ") else line
+    return ""
+
+
+def create_spec(root, title, why, done):
+    """Writes docs/specs/<date>-<slug>.md under root and returns its
+    repo-relative path. Never overwrites -- a name already taken this same
+    day gets -2, -3, ... appended, same bargain compile_rail's rail files
+    make for a recompile of a different kind."""
+    title = str(title or "").strip() or "untitled"
+    specs_dir = os.path.join(root, *SPECS_DIR.split("/"))
+    os.makedirs(specs_dir, exist_ok=True)
+    base = f"{time.strftime('%Y-%m-%d', time.gmtime())}-{_spec_slug(title)}"
+    n, name = 1, f"{base}.md"
+    while os.path.exists(os.path.join(specs_dir, name)):
+        n += 1
+        name = f"{base}-{n}.md"
+    body = f"# {title}\n\n## Why\n{why or ''}\n\n## Done when\n{done or ''}\n"
+    _write_text(os.path.join(specs_dir, name), body)
+    return f"{SPECS_DIR}/{name}"
+
+
+def list_specs(root):
+    """{"path","title","mtime"} rows, newest first."""
+    specs_dir = os.path.join(root, *SPECS_DIR.split("/"))
+    rows = []
+    for path in glob.glob(os.path.join(specs_dir, "*.md")):
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            continue
+        rows.append({"path": f"{SPECS_DIR}/{os.path.basename(path)}",
+                     "title": spec_title(text) or os.path.basename(path),
+                     "mtime": os.path.getmtime(path)})
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return rows
+
+
+def read_spec(root, path):
+    """(repo-relative path, text) for a spec that resolves inside
+    <root>/docs/specs/, or (None, "") otherwise -- the same containment
+    bargain rail_file makes for .guardrails/, because this path can arrive
+    over HTTP from an app that only ever sends a string. `root` is realpath'd
+    before the relative path is computed, not just before the containment
+    check -- otherwise a root reached through a symlink (a tmpdir under
+    macOS's /tmp, say) turns a good path into relpath noise."""
+    real_root = os.path.realpath(root)
+    specs_dir = os.path.join(real_root, *SPECS_DIR.split("/"))
+    real = os.path.realpath(os.path.join(root, str(path or "")))
+    if os.path.commonpath([specs_dir, real]) != specs_dir:
+        return None, ""
+    try:
+        with open(real) as f:
+            return os.path.relpath(real, real_root), f.read()
+    except OSError:
+        return None, ""
+
+
+def get_active_spec(root, session_id):
+    """The active spec's repo-relative path for one agent session, or None
+    -- kept per-session rather than per-terminal, so it survives whatever
+    the terminal is doing and is what prepare-commit-msg actually reads."""
+    session_id = str(session_id or "")
+    if not session_id:
+        return None
+    entry = _load_json_file(ACTIVE_SPECS_FILE).get(session_id)
+    if not isinstance(entry, dict) or entry.get("root") != root:
+        return None
+    return entry.get("path") or None
+
+
+def set_active_spec(root, session_id, path):
+    """path=None clears. Setting re-resolves the path through read_spec --
+    an active spec lands verbatim in a commit trailer, so only a path that
+    is actually a spec file under this root is ever stored."""
+    session_id = str(session_id or "")
+    if not session_id:
+        raise ValueError("no session")
+    all_active = _load_json_file(ACTIVE_SPECS_FILE)
+    if path is None:
+        all_active.pop(session_id, None)
+    else:
+        real_path, text = read_spec(root, path)
+        if real_path is None:
+            raise ValueError("no such spec")
+        all_active[session_id] = {"root": root, "path": real_path}
+    _save_json_file(ACTIVE_SPECS_FILE, all_active)
 
 
 # --------------------------------------------------------------------- CLI
@@ -906,6 +1175,12 @@ def _cli():
     if args.cmd == "hook":
         if os.environ.get("MIDIAI_GUARDRAILS") == "1":
             sys.exit(0)          # a hook this process itself triggered
+        if args.kind == "prepare-commit-msg":
+            _cli_hook_prepare_commit_msg(root, args.extra)
+            sys.exit(0)
+        if args.kind == "post-commit":
+            _cli_hook_post_commit(root)
+            sys.exit(0)
         event = _HOOK_ALIASES.get(args.kind, args.kind)
         if event == "agent:stop":
             _cli_hook_stop(root)
@@ -914,7 +1189,7 @@ def _cli():
             print(f"unknown hook: {args.kind!r}", file=sys.stderr)
             sys.exit(1)
         msg_file = args.extra[0] if event == "git:commit-msg" and args.extra else None
-        results = run(root, event=event, msg_file=msg_file)
+        results = _run_and_record_pending(root, event, msg_file)
         blocking_fail = _blocking_failures(results)
         if blocking_fail:
             for r in blocking_fail:

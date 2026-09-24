@@ -28,8 +28,11 @@ import { MaterialIcons } from '@expo/vector-icons';
 import {
   approveRail,
   compileRail,
+  createSpec,
   doWork,
   dropGuardrailTemplate,
+  getActiveSpec,
+  getCommitMeta,
   getEnforce,
   getGovern,
   getGuardrails,
@@ -44,6 +47,7 @@ import {
   listBranches,
   listGoverns,
   listPrs,
+  listSpecs,
   listWorkflows,
   openTerminal,
   ptyWhere,
@@ -57,9 +61,11 @@ import {
   getAgentDef,
   summarizePrompt,
   draftCommit,
+  readSpec,
   renameAgent,
   getDirty,
   initRepo,
+  setActiveSpec,
   setAgentModel,
   addToQueue,
   reviewPr,
@@ -246,7 +252,16 @@ export default function Pane({
   if (kind === 'tests')
     return <Guardrails data={data} base={base} cwd={place?.path || cols?.[current]?.cwd} />;
   if (kind === 'prs')
-    return <Git data={data} base={base} cwd={place?.path || cols?.[current]?.cwd} place={place} />;
+    return (
+      <Git
+        data={data}
+        base={base}
+        cwd={place?.path || cols?.[current]?.cwd}
+        place={place}
+        cols={cols}
+        onSeat={onSeat}
+      />
+    );
   if (kind === 'usage') return <Usage data={data} mode={mode} onMode={onMode} />;
   // Unrecognised or absent data used to say "waiting for push_cc" no matter
   // why it was absent -- including the one mode (focus 2/2) that was simply
@@ -356,6 +371,17 @@ function Question({ opts, question, onAnswer, onNext }) {
   );
 }
 
+// A spec's body is `# <title>` over `## Why` over `## Done when` (docs/specs'
+// own template) -- the title is the first line, read back off the file
+// rather than carried separately, so it can never say something the file
+// itself does not.
+const specTitle = (text) => (String(text || '').match(/^#\s*(.+)$/m) || [])[1] || '';
+
+// The Why key's own label has to fit beside Model and Effort's -- a title is
+// free text and those are not.
+const truncate = (text, n) =>
+  String(text || '').length > n ? `${String(text).slice(0, n - 1)}…` : String(text || '');
+
 function Focus({
   info,
   seat,
@@ -439,6 +465,27 @@ function Focus({
   const [sentPrompts, setSentPrompts] = useState([]);
   const [clearArmed, setClearArmed] = useState(false);
   const [contextPick, setContextPick] = useState(null);
+  // Spec-first "why": the active spec for this agent's session, read quietly
+  // -- a subagent has none of its own (no session, no terminal_id to key
+  // it), and a 404 (an older server, or nothing set) is the same as none
+  // rather than an error over the conversation.
+  const [spec, setSpec] = useState(null);
+  const [specMenu, setSpecMenu] = useState(null); // {anchor} for view/change/clear
+  const [specPicker, setSpecPicker] = useState(null); // {anchor, rows} for "change"
+  const [specView, setSpecView] = useState(null); // {title, text}, the read-only modal
+  const [newSpec, setNewSpec] = useState(null); // form fields, or null when closed
+  const loadSpec = () => {
+    if (sub || !base || !info?.tid) { setSpec(null); return; }
+    getActiveSpec(base, info.tid)
+      .then((res) => {
+        if (!res?.path) { setSpec(null); return; }
+        return readSpec(base, seat?.cwd || '', res.path)
+          .then((r) => setSpec({ path: res.path, title: specTitle(r.text) || res.path, text: r.text }))
+          .catch(() => setSpec({ path: res.path, title: res.path, text: '' }));
+      })
+      .catch(() => setSpec(null));
+  };
+  useEffect(() => { loadSpec(); }, [base, info?.tid, sub, seat?.cwd]);   // eslint-disable-line react-hooks/exhaustive-deps
   const clearTimer = useRef(null);
   // Tapped compact, and the pane has not said "Compacting" yet. Bridges the
   // second or two before the scrape shows it; the timeout is only a backstop.
@@ -581,6 +628,37 @@ function Focus({
     setClearArmed(true);
     clearTimeout(clearTimer.current);
     clearTimer.current = setTimeout(() => setClearArmed(false), 3000);
+  };
+  // "change" reads the checkout's own specs and lets you make a different one
+  // active -- distinct from "new spec" below it, which writes one.
+  const openSpecPicker = (anchor) => {
+    setSpecMenu(null);
+    listSpecs(base, seat?.cwd || '')
+      .then((rows) => setSpecPicker({ anchor, rows }))
+      .catch(() => setSpecPicker({ anchor, rows: [] }));
+  };
+  const pickSpec = (path) => {
+    setSpecPicker(null);
+    setActiveSpec(base, info.tid, path)
+      .then(() => readSpec(base, seat?.cwd || '', path))
+      .then((r) => setSpec({ path, title: specTitle(r.text) || path, text: r.text }))
+      .catch(() => setSpec({ path, title: path, text: '' }));
+  };
+  const clearSpec = () => {
+    setSpecMenu(null);
+    setActiveSpec(base, info.tid, null).then(() => setSpec(null)).catch(() => {});
+  };
+  const saveNewSpec = () => {
+    if (!newSpec?.title?.trim()) return;
+    createSpec(base, seat?.cwd || '', {
+      title: newSpec.title.trim(),
+      why: newSpec.why,
+      done: newSpec.done,
+      terminal_id: info.tid,
+      tell: newSpec.tell,
+    })
+      .then(() => { setNewSpec(null); loadSpec(); })
+      .catch(() => setNewSpec(null));
   };
   // Status used to be said twice within 200px: once here, once on this same
   // agent's rail card. The rail is the list you scan, so it's the right home
@@ -748,10 +826,127 @@ function Focus({
             style={styles.contextSelect}
             glyphStyle={styles.contextSelectText}
           />
+          <View style={styles.contextSettingRule} />
+          <Text style={styles.contextSettingLabel}>Why</Text>
+          <MenuButton
+            label={spec ? `${truncate(spec.title, 22)} ▾` : 'set spec'}
+            accessibilityLabel={
+              spec ? `spec: ${spec.title}. view, change or clear it` : 'set a spec for this session'
+            }
+            onOpen={(anchor) =>
+              spec ? setSpecMenu({ anchor }) : setNewSpec({ title: '', why: '', done: '', tell: true })
+            }
+            style={styles.contextSelect}
+            glyphStyle={styles.contextSelectText}
+          />
         </View>
         )}
         </View>
       )}
+
+      {specMenu && (
+        <Menu
+          anchor={specMenu.anchor}
+          head="spec"
+          onClose={() => setSpecMenu(null)}
+          items={[
+            { label: 'view', onPress: () => { setSpecMenu(null); setSpecView(spec); } },
+            { label: 'change', onPress: () => openSpecPicker(specMenu.anchor) },
+            { label: 'clear', danger: true, onPress: clearSpec },
+          ]}
+        />
+      )}
+
+      {specPicker && (
+        <Menu
+          anchor={specPicker.anchor}
+          head="change spec"
+          onClose={() => setSpecPicker(null)}
+          items={[
+            ...specPicker.rows.map((row) => ({
+              label: row.title || row.path,
+              onPress: () => pickSpec(row.path),
+            })),
+            {
+              label: '+ new spec',
+              onPress: () => {
+                setSpecPicker(null);
+                setNewSpec({ title: '', why: '', done: '', tell: true });
+              },
+            },
+          ]}
+        />
+      )}
+
+      <Modal visible={!!specView} transparent animationType="fade" onRequestClose={() => setSpecView(null)}>
+        <View style={styles.modalBack}>
+          <View style={styles.receipt}>
+            <View style={styles.title}>
+              <Text numberOfLines={1} style={[styles.receiptTitle, styles.spacer]}>{specView?.title}</Text>
+              <Text accessibilityRole="button" onPress={() => setSpecView(null)} style={styles.receiptClose}>close</Text>
+            </View>
+            <ScrollView>
+              <Text style={[styles.note, mono]}>{specView?.text || ''}</Text>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Writes a spec, never edits one -- docs/specs never overwrites, so
+          "change" (above) is how you move off a stale one rather than this. */}
+      <Modal visible={!!newSpec} transparent animationType="fade" onRequestClose={() => setNewSpec(null)}>
+        <View style={styles.modalBack}>
+          <View style={styles.receipt}>
+            <Text style={styles.receiptTitle}>new spec</Text>
+            <TextInput
+              value={newSpec?.title || ''}
+              onChangeText={(v) => setNewSpec((f) => ({ ...f, title: v }))}
+              placeholder="what this work is, in one line"
+              placeholderTextColor={C.faint}
+              style={styles.wfName}
+            />
+            <Text style={styles.grLabel}>why</Text>
+            <TextInput
+              value={newSpec?.why || ''}
+              onChangeText={(v) => setNewSpec((f) => ({ ...f, why: v }))}
+              multiline
+              placeholder="why this is worth doing"
+              placeholderTextColor={C.faint}
+              style={[styles.wfName, styles.grField]}
+            />
+            <Text style={styles.grLabel}>done when</Text>
+            <TextInput
+              value={newSpec?.done || ''}
+              onChangeText={(v) => setNewSpec((f) => ({ ...f, done: v }))}
+              multiline
+              placeholder="how you'll know it's finished"
+              placeholderTextColor={C.faint}
+              style={[styles.wfName, styles.grField]}
+            />
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: !!newSpec?.tell }}
+              onPress={() => setNewSpec((f) => ({ ...f, tell: !f.tell }))}
+              style={styles.amendKey}>
+              <View style={[styles.grBox, styles.amendBox, newSpec?.tell && styles.grBoxOn]}>
+                <Text style={styles.grTick}>{newSpec?.tell ? '✓' : ''}</Text>
+              </View>
+              <Text style={styles.syncDim}>Tell the agent</Text>
+            </Pressable>
+            <View style={styles.manageRow}>
+              <PushButton
+                label="save"
+                colour={C.accentText}
+                lit
+                disabled={!newSpec?.title?.trim()}
+                onPress={saveNewSpec}
+                style={styles.manageBtn}
+              />
+              <PushButton label="cancel" onPress={() => setNewSpec(null)} style={styles.manageBtn} />
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {contextPick && (
         <Menu
@@ -3297,7 +3492,7 @@ function GitTabs({ at, onAt }) {
   );
 }
 
-function Git({ data, base, cwd, place }) {
+function Git({ data, base, cwd, place, cols, onSeat }) {
   const [at, setAt] = useState(0);
   // null until asked; false is a project folder with no repository yet
   const [hasGit, setHasGit] = useState(null);
@@ -3315,7 +3510,7 @@ function Git({ data, base, cwd, place }) {
   if (at === 1) return <Prs data={data} base={base} cwd={cwd} tabs={tabs} />;
   if (at === 2) return <Actions base={base} cwd={cwd} tabs={tabs} />;
   if (at === 3) return <Hooks tabs={tabs} />;
-  return <Work base={base} cwd={cwd} tabs={tabs} />;
+  return <Work base={base} cwd={cwd} tabs={tabs} cols={cols} onSeat={onSeat} />;
 }
 
 // The first GIT tab, and the only one about work that has not left this
@@ -3455,7 +3650,114 @@ function GraphCell({ row, lanes }) {
 // ponytail: memory only -- a reload unfolds it; localStorage if that bites
 let treeFolded = false;
 
-function Work({ base, cwd, tabs }) {
+// A picked commit's provenance, read once and alongside the diff rather than
+// asked for -- the guardrails that ran on it, the agent session that made
+// it, and the spec it was scoped to. A commit carries none, some or all of
+// these; nothing here is drawn for the ones it lacks. The route is new: an
+// older server 404s it, and that reads the same as a commit with nothing to
+// say, not an error banner over someone else's diff.
+function CommitProvenance({ base, cwd, sha, cols, onSeat }) {
+  const [meta, setMeta] = useState(null);
+  const [openChip, setOpenChip] = useState(-1);
+  const [specView, setSpecView] = useState(null);
+
+  useEffect(() => {
+    setMeta(null);
+    setOpenChip(-1);
+    if (!base || !cwd || !sha) return undefined;
+    let live = true;
+    getCommitMeta(base, cwd, sha)
+      .then((m) => { if (live) setMeta(m); })
+      .catch(() => { if (live) setMeta(null); });   // older server, or no note -- quiet either way
+    return () => { live = false; };
+  }, [base, cwd, sha]);
+
+  const results = meta?.guardrails?.predicate?.results || [];
+  const session = meta?.session;
+  const spec = meta?.spec;
+  if (!results.length && !session && !spec) return null;
+
+  const seatAt = session?.live_tid
+    ? (cols || []).findIndex((c) => c && c.tid === session.live_tid)
+    : -1;
+  const when = session?.last_ts || session?.first_ts || '';
+
+  const openSpec = () => {
+    if (!spec?.path) return;
+    readSpec(base, cwd, spec.path)
+      .then((r) => setSpecView({ title: spec.title || r.path, text: r.text }))
+      .catch(() => setSpecView({ title: spec.title || spec.path, text: '' }));
+  };
+
+  return (
+    <View style={styles.provStrip}>
+      {!!results.length && (
+        <View style={styles.provChips}>
+          {results.map((r, i) => (
+            <Pressable
+              key={r.id || i}
+              accessibilityRole="button"
+              accessibilityLabel={`${r.gate || r.phase || 'guardrail'}: ${r.verdict}${r.reason ? `, ${r.reason}` : ''}`}
+              onPress={() => setOpenChip(openChip === i ? -1 : i)}
+              style={[styles.tag, styles.provChip, { borderColor: VERDICT_HEX[r.verdict] || C.faint }]}>
+              <Text numberOfLines={1} style={{ color: VERDICT_HEX[r.verdict] || C.faint, fontSize: 10 }}>
+                {r.gate || r.phase || r.id} · {r.verdict}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {openChip >= 0 && !!results[openChip]?.reason && (
+        <Text style={styles.enfNote}>{results[openChip].reason}</Text>
+      )}
+      {!!session && (
+        // Wraps rather than squeezing one line into two ellipses fighting
+        // for room -- the viewer card is only as wide as the fileCard next
+        // to it leaves it, which is not always wide.
+        <View style={styles.provLine}>
+          <Text numberOfLines={1} style={styles.syncDim}>
+            made by {session.name || (session.id || '').slice(0, 8)}
+            {when ? ` · ${when.slice(0, 10)}` : ''}
+          </Text>
+          {seatAt >= 0 ? (
+            <Text accessibilityRole="button" onPress={() => onSeat?.(seatAt)} style={styles.wgLink}>
+              open agent
+            </Text>
+          ) : (
+            !!session.summary && (
+              <Text numberOfLines={1} style={styles.provSummary}>{session.summary}</Text>
+            )
+          )}
+        </View>
+      )}
+      {!!spec && (
+        <Text
+          accessibilityRole="button"
+          accessibilityLabel={`spec: ${spec.title || spec.path}, view`}
+          onPress={openSpec}
+          numberOfLines={1}
+          style={styles.provSpec}>
+          spec: {spec.title || spec.path}
+        </Text>
+      )}
+      <Modal visible={!!specView} transparent animationType="fade" onRequestClose={() => setSpecView(null)}>
+        <View style={styles.modalBack}>
+          <View style={styles.receipt}>
+            <View style={styles.title}>
+              <Text numberOfLines={1} style={[styles.receiptTitle, styles.spacer]}>{specView?.title}</Text>
+              <Text accessibilityRole="button" onPress={() => setSpecView(null)} style={styles.receiptClose}>close</Text>
+            </View>
+            <ScrollView>
+              <Text style={[styles.note, mono]}>{specView?.text || ''}</Text>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function Work({ base, cwd, tabs, cols, onSeat }) {
   const narrow = useNarrow();
   const [work, setWork] = useState(null);
   // One pick, two shapes: {file, staged} from the changes half, {sha} from the
@@ -3918,6 +4220,9 @@ function Work({ base, cwd, tabs }) {
               ))}
             </View>
             <View style={styles.viewerCard}>
+              {!!pick?.sha && (
+                <CommitProvenance base={base} cwd={cwd} sha={pick.sha} cols={cols} onSeat={onSeat} />
+              )}
               {viewer}
               {files.length > 0 && (
                 <Pressable
@@ -5519,6 +5824,14 @@ const styles = StyleSheet.create({
   fileCard: { width: 430, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: C.panel, overflow: 'hidden' },
   viewerCard: { flex: 1, minWidth: 0, borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: KEYBG(), overflow: 'hidden' },
   diffExpand: { position: 'absolute', top: 6, right: 8, width: 34, height: 34, borderRadius: 7, alignItems: 'center', justifyContent: 'center', backgroundColor: C.raised, borderWidth: 1, borderColor: C.edge },
+  // A picked commit's provenance, above the diff it belongs to -- three
+  // quiet lines at most, and none at all for a commit with nothing to say.
+  provStrip: { gap: 5, paddingHorizontal: 10, paddingTop: 9, paddingBottom: 4, borderBottomWidth: 1, borderBottomColor: C.line },
+  provChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  provChip: { borderWidth: 1, paddingHorizontal: 6, paddingVertical: 2 },
+  provLine: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  provSummary: { color: C.faint, fontSize: 12, flexShrink: 1 },
+  provSpec: { color: C.accentText, fontSize: 12 },
   diffModal: { width: '95%', height: '92%', backgroundColor: KEYBG(), borderWidth: 1, borderColor: C.edge, borderRadius: S.radius, overflow: 'hidden' },
   diffModalHead: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: C.panel },
   wgHead: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 6 },

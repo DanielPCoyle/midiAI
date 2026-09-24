@@ -361,6 +361,108 @@ faked.
 A tracker adapter -- turning a ticket into a fourth evidence kind -- is a
 later build; `EVIDENCE` deliberately does not carry it yet.
 
+### Commit provenance
+
+Three more facts get stamped onto a commit, each independent and each
+optional: **what** ran against it (a git note), **who** made it (a trailer),
+and **why** (another trailer, pointing at a spec). Two more internal git
+hooks do this -- `prepare-commit-msg` and `post-commit` -- installed and
+uninstalled alongside the four EVENT hooks above by the same `POST
+/guardrails/hooks`, but neither is an EVENT itself: no phase's gate can bind
+to them, and `guardrails.status()`'s `hooks` dict does not carry them either.
+Like every hook here, **neither can ever fail a commit** -- both swallow
+every error they hit and always exit 0.
+
+**The note.** `git:pre-commit` and `git:commit-msg` already run whichever
+rails are bound to them; this adds one more thing each does -- fold its
+results into a pending-commit file (`git rev-parse --git-path
+midiai-guardrails-pending.json`, per worktree, never committed).
+`git:pre-commit` deletes that file first (a fresh commit attempt starts from
+nothing, even one that stalled this far before and left pending behind), then
+appends after running; `git:commit-msg` only appends. `post-commit` -- which
+fires for every commit, provenance or not -- reads pending and, only if it
+has results, writes a note on `HEAD` under `refs/notes/guardrails` shaped as
+an [in-toto](https://in-toto.io/) `Statement`:
+
+```json
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "subject": [{"name": "git-commit", "digest": {"gitCommit": "<sha>"}}],
+  "predicateType": "https://midiai.local/guardrails/v1",
+  "predicate": {
+    "at": "<iso timestamp>",
+    "events": ["git:pre-commit", "git:commit-msg"],
+    "results": [{"id": "...", "phase": "...", "gate": "...", "event": "...",
+                 "kind": "script", "verdict": "pass", "blocking": false,
+                 "reason": "... (≤300 chars)",
+                 "script_sha256": "... (scripts only)"}]
+  }
+}
+```
+
+An agent review's result carries `"model"` (the `REVIEW_CMD` model) instead
+of `script_sha256`. Either way `post-commit` deletes pending when it is done,
+whether or not it wrote a note -- **no pending means no note**, which is
+exactly what a `--no-verify` commit gets: `--no-verify` skips `pre-commit`
+and `commit-msg` (git's own rule, not this build's), so nothing is ever
+appended, and `post-commit` -- which still fires, `--no-verify` does not
+touch it -- finds nothing to write. Notes stay local unless pushed; nothing
+here changes the remote push refspec, so sharing them is an explicit,
+separate step both ways:
+
+```
+git push origin refs/notes/guardrails
+git fetch origin refs/notes/guardrails:refs/notes/guardrails
+```
+
+**The trailers.** `prepare-commit-msg` runs before the message is even shown
+and, given `msgfile [source [sha]]` the way git always calls it, skips
+outright when `source` is `merge` or `squash` -- that text is not this
+commit's own story to tell. Otherwise: if `CLAUDE_CODE_SESSION_ID` is set --
+every Claude Code agent's shell has it, a human's does not -- it adds
+`Agent-Session: <id>` via `git interpret-trailers --in-place --if-exists
+doNothing --trailer ...`; if that session also has an *active spec* (below),
+it adds `Spec: <repo-relative path>` the same way. `--if-exists doNothing`
+means a hand-edited trailer is never clobbered.
+
+**mapui and CLAUDE_CODE_\*.** mapui is usually started from inside an
+agent's own `claude` shell, which means its own process inherits that
+agent's `CLAUDE_CODE_SESSION_ID`. Left alone, every `git commit` mapui makes
+on the app's behalf (the GIT tab's Work button, `git()`'s `subprocess.run`
+with no `env=` override -- it inherits `os.environ`) would get
+`prepare-commit-msg` stamping it with the *launching* session's
+Agent-Session trailer, crediting a commit to whichever agent happened to
+start the server. mapui is not itself an agent's work, so at startup (in
+`__main__`, not at import -- tests import this module without wanting the
+side effect) it drops `CLAUDECODE` and every `CLAUDE_CODE_*` key from its own
+`os.environ` before doing anything else.
+
+**Specs -- the "why".** A spec is a plain file, `docs/specs/<YYYY-MM-DD>-
+<slug>.md` (`create_spec`), body `# <title>\n\n## Why\n<why>\n\n## Done
+when\n<done>\n`. It is never overwritten -- a name already taken the same day
+gets `-2`, `-3`, ... appended. Which spec is *active* is tracked per agent
+session, not per terminal or per repo, in `~/.midiai/active-specs.json`
+(`{sessionId: {"root", "path"}}`) -- `get_active_spec`/`set_active_spec` --
+because that is what survives the terminal doing other things and is what
+`prepare-commit-msg` actually reads. mapui's routes:
+
+| route | does |
+|---|---|
+| `POST /specs {cwd, title, why, done, terminal_id?, tell?}` | writes the spec; with `terminal_id`, resolves that agent's session (`push_cc.agents()`) and makes the spec active for it; with `tell` too, queues that agent the prompt "Work to the spec in \<path\>: read it first, and keep the commit(s) scoped to it." (the existing `/queue/add` mechanism). Returns `{"path", "active"}`. |
+| `GET /specs?cwd=` | `{"rows": [{"path","title","mtime"}]}`, newest first. |
+| `GET /specs/read?cwd=&path=` | `{"path","text"}` -- `path` must resolve inside `<root>/docs/specs/`, the same containment bargain `.guardrails/`'s `rail_file` makes, because this string can arrive over HTTP from an app. |
+| `POST /specs/active {terminal_id, path\|null}` / `GET /specs/active?terminal_id=` | set, clear, or read the active spec for a live agent -- both resolved from `terminal_id` alone (`push_cc.agents()` carries a live agent's own `cwd` and session id, so no `cwd` is needed on these two). |
+
+**For the app.** `GET /work/commit-meta?cwd=&sha=` (`sha` checked against
+`^[0-9a-f]{7,40}$`) hands the GIT tab's provenance strip everything it draws
+for one picked commit in one call: `guardrails` (the note's `predicate`, or
+null), `session` (the `Agent-Session` trailer -- `git log -1
+--format=%(trailers:key=Agent-Session,valueonly)` -- enriched from
+memory.py's `sessions` table and its latest `summary` entry, plus `live_tid`
+if a current agent's own session matches), and `spec` (the `Spec` trailer,
+resolved through the same `read_spec` containment check). Any of the three
+can be null; a commit with none of them draws nothing.
+
 Manage lists every workflow with the two facts that identify it, what fires it
 and what secret it needs, and opens one into its own YAML. **＋ new workflow**
 scaffolds from four templates in the shape the repos here already use: the

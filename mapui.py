@@ -657,6 +657,34 @@ def git(root, *argv, timeout=30):
                           capture_output=True, text=True, timeout=timeout)
 
 
+def _session_for_terminal(tid):
+    """One live agent's Claude Code session id, from push_cc.agents() (the
+    same herdr listing /agents serves) -- or None if that terminal is not a
+    live agent, or has no session yet."""
+    for a in push_cc.agents():
+        if a.get("terminal_id") == tid:
+            return (a.get("agent_session") or {}).get("value") or None
+    return None
+
+
+def _terminal_session(tid):
+    """(root, session_id) for a live agent's terminal_id -- both derived
+    from the agent's own row, so /specs/active needs nothing from the
+    caller but the terminal_id. (None, None) if the agent, its session, or
+    its checkout cannot be resolved."""
+    for a in push_cc.agents():
+        if a.get("terminal_id") != tid:
+            continue
+        session_id = (a.get("agent_session") or {}).get("value")
+        cwd = a.get("cwd")
+        if not session_id or not cwd:
+            return None, None
+        check = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=10)
+        return (check.stdout.strip() if check.returncode == 0 else None), session_id
+    return None, None
+
+
 STATUS_WORD = {"M": "modified", "A": "added", "D": "deleted", "R": "renamed",
               "C": "copied", "T": "typechange", "U": "conflicted", "?": "untracked"}
 CONFLICTS = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
@@ -1703,6 +1731,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._work_dirty()
         if self.path == "/work/diff" or self.path.startswith("/work/diff?"):
             return self._work_diff()
+        if self.path == "/work/commit-meta" or self.path.startswith("/work/commit-meta?"):
+            return self._work_commit_meta()
+        if self.path == "/specs/read" or self.path.startswith("/specs/read?"):
+            return self._specs_read_one()
+        if self.path == "/specs/active" or self.path.startswith("/specs/active?"):
+            return self._specs_active_read()
+        if self.path == "/specs" or self.path.startswith("/specs?"):
+            return self._specs_read()
         if self.path.startswith("/agent-def?"):
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             row = agent_def_row((q.get("type") or [""])[0], (q.get("cwd") or [""])[0])
@@ -1867,6 +1903,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._work_ai_message()
         if self.path == "/work/do":
             return self._work_do()
+        if self.path == "/specs":
+            return self._specs_write()
+        if self.path == "/specs/active":
+            return self._specs_active_write()
         if self.path != "/macros":
             return self._send(404, "no", "text/plain")
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -2505,6 +2545,82 @@ class Handler(BaseHTTPRequestHandler):
             guardrails.uninstall_hooks(root)
         self._send(200, json.dumps(guardrails.status(root)), "application/json")
 
+    def _specs_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        self._send(200, json.dumps({"rows": guardrails.list_specs(root)}), "application/json")
+
+    def _specs_read_one(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        real_path, text = guardrails.read_spec(root, (q.get("path") or [""])[0])
+        if real_path is None:
+            return self._send(404, "no such spec", "text/plain")
+        self._send(200, json.dumps({"path": real_path, "text": text}), "application/json")
+
+    def _specs_write(self):
+        """Writes a spec and, given a terminal_id, makes it that agent's
+        active one -- and, with tell, queues them a prompt pointing at it.
+        `active` in the reply says whether that second part actually
+        happened (no terminal_id, or that agent has no session yet, still
+        writes the spec -- it just is not anyone's active one)."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        root, err = self._repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        title = str(body.get("title") or "").strip()
+        if not title:
+            return self._send(400, "a spec needs a title", "text/plain")
+        try:
+            path = guardrails.create_spec(root, title, str(body.get("why") or ""),
+                                          str(body.get("done") or ""))
+        except OSError as e:
+            return self._send(500, f"could not write the spec: {e}", "text/plain")
+        active = False
+        tid = str(body.get("terminal_id") or "")
+        if tid:
+            session_id = _session_for_terminal(tid)
+            if session_id:
+                guardrails.set_active_spec(root, session_id, path)
+                active = True
+                if body.get("tell"):
+                    with _queue_lock:
+                        q = load_queue()
+                        q[tid] = clean_queue(q.get(tid, []) + [{
+                            "id": os.urandom(6).hex(),
+                            "text": f"Work to the spec in {path}: read it first, and keep "
+                                    "the commit(s) scoped to it."}])
+                        save_queue(q)
+        self._send(200, json.dumps({"path": path, "active": active}), "application/json")
+
+    def _specs_active_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        tid = (q.get("terminal_id") or [""])[0]
+        root, session_id = _terminal_session(tid) if tid else (None, None)
+        path = guardrails.get_active_spec(root, session_id) if root and session_id else None
+        self._send(200, json.dumps({"path": path}), "application/json")
+
+    def _specs_active_write(self):
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        tid = str(body.get("terminal_id") or "")
+        root, session_id = _terminal_session(tid) if tid else (None, None)
+        if not root or not session_id:
+            return self._send(400, "no such agent", "text/plain")
+        path = body.get("path") or None
+        try:
+            guardrails.set_active_spec(root, session_id, path)
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        self._send(200, json.dumps({"path": path}), "application/json")
+
     def _governs_read(self):
         """The files that shape a pull request without being one -- whether
         they are there or not.
@@ -2779,6 +2895,62 @@ class Handler(BaseHTTPRequestHandler):
                "staged": staged, "unstaged": unstaged, "conflicts": conflicts,
                "stashes": work_stashes(root), "log": work_log(root)}
         self._send(200, json.dumps(row), "application/json")
+
+    def _work_commit_meta(self):
+        """What the GIT tab's provenance strip shows for one picked commit:
+        the guardrails that ran against it (a refs/notes/guardrails note),
+        who made it (the Agent-Session trailer, enriched from memory.py's
+        sessions table), and why (the Spec trailer). Any of the three can
+        be null -- a commit with none of them draws nothing."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        sha = (q.get("sha") or [""])[0]
+        if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+            return self._send(400, "bad sha", "text/plain")
+
+        note = git(root, "notes", "--ref=guardrails", "show", sha)
+        guardrails_meta = None
+        if note.returncode == 0 and note.stdout.strip():
+            try:
+                guardrails_meta = json.loads(note.stdout).get("predicate")
+            except json.JSONDecodeError:
+                guardrails_meta = None
+
+        session_meta = None
+        out = git(root, "log", "-1", "--format=%(trailers:key=Agent-Session,valueonly)", sha)
+        session_id = out.stdout.strip() if out.returncode == 0 else ""
+        if session_id:
+            live_tid, name = None, None
+            for a in push_cc.agents():
+                if (a.get("agent_session") or {}).get("value") == session_id:
+                    live_tid, name = a.get("terminal_id"), a.get("name")
+                    break
+            conn = memory.connect()
+            try:
+                srow = conn.execute(
+                    "SELECT first_ts, last_ts FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                summary = conn.execute(
+                    "SELECT title FROM entries WHERE session = ? AND kind = 'summary' "
+                    "ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+            finally:
+                conn.close()
+            session_meta = {"id": session_id, "live_tid": live_tid, "name": name,
+                            "first_ts": srow["first_ts"] if srow else None,
+                            "last_ts": srow["last_ts"] if srow else None,
+                            "summary": summary["title"] if summary else None}
+
+        spec_meta = None
+        out = git(root, "log", "-1", "--format=%(trailers:key=Spec,valueonly)", sha)
+        spec_path = out.stdout.strip() if out.returncode == 0 else ""
+        if spec_path:
+            real_path, text = guardrails.read_spec(root, spec_path)
+            if real_path:
+                spec_meta = {"path": real_path, "title": guardrails.spec_title(text) or real_path}
+
+        self._send(200, json.dumps({"guardrails": guardrails_meta, "session": session_meta,
+                                    "spec": spec_meta}), "application/json")
 
     def _work_diff(self):
         """The raw patch for one commit or one file, sent back unparsed --
@@ -4285,6 +4457,20 @@ def local_ip():
 
 
 if __name__ == "__main__":
+    # mapui is usually started from an agent's own `claude` shell, which
+    # inherits CLAUDE_CODE_SESSION_ID (and friends) from that agent. Left
+    # in this process's environment, every `git commit` this process makes
+    # (the GIT tab's Work button, subprocess.run with no env= override,
+    # so it inherits os.environ) would get the guardrails prepare-commit-msg
+    # hook stamping it with the *launching* session's Agent-Session trailer
+    # -- a commit mapui made on the app's behalf, credited to whichever
+    # agent happened to start the server. mapui is not itself an agent's
+    # work, so it starts with none of that. Checked first: nothing else in
+    # this file, push_cc.py, term.py or access.py reads CLAUDE_CODE_* from
+    # os.environ -- access.py only ever *writes* CLAUDE_CODE_USE_BEDROCK/
+    # VERTEX into a launched agent's own --settings, never reads them back.
+    for _k in [k for k in os.environ if k == "CLAUDECODE" or k.startswith("CLAUDE_CODE_")]:
+        del os.environ[_k]
     parser = argparse.ArgumentParser()
     parser.add_argument("--lan", action="store_true",
                         help="bind 0.0.0.0 so an iPad on the LAN can reach this")
