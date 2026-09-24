@@ -340,7 +340,7 @@ export default function Integrations({ base, cwd }) {
       <View style={styles.explainer}>
         <Text style={styles.explainerTitle}>ADD YOUR OWN</Text>
         <Text style={styles.explainerBody}>
-          A folder in <Text style={mono}>~/.midiai/integrations/&lt;name&gt;/</Text> with a{' '}
+          A folder in <Text style={mono}>~/.podium/integrations/&lt;name&gt;/</Text> with a{' '}
           <Text style={mono}>manifest.json</Text> and one executable that answers JSON on stdin.
           It declares what it can do; each capability lights up a place in the app.
         </Text>

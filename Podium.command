@@ -1,8 +1,8 @@
 #!/bin/zsh
-# midiAI — double-click to start the surface.
+# Podium — double-click to start the surface.
 #
-#   midiAI.command          start everything and open the app in a browser
-#   midiAI.command stop     stop all of it
+#   Podium.command          start everything and open the app in a browser
+#   Podium.command stop     stop all of it
 #
 # One mode, because a double-click cannot pass an argument and the Desktop
 # shortcut is how this is actually launched. The API binds the LAN so an iPad
@@ -37,7 +37,7 @@ if [[ ! -x "$PY" ]]; then
   exit 1
 fi
 
-say "midiAI"
+say "Podium"
 say "──────"
 
 # tmux is where the agents live. No session is not an error -- the surface
@@ -91,6 +91,6 @@ say "          iPad:    exp://$LAN:8081  (paste into Expo Go)"
 
 say ""
 say "logs      $LOG/push.log  $LOG/mapui.log  $LOG/expo.log"
-say "stop      $(pwd)/midiAI.command stop"
+say "stop      $(pwd)/Podium.command stop"
 say ""
 say "Closing this window leaves it running."

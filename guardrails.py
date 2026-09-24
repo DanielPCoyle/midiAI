@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Enforcement for one checkout's guardrail checklist (mapui's /guardrails).
 
-The checklist (app/src/guardrails.js, ~/.midiai/guardrails.json via mapui) is
+The checklist (app/src/guardrails.js, ~/.podium/guardrails.json via mapui) is
 just a claim and a validation note. This turns a guardrail into something
 that actually runs: a script (exit 0 pass, 2 n/a, anything else fail) or an
 agent review (an isolated `claude -p` judges evidence against a written
@@ -9,10 +9,10 @@ brief and answers JSON). An AI "compile" step writes whichever kind fits.
 
 Enforcers live IN the repo, under .guardrails/ -- a manifest plus one file
 per rail. Two facts live OUTSIDE the repo, beside guardrails.json:
-- ~/.midiai/guardrail-approvals.json -- a script only runs if its current
+- ~/.podium/guardrail-approvals.json -- a script only runs if its current
   content hash was approved on THIS machine (AI-written code; a pulled
   change needs re-approval). Agent briefs execute nothing, so need none.
-- ~/.midiai/guardrail-runs.json -- the last result per rail.
+- ~/.podium/guardrail-runs.json -- the last result per rail.
 
 Rails are tool-, project- and method-agnostic. Phases are user-editable
 (that stays outside this file). What lives here is the EVENT layer: a rail
@@ -52,11 +52,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import telemetry
 
-APPROVALS_FILE = os.path.expanduser("~/.midiai/guardrail-approvals.json")
-RUNS_FILE = os.path.expanduser("~/.midiai/guardrail-runs.json")
-ACTIVE_SPECS_FILE = os.path.expanduser("~/.midiai/active-specs.json")
+APPROVALS_FILE = os.path.expanduser("~/.podium/guardrail-approvals.json")
+RUNS_FILE = os.path.expanduser("~/.podium/guardrail-runs.json")
+ACTIVE_SPECS_FILE = os.path.expanduser("~/.podium/active-specs.json")
 
-HOOK_MARKER = "# midiai-guardrails"
+HOOK_MARKER = "# podium-guardrails"
 
 # docs/specs/<date>-<slug>.md -- the "why" a commit is scoped to. Kept
 # inside the repo (a spec is something a team reads, same reasoning as
@@ -558,7 +558,7 @@ def _run_script(root, rid, entry, event, trust, evidence_dir):
     env = dict(os.environ, GUARDRAIL_ROOT=root, GUARDRAIL_TRIGGER=event or "",
               GUARDRAIL_EVENT=event or "", GUARDRAIL_GATE=gate,
               GUARDRAIL_DIFF_BASE=_diff_base(root), GUARDRAIL_EVIDENCE=evidence_dir,
-              MIDIAI_GUARDRAILS="1")
+              PODIUM_GUARDRAILS="1")
     try:
         out = subprocess.run([path], cwd=root, capture_output=True, text=True,
                              timeout=120, env=env)
@@ -923,9 +923,9 @@ def _pending_path(root):
     """One pending-results file per worktree, never committed -- the same
     `git rev-parse --git-path` trick _hooks_dir uses, so a worktree gets its
     own file rather than fighting the main checkout's."""
-    out = _git(root, "rev-parse", "--git-path", "midiai-guardrails-pending.json")
+    out = _git(root, "rev-parse", "--git-path", "podium-guardrails-pending.json")
     path = out.stdout.strip() if out.returncode == 0 and out.stdout.strip() \
-        else "midiai-guardrails-pending.json"
+        else "podium-guardrails-pending.json"
     return path if os.path.isabs(path) else os.path.join(root, path)
 
 
@@ -992,7 +992,7 @@ def _cli_hook_post_commit(root):
         statement = {
             "_type": "https://in-toto.io/Statement/v1",
             "subject": [{"name": "git-commit", "digest": {"gitCommit": sha}}],
-            "predicateType": "https://midiai.local/guardrails/v1",
+            "predicateType": "https://podium.local/guardrails/v1",
             "predicate": {"at": _now_iso(),
                           "events": pending.get("events") or [],
                           "results": results},
@@ -1211,7 +1211,7 @@ def _cli():
         sys.exit(1 if _blocking_failures(results) else 0)
 
     if args.cmd == "hook":
-        if os.environ.get("MIDIAI_GUARDRAILS") == "1":
+        if os.environ.get("PODIUM_GUARDRAILS") == "1":
             sys.exit(0)          # a hook this process itself triggered
         if args.kind == "prepare-commit-msg":
             _cli_hook_prepare_commit_msg(root, args.extra)

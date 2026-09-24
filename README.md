@@ -116,7 +116,7 @@ the shell you live in.
 
 There used to be a header — brand, status pill, view tabs, buttons — and a
 separate repo bar underneath it naming the checkout: two bands of chrome for
-one fact and a half. They are one row now, carrying a status dot, `midiAI`,
+one fact and a half. They are one row now, carrying a status dot, `Podium`,
 the checkout as a chip (repo name and branch), the view tabs, the
 **following the Push** toggle or a quiet `headless` label, the path from `~`,
 and the `⋮`. The checkout became a chip rather than a band of its own because
@@ -227,7 +227,7 @@ is off while a search is up -- a filtered phase hides the rows you would be
 placing it between. A template keeps its order, and applying one brings it.
 
 **Save as template** puts the list somewhere every project can reach it
-(`~/.midiai/guardrail-templates.json`). A template carries the guardrails and
+(`~/.podium/guardrail-templates.json`). A template carries the guardrails and
 the phases, and deliberately **not the ticks** — which controls a team holds
 itself to travels between repos, and whether each is actually in force is a
 fact about one repo that would be a lie anywhere else. Applying one replaces
@@ -237,7 +237,7 @@ a reset of it. Anything the template carries that this build no longer ships —
 an edit, an addition, a retired starter — is kept from the template's own copy,
 so a template outlives the list it was made from.
 
-Per-checkout state lives in `~/.midiai/guardrails.json`, deliberately outside
+Per-checkout state lives in `~/.podium/guardrails.json`, deliberately outside
 the repo: a half-ticked framework committed to someone's tree reads as a claim
 nobody agreed to.
 
@@ -262,10 +262,10 @@ together belongs where the team can see it change:
 .guardrails/<id>.review.md          (agent brief)
 ```
 Two facts stay OUTSIDE the repo, beside `guardrails.json`, because they are
-true of this machine rather than of the checkout: `~/.midiai/guardrail-approvals.json`
+true of this machine rather than of the checkout: `~/.podium/guardrail-approvals.json`
 -- a script only runs if its *current* content hash was approved here, so an
 AI-written check needs a look before it can execute, and a pulled change to
-one needs approving again -- and `~/.midiai/guardrail-runs.json`, the last
+one needs approving again -- and `~/.podium/guardrail-runs.json`, the last
 result per rail. `--trust` on the
 CLI skips the approval gate, for CI. An agent brief executes nothing, so it
 needs no approval.
@@ -310,7 +310,7 @@ cannot supply is not run at all -- verdict `na`, or `fail` if the rail is
 script reads `$GUARDRAIL_EVIDENCE/<file>` rather than recomputing anything,
 alongside `GUARDRAIL_ROOT`, `GUARDRAIL_EVENT`, `GUARDRAIL_GATE`,
 `GUARDRAIL_DIFF_BASE`, `GUARDRAIL_TRIGGER` (`=` the event, kept for
-compatibility) and `MIDIAI_GUARDRAILS=1`. The evidence directory is removed
+compatibility) and `PODIUM_GUARDRAILS=1`. The evidence directory is removed
 after every run, even when a check throws.
 
 **Manifest v1 → v2.** Older checkouts had `triggers: {phase: T}` where `T`
@@ -347,7 +347,7 @@ the file. Every hook shim is generic now -- `hook git:<name> --cwd
 bound to that event; the old bare names (`pre-commit`, `pre-push`, `stop`)
 still work as aliases, so a shim installed before this build keeps running
 without a reinstall. All hook kinds refuse to touch anything they did not
-write themselves -- a git hook with no `# midiai-guardrails` marker is
+write themselves -- a git hook with no `# podium-guardrails` marker is
 reported `exists` and left alone, same as a Stop entry that is not ours.
 
 `python3 guardrails.py run --cwd . [--phase P] [--id I]... [--event E]
@@ -377,7 +377,7 @@ every error they hit and always exit 0.
 **The note.** `git:pre-commit` and `git:commit-msg` already run whichever
 rails are bound to them; this adds one more thing each does -- fold its
 results into a pending-commit file (`git rev-parse --git-path
-midiai-guardrails-pending.json`, per worktree, never committed).
+podium-guardrails-pending.json`, per worktree, never committed).
 `git:pre-commit` deletes that file first (a fresh commit attempt starts from
 nothing, even one that stalled this far before and left pending behind), then
 appends after running; `git:commit-msg` only appends. `post-commit` -- which
@@ -389,7 +389,7 @@ an [in-toto](https://in-toto.io/) `Statement`:
 {
   "_type": "https://in-toto.io/Statement/v1",
   "subject": [{"name": "git-commit", "digest": {"gitCommit": "<sha>"}}],
-  "predicateType": "https://midiai.local/guardrails/v1",
+  "predicateType": "https://podium.local/guardrails/v1",
   "predicate": {
     "at": "<iso timestamp>",
     "events": ["git:pre-commit", "git:commit-msg"],
@@ -442,7 +442,7 @@ side effect) it drops `CLAUDECODE` and every `CLAUDE_CODE_*` key from its own
 <slug>.md` (`create_spec`), body `# <title>\n\n## Why\n<why>\n\n## Done
 when\n<done>\n`. It is never overwritten -- a name already taken the same day
 gets `-2`, `-3`, ... appended. Which spec is *active* is tracked per agent
-session, not per terminal or per repo, in `~/.midiai/active-specs.json`
+session, not per terminal or per repo, in `~/.podium/active-specs.json`
 (`{sessionId: {"root", "path"}}`) -- `get_active_spec`/`set_active_spec` --
 because that is what survives the terminal doing other things and is what
 `prepare-commit-msg` actually reads. mapui's routes:
@@ -476,7 +476,7 @@ An **integration** is a folder with a `manifest.json` and one executable
                   "deploy.promote", "deploy.rollback", "deploy.cancel"]}
 ```
 Built-ins ship in the repo at `integrations/<name>/` (Vercel is the first);
-the user's own go in `~/.midiai/integrations/<name>/`, and a user folder
+the user's own go in `~/.podium/integrations/<name>/`, and a user folder
 overrides a built-in of the same name. Both the folder name and
 `manifest["name"]` have to match `^[a-z0-9-]{1,40}$` *and* agree with each
 other -- a folder is never trusted to say it's someone else, and `run` has
@@ -495,7 +495,7 @@ It answers with one JSON object on stdout, `{"ok": true, "data": ...}` or
 environment variable** -- only on that stdin payload -- and an op the
 manifest's `capabilities` doesn't list is refused before anything execs.
 
-**Secrets** live in the macOS Keychain, service `midiai-integration-<name>`,
+**Secrets** live in the macOS Keychain, service `podium-integration-<name>`,
 account = the secret's key, written with `security -i` on stdin exactly as
 `access.py` stores the Anthropic API key -- `access.keychain_set/get/exists/
 delete` are the shared helper, factored out of `access.py` for this so there
@@ -507,7 +507,7 @@ capability, with the candidate value substituted in but nothing written yet
 "hint": "...last4"}`; a secret's value is never echoed back by any route.
 
 Non-secret **state** -- per-integration config, and which resource each
-checkout maps to -- lives outside the repo at `~/.midiai/integrations.json`:
+checkout maps to -- lives outside the repo at `~/.podium/integrations.json`:
 `{name: {"config": {...}, "map": {"<checkout root>": {"resource": "<id>",
 "label": "<name>"}}}}`.
 
@@ -675,7 +675,7 @@ spinner text shown while the hook runs, so it earns its place twice. The
 today (measured: a session ran with an invented `description` key and the hook
 still fired), but settings.json failing to load because a future version got
 stricter about a field we made up is not a trade worth making for a note. So
-descriptions live in `~/.midiai/hook-notes.json`, filed under what the hook
+descriptions live in `~/.podium/hook-notes.json`, filed under what the hook
 looks like rather than under its group and entry indices — those renumber the
 moment a sibling is deleted, which would hand one hook's description to
 another. A note follows an edit that changes the hook, and is deleted with it.
@@ -703,7 +703,7 @@ rows the only switch there is is the plugin's own.
 **Hooks have no off switch at all.** The one documented control is
 `disableAllHooks`, which takes every hook, the custom status line and the `@`
 file suggestions with it. So this one is ours: turning a hook off lifts the
-whole entry out of the settings file into `~/.midiai/hooks-parked.json`, and
+whole entry out of the settings file into `~/.podium/hooks-parked.json`, and
 turning it on puts it back into the group whose matcher it had. The panel keeps
 listing it, dimmed — a hook you cannot see is a hook you write a second copy
 of. The cost, said plainly because it is real: **a parked hook is invisible to
@@ -940,7 +940,7 @@ behind an agent's menu instead of a PROJECTS tree at all. Now repos open onto
 their worktrees and each worktree carries the agents living in it, so
 placement is the tree's own structure rather than something you reconstruct.
 
-Projects are a **server-side list**, `~/.midiai/projects.json`, and `GET
+Projects are a **server-side list**, `~/.podium/projects.json`, and `GET
 /projects` returns each one with its worktrees already attached — one call, not
 one per repo. It was derived in the app at first, from the live agents' `cwd`s,
 and that could only ever show you what you were already doing: a repo with
@@ -1167,7 +1167,7 @@ not edited. Send rewrites that line rather than adding to it.
 
 A pty carries text, so an image cannot be typed into one. What can be typed is
 a **path**: paste or attach in the composer and the file is saved on the
-machine running the agents, under `~/.midiai/pastes/`, with its path dropped
+machine running the agents, under `~/.podium/pastes/`, with its path dropped
 into the box like anything else you are about to send. The agent reads the
 file itself.
 
@@ -1239,8 +1239,8 @@ gate.
 
 ## Memory
 
-midiAI keeps its own memory of every session, in place of the claude-mem
-plugin: `~/.midiai/memory.db`, SQLite with FTS5, stdlib only (`memory.py`).
+Podium keeps its own memory of every session, in place of the claude-mem
+plugin: `~/.podium/memory.db`, SQLite with FTS5, stdlib only (`memory.py`).
 
 - **Capture needs no hooks.** Claude Code's transcripts already hold every
   prompt, reply and tool call, so `mapui`'s memory loop sweeps
@@ -1252,14 +1252,14 @@ plugin: `~/.midiai/memory.db`, SQLite with FTS5, stdlib only (`memory.py`).
   the last two days. The call is `claude -p --no-session-persistence
   --setting-sources "" --strict-mcp-config --tools ""`: no transcript, so a
   summary never gets summarised, and none of your hooks or plugins fire.
-  `MIDIAI_MEMORY_SUMMARIES=0` turns them off.
+  `PODIUM_MEMORY_SUMMARIES=0` turns them off.
 - **claude-mem's history** was imported once (`python3 memory.py
   import-claude-mem`, read-only on its db, safe to re-run) as `observation`
   and `summary` entries tagged `claude-mem`. The 2.2 GB vector store was not
   -- search here is full-text.
 - **Agents get it back two ways.** A SessionStart hook (`memory.py context`)
   injects a short digest of the project's recent summaries, and the
-  `midiai-memory` MCP server (`memory_mcp.py`, user scope) gives them
+  `podium-memory` MCP server (`memory_mcp.py`, user scope) gives them
   `memory_search`, `memory_recent`, `memory_get` and `memory_session`.
 - **You get it** in the right-hand column's **memory** tab: search this
   project or everywhere, tap a row for the whole entry.
@@ -1279,14 +1279,14 @@ the filesystem first, cwd last; a rule with `paths:` frontmatter loads only
 when Claude reads a matching file, one without loads at the start of every
 session; `@path` imports expand, relative to the importing file, up to 4
 deep, and are never read out of a code span or fenced block. `rules.py`
-(stdlib) is the one place midiAI reads and writes any of it -- every path
+(stdlib) is the one place Podium reads and writes any of it -- every path
 arriving over HTTP has to realpath-resolve into that exact set or it is a
 400, and the managed policy is never written to.
 
 **AGENTS.md** is for every other agent (Codex, Cursor, Gemini...), which
-read `AGENTS.md` and never `.claude/rules/`. midiAI keeps it in sync: after
+read `AGENTS.md` and never `.claude/rules/`. Podium keeps it in sync: after
 any project-scope rule is written, moved or deleted, the block between
-`<!-- midiai:rules:start -->` and `<!-- midiai:rules:end -->` is rewritten
+`<!-- podium:rules:start -->` and `<!-- podium:rules:end -->` is rewritten
 to hold every *unscoped* project rule (no `paths:`), each as `## <title>`
 and its body -- path-scoped rules stay Claude-only and are never copied in.
 Everything outside the markers is the author's and is never touched; the
@@ -1314,11 +1314,11 @@ Gate: `test_rules.py`.
 
 ## Telemetry
 
-midiAI instruments itself, not the projects it manages -- the pain this was
+Podium instruments itself, not the projects it manages -- the pain this was
 built for: `/projects` at 11.6s (uncached `claude agents --json`), `/catalog`
 at 19s (a glob), and a background guardrail run, queue send or integration
 call that fails with nobody watching. `telemetry.py` (stdlib) is the one
-place any of that lands: SQLite at `~/.midiai/telemetry.db`, one row per
+place any of that lands: SQLite at `~/.podium/telemetry.db`, one row per
 `span` (a timed block) or `event` (an instant fact) -- WAL + a busy timeout so
 mapui and push_cc, which both import modules that record, can write from
 separate processes without stepping on each other. Writes go through a
@@ -1332,7 +1332,7 @@ Rows older than 7 days are swept on the first write and hourly after that.
   dispatch, span `http <METHOD> <path>` (query string stripped), kind
   `server`, `http.response.status_code` set from whatever `_send`/`_raw`
   actually sent. `/surface` and `/queue?...` (the app's poll routes) are
-  still recorded, just tagged `midiai.poll=true` so the app can hide them
+  still recorded, just tagged `podium.poll=true` so the app can hide them
   from the "what's slow" table without losing the count.
 - **Every `tmux`/`git` exec** -- term.py's `_run` (every tmux and worktree
   call `push_cc.herdr()` makes) and mapui's own `git()` helper, span
@@ -1352,8 +1352,8 @@ Rows older than 7 days are swept on the first write and hourly after that.
   OpenTelemetry GenAI semantic conventions where one exists:
   `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`,
   `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, plus
-  `midiai.cache_read_tokens`, `midiai.cost_usd`, `midiai.ttft_ms`,
-  `midiai.purpose`, `midiai.prompt_chars`.
+  `podium.cache_read_tokens`, `podium.cost_usd`, `podium.ttft_ms`,
+  `podium.purpose`, `podium.prompt_chars`.
 - **Every guardrail run** -- one span per rail, `guardrail <id>`, kind
   `guardrail`, attrs `event`, `gate`, `kind`, `verdict`, `blocking`.
 - **Every integration call** -- `integrations._exec`, span `integration
@@ -1370,7 +1370,7 @@ dropped, never stored. Every entry point is exception-safe around its own
 bookkeeping: a telemetry failure never raises into, blocks, or measurably
 slows the code it wraps, and the writer thread never touches the caller's.
 
-**Off switch and overrides:** `MIDIAI_TELEMETRY=0` disables recording
+**Off switch and overrides:** `PODIUM_TELEMETRY=0` disables recording
 entirely (reads still work against whatever is already in the DB);
 `TELEMETRY_DB` overrides the DB path, mainly so tests never touch the real
 one.
@@ -1410,7 +1410,7 @@ Found by driving a throwaway `claude` on its own tmux server
 
 Send to a working agent and the prompt goes into its queue rather than into
 Claude Code: the send key turns into *add to queue*. The queue is held by
-`mapui` (`~/.midiai/queue.json`, `/queue`), which sends the top one each time
+`mapui` (`~/.podium/queue.json`, `/queue`), which sends the top one each time
 the agent goes idle -- whichever agent the app is showing, or with the app
 closed. Until one goes it is still yours: it is the fourth tab of the
 right-hand column, beside prompts, skills and hooks (**UP NEXT** under the
@@ -1424,7 +1424,7 @@ A queue is **paused** until you say otherwise. Nothing leaves it until
 (release just the top one, once, when the agent is next free). Clear,
 compact and a saved prompt's **run** all add to it rather than typing into
 the agent, so none of them lands mid-turn or goes out unread. Play is kept
-in `~/.midiai/queue-playing.json`, so it survives a mapui restart. It used to
+in `~/.podium/queue-playing.json`, so it survives a mapui restart. It used to
 live in memory, and every restart silently paused every queue: items you had
 set playing sat there, which read as "the queue is not running". Emptying a queue cancels a pending send next, so the next thing
 you add is never sent unseen.
@@ -1440,10 +1440,10 @@ gate.
 
 The gear beside ⋮ opens **Settings**: **Claude** and **MCPs**.
 
-**Claude** is how the agents midiAI starts reach a model -- the claude.ai
+**Claude** is how the agents Podium starts reach a model -- the claude.ai
 subscription the CLI is already signed into, an Anthropic **API key**,
 **Bedrock** or **Vertex** -- and the default **model** and **effort** for a
-new agent. `access.py` holds all of it (`~/.midiai/claude-access.json`,
+new agent. `access.py` holds all of it (`~/.podium/claude-access.json`,
 `/settings/claude*`), and it reaches an agent only as flags on that agent's
 own command line: term.py's `_open_pane` (and the split path) runs every
 bare `claude …` launch through `access.with_access`, which adds
@@ -1452,7 +1452,7 @@ bare `claude …` launch through `access.with_access`, which adds
 an untouched Settings launches exactly as before. Running agents keep what
 they started with. The herdr backend is external and does not see these.
 
-The API key lives in the login **Keychain** (`midiai-anthropic-api-key`)
+The API key lives in the login **Keychain** (`podium-anthropic-api-key`)
 and nowhere else. It is shape-checked, then checked against Anthropic
 (`/v1/models`) before it is kept, then stored through `security -i` on stdin
 so it is never on a process list. An agent gets it through `apiKeyHelper`
@@ -1473,7 +1473,7 @@ CERTIFICATE_VERIFY_FAILED ("couldn't reach Anthropic") while curl worked.
 ## Notes
 
 - `tmux list-panes -a` lists a pane once per session that can see it, and
-  ptybridge's `midiai-<session>` view is a grouped session sharing every
+  ptybridge's `podium-<session>` view is a grouped session sharing every
   window. So with the terminal tab open, every agent came back twice -- two
   of each in the rail and the seat tabs. `term._match_agents` keeps one per
   pane. Anything else that walks `list-panes -a` and counts what it finds

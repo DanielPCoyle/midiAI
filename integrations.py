@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The plug-in contract for external services midiAI talks to -- Vercel is
+"""The plug-in contract for external services Podium talks to -- Vercel is
 the first (integrations/vercel/), Sentry/AWS/Telemetry come later.
 
 An integration is a folder with manifest.json + one executable (`run`):
@@ -9,7 +9,7 @@ An integration is a folder with manifest.json + one executable (`run`):
      "capabilities": ["auth.check", "resources.list", "deploy.list", ...]}
 
 Built-ins ship in the repo at integrations/<name>/; the user's own go in
-~/.midiai/integrations/<name>/, which overrides a built-in of the same name.
+~/.podium/integrations/<name>/, which overrides a built-in of the same name.
 Both the folder name and manifest["name"] must match the slug
 ^[a-z0-9-]{1,40}$ AND agree with each other -- a folder is never trusted to
 say it's someone else, the same reasoning rules.py applies to plain folders.
@@ -21,7 +21,7 @@ JSON object {"op", "args", "secrets": {key: value}, "config": {...}}, stdout
 Secrets never go on argv or in env -- only on that stdin payload -- and an
 op not in the manifest's capabilities is refused before anything execs.
 
-Secrets live in the macOS Keychain, service midiai-integration-<name>,
+Secrets live in the macOS Keychain, service podium-integration-<name>,
 account = secret key, via the same access.keychain_* helpers access.py uses
 for the Anthropic API key (factored out of it for this). The app only ever
 sees {"set": bool, "hint": "...last4"}. Setting a secret runs auth.check
@@ -29,7 +29,7 @@ first when the integration declares that capability; a failed check stores
 nothing.
 
 Non-secret state -- per-integration config, and which resource each checkout
-maps to -- lives outside the repo at ~/.midiai/integrations.json:
+maps to -- lives outside the repo at ~/.podium/integrations.json:
     {name: {"config": {...}, "map": {"<checkout root>": {"resource": "<id>",
                                                           "label": "<name>"}}}}
 
@@ -47,8 +47,8 @@ import access
 import telemetry
 
 BUILTIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations")
-USER_DIR = os.path.expanduser("~/.midiai/integrations")
-STATE_FILE = os.path.expanduser("~/.midiai/integrations.json")
+USER_DIR = os.path.expanduser("~/.podium/integrations")
+STATE_FILE = os.path.expanduser("~/.podium/integrations.json")
 
 _NAME_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 # same shape access.py holds a raw secret to before it goes anywhere near
@@ -64,7 +64,7 @@ _auth_lock = threading.Lock()
 
 
 def _kc_service(name):
-    return f"midiai-integration-{name}"
+    return f"podium-integration-{name}"
 
 
 # -------------------------------------------------------------- discovery
@@ -81,7 +81,7 @@ def _load_manifest_file(path):
 def _resolve_run(d, run):
     """The absolute path to `run`, refusing anything that isn't a plain
     filename resolving inside `d` -- a manifest is data from a folder that
-    could be someone's `~/.midiai/integrations/`, never trusted with `..` or
+    could be someone's `~/.podium/integrations/`, never trusted with `..` or
     an absolute path."""
     if not run or not isinstance(run, str) or run.startswith("/") or ".." in run.split("/"):
         return None
@@ -200,7 +200,7 @@ def secret_hint(name, key):
 
 # A secret's key becomes a Keychain account name inside a `security -i`
 # command line, and it comes from a manifest anyone can drop into
-# ~/.midiai/integrations/ -- so it is held to a plain identifier, or a
+# ~/.podium/integrations/ -- so it is held to a plain identifier, or a
 # quote in it could smuggle a second Keychain command in.
 _SECRET_KEY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
@@ -241,7 +241,7 @@ def secret_set(name, key, value):
         result = _exec(integ, "auth.check", {}, secrets, get_config(name))
         if not result.get("ok"):
             raise ValueError(result.get("error") or "the integration rejected it")
-    if not access.keychain_set(_kc_service(name), key, value, label=f"midiAI {name} {key}"):
+    if not access.keychain_set(_kc_service(name), key, value, label=f"Podium {name} {key}"):
         raise RuntimeError("the Keychain would not take it")
     forget_auth(name)
     return {"set": True, "hint": f"…{value[-4:]}"}

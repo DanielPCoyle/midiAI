@@ -15,7 +15,7 @@ import { BREAK, C, S, mono } from './theme';
 const RANGES = [['1h', 3600], ['24h', 86400], ['7d', 604800]];
 const POLL_MS = 10000;
 
-// telemetry.py's http spans are tagged `midiai.poll=true` for the hot-path
+// telemetry.py's http spans are tagged `podium.poll=true` for the hot-path
 // polls (mapui's own /surface and /queue), but the /telemetry summary
 // contract (its `http` rows: {route, count, errors, p50, p95, max}) does not
 // carry that per-row flag through -- so "hide polls" matches on the route
@@ -115,7 +115,7 @@ export default function Telemetry({ base }) {
   const narrow = useNarrow();
   // The design canvas offers "your app" / "your agents" as the subject --
   // that view needs Sentry/Vercel/CloudWatch, an integration this session
-  // does not have (see the spec's note to leave it for later). Only midiAI's
+  // does not have (see the spec's note to leave it for later). Only Podium's
   // own health is wired up, so the segment is fixed to it and the other
   // reads as disabled rather than lying about being a live choice.
   const [since, setSince] = useState(86400);
@@ -183,7 +183,7 @@ export default function Telemetry({ base }) {
           {loading && <ActivityIndicator size="small" color={C.faint} />}
 
           <View style={styles.segTabs}>
-            <Text style={[styles.segTab, styles.segTabOn]}>midiAI</Text>
+            <Text style={[styles.segTab, styles.segTabOn]}>Podium</Text>
             <Text
               accessibilityRole="button"
               accessibilityState={{ disabled: true }}

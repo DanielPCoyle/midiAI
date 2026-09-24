@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""midiAI's own memory store -- SQLite + FTS5, replacing the claude-mem plugin.
+"""Podium's own memory store -- SQLite + FTS5, replacing the claude-mem plugin.
 
 Indexes every Claude Code transcript under ~/.claude/projects incrementally,
 the same byte-offset trick push_cc.py uses for the pane's live history: each
@@ -35,7 +35,7 @@ from datetime import datetime
 
 import telemetry
 
-DB_PATH = os.environ.get("MIDIAI_MEMORY_DB") or os.path.expanduser("~/.midiai/memory.db")
+DB_PATH = os.environ.get("PODIUM_MEMORY_DB") or os.path.expanduser("~/.podium/memory.db")
 PROJECTS_ROOT = os.path.expanduser("~/.claude/projects")
 
 # Substrings of a ~/.claude/projects/<dir> name that are never indexed --
@@ -604,7 +604,7 @@ def digest(conn, project, limit=8, max_chars=3000):
     if not rows:
         return ""
 
-    lines = [f"# midiAI memory for {project} -- memory_search can dig deeper", ""]
+    lines = [f"# Podium memory for {project} -- memory_search can dig deeper", ""]
     for r in rows:
         date = (r["ts"] or "")[:10]
         lines.append(f"- {date} {r['title']}")
@@ -641,7 +641,7 @@ def _cli_context():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="midiAI memory store")
+    parser = argparse.ArgumentParser(description="Podium memory store")
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("sweep")

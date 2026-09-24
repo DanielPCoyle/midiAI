@@ -2,7 +2,7 @@
 """Stdio MCP server exposing memory.py's SQLite+FTS5 store to an agent.
 
 Replaces claude-mem's mem-search tools: a Claude Code session started with
-this server registered can search midiAI's own memory (session summaries,
+this server registered can search Podium's own memory (session summaries,
 imported claude-mem observations, and every prompt/reply/tool call from
 transcripts) mid-session instead of asking the user to look it up.
 
@@ -40,7 +40,7 @@ TOOLS = [
     {
         "name": "memory_search",
         "description": (
-            "Full-text search over midiAI's memory: session summaries, "
+            "Full-text search over Podium's memory: session summaries, "
             "imported claude-mem observations, and every prompt, reply, and "
             "tool call from past Claude Code transcripts. Scoped to the "
             "current project unless all_projects is set."
@@ -279,7 +279,7 @@ def _initialize_result(params):
     return {
         "protocolVersion": pv,
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "midiai-memory", "version": "1"},
+        "serverInfo": {"name": "podium-memory", "version": "1"},
     }
 
 

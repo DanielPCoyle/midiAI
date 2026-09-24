@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "midiAI",
-    "slug": "midiai",
+    "name": "Podium",
+    "slug": "podium",
     "version": "1.0.0",
     "orientation": "landscape",
     "icon": "./assets/icon.png",
@@ -9,12 +9,12 @@
     "backgroundColor": "#0b0b0d",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "dev.midiai.push",
+      "bundleIdentifier": "dev.podium.push",
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         },
-        "NSLocalNetworkUsageDescription": "midiAI talks to push_cc on your Mac to drive the Push 2."
+        "NSLocalNetworkUsageDescription": "Podium talks to push_cc on your Mac to drive the Push 2."
       }
     },
     "android": {
@@ -32,7 +32,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "midiAI attaches a screenshot from your library to a prompt."
+          "photosPermission": "Podium attaches a screenshot from your library to a prompt."
         }
       ]
     ]

@@ -21,7 +21,7 @@ import integrations
 
 # Every piece of local state lives outside the repo -- point it all at
 # scratch files, the same way test_guardrails.py/test_rules.py repoint
-# theirs, so nothing here can touch ~/.midiai/*.
+# theirs, so nothing here can touch ~/.podium/*.
 integrations.BUILTIN_DIR = os.path.join(tempfile.mkdtemp(), "integrations")
 integrations.USER_DIR = os.path.join(tempfile.mkdtemp(), "user-integrations")
 integrations.STATE_FILE = os.path.join(tempfile.mkdtemp(), "integrations.json")
@@ -161,7 +161,7 @@ argv, stdin_in, env = calls[-1]
 assert "sk-fake-token-1234567890" not in " ".join(argv), "the secret leaked onto argv"
 assert not env or "sk-fake-token-1234567890" not in json.dumps(env), "the secret leaked into env"
 assert stdin_in and "sk-fake-token-1234567890" in stdin_in, "the secret must reach the integration on stdin"
-assert _kc[("midiai-integration-fake", "token")] == "sk-fake-token-1234567890", \
+assert _kc[("podium-integration-fake", "token")] == "sk-fake-token-1234567890", \
     "stored under the per-integration Keychain service"
 
 result = integrations.call("fake", "auth.check", {})

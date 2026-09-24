@@ -1,4 +1,4 @@
-# midiAI
+# Podium
 
 An Ableton Push 2 driven as a command centre for Claude Code agents. `push_cc.py`
 is the hardware loop (MIDI in, USB screen out), `mapui.py` the HTTP API, `app/`

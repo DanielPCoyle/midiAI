@@ -32,7 +32,7 @@ const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 // for it here rather than two chips that would otherwise just say nothing.
 const CHIP_WORD = { '': 'default' };
 
-// The Claude section: how agents midiAI starts authenticate, plus the
+// The Claude section: how agents Podium starts authenticate, plus the
 // default model/effort new ones start with. Its own component so the modal's
 // body switch stays one line, and so it can be mounted only while this
 // section is actually showing -- unmounted, it asks the server nothing.

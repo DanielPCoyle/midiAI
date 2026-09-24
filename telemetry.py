@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""midiAI's own telemetry -- instrument midiAI itself, not the projects it
+"""Podium's own telemetry -- instrument Podium itself, not the projects it
 manages. Every isolated `claude -p` call, every HTTP request mapui serves,
 every `tmux`/`git` exec term.py makes, every guardrail run and integration
 call, lands here as one row in a local SQLite table so the app's TELEMETRY
@@ -22,8 +22,8 @@ Privacy (hard rules, enforced here, not just documented):
 
     python3 telemetry.py        self-check, against a throwaway DB
 
-Store: SQLite at ~/.midiai/telemetry.db (override with TELEMETRY_DB;
-MIDIAI_TELEMETRY=0 disables recording entirely -- summary() still reads
+Store: SQLite at ~/.podium/telemetry.db (override with TELEMETRY_DB;
+PODIUM_TELEMETRY=0 disables recording entirely -- summary() still reads
 whatever is already there). WAL + a busy_timeout so mapui and push_cc, which
 both import modules that record, can write from different processes without
 stepping on each other.
@@ -38,7 +38,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-DB_PATH = os.path.expanduser("~/.midiai/telemetry.db")
+DB_PATH = os.path.expanduser("~/.podium/telemetry.db")
 
 RETENTION_S = 7 * 24 * 3600          # a week
 QUEUE_MAX = 10000                    # past this, new spans are dropped, never blocked
@@ -67,7 +67,7 @@ def _db_path():
 
 
 def _enabled():
-    return os.environ.get("MIDIAI_TELEMETRY", "1") != "0"
+    return os.environ.get("PODIUM_TELEMETRY", "1") != "0"
 
 
 # ------------------------------------------------------------------ writer
@@ -172,7 +172,7 @@ def flush(timeout=5.0):
 
 def _reset_for_tests():
     """Test-only: stop the writer thread and clear the queue, so the next
-    span/event picks up a (possibly changed) TELEMETRY_DB / MIDIAI_TELEMETRY
+    span/event picks up a (possibly changed) TELEMETRY_DB / PODIUM_TELEMETRY
     from scratch. Never called by the real process."""
     global _writer_thread
     if _writer_thread is not None and _writer_thread.is_alive():
@@ -321,8 +321,8 @@ def run_model(purpose, cmd, input, timeout, cwd=None):
 
     base_attrs = {
         "gen_ai.operation.name": "chat",
-        "midiai.purpose": str(purpose)[:200],
-        "midiai.prompt_chars": len(input or ""),
+        "podium.purpose": str(purpose)[:200],
+        "podium.prompt_chars": len(input or ""),
     }
     if req_model:
         base_attrs["gen_ai.request.model"] = str(req_model)[:200]
@@ -358,16 +358,16 @@ def run_model(purpose, cmd, input, timeout, cwd=None):
             if isinstance(usage.get("output_tokens"), (int, float)):
                 attrs["gen_ai.usage.output_tokens"] = usage["output_tokens"]
             if isinstance(usage.get("cache_read_input_tokens"), (int, float)):
-                attrs["midiai.cache_read_tokens"] = usage["cache_read_input_tokens"]
+                attrs["podium.cache_read_tokens"] = usage["cache_read_input_tokens"]
         model_usage = parsed.get("modelUsage")
         if isinstance(model_usage, dict) and model_usage:
             attrs["gen_ai.response.model"] = str(next(iter(model_usage.keys())))[:200]
         cost = parsed.get("total_cost_usd")
         if isinstance(cost, (int, float)):
-            attrs["midiai.cost_usd"] = float(cost)
+            attrs["podium.cost_usd"] = float(cost)
         ttft = parsed.get("ttft_ms")
         if isinstance(ttft, (int, float)):
-            attrs["midiai.ttft_ms"] = float(ttft)
+            attrs["podium.ttft_ms"] = float(ttft)
         rc = 1 if is_error else proc.returncode
         err_text = out_text if is_error else proc.stderr
         result = subprocess.CompletedProcess(proc.args, rc, out_text, err_text)
@@ -445,11 +445,11 @@ def summary(since_s=86400):
             g["ms"].append(ms)
             if not ok:
                 g["errors"] += 1
-            if attrs.get("midiai.poll"):
+            if attrs.get("podium.poll"):
                 g["poll"] = True
             out["totals"]["requests"] += 1
         elif kind == "model":
-            purpose = str(attrs.get("midiai.purpose", ""))
+            purpose = str(attrs.get("podium.purpose", ""))
             model = str(attrs.get("gen_ai.response.model") or attrs.get("gen_ai.request.model") or "")
             key = (purpose, model)
             g = model_groups.setdefault(key, {"ms": [], "errors": 0, "cost": 0.0,
@@ -457,11 +457,11 @@ def summary(since_s=86400):
             g["ms"].append(ms)
             if not ok:
                 g["errors"] += 1
-            g["cost"] += float(attrs.get("midiai.cost_usd") or 0)
+            g["cost"] += float(attrs.get("podium.cost_usd") or 0)
             g["in_tok"] += int(attrs.get("gen_ai.usage.input_tokens") or 0)
             g["out_tok"] += int(attrs.get("gen_ai.usage.output_tokens") or 0)
             out["totals"]["model_calls"] += 1
-            out["totals"]["cost_usd"] += float(attrs.get("midiai.cost_usd") or 0)
+            out["totals"]["cost_usd"] += float(attrs.get("podium.cost_usd") or 0)
         elif kind == "client":
             g = tool_groups.setdefault(name, {"ms": [], "errors": 0})
             g["ms"].append(ms)

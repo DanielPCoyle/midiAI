@@ -5,13 +5,13 @@ test_memory_mcp.py`.
 Builds a throwaway DB via memory.connect(path) and inserts fixture entries
 directly through the entries table (the entries_fts triggers keep the FTS
 index in sync, same as memory.py's own tests rely on). Then runs
-memory_mcp.py as a real subprocess with MIDIAI_MEMORY_DB pointed at that DB
+memory_mcp.py as a real subprocess with PODIUM_MEMORY_DB pointed at that DB
 and cwd set to a temp directory named after the fixture project (Claude Code
 starts stdio servers in the session's working directory, which is how
 project defaulting is meant to work), and drives it through a scripted
 JSON-RPC conversation over its stdin/stdout pipes.
 
-Never touches the real ~/.midiai/memory.db, ~/.claude, or the real `claude`
+Never touches the real ~/.podium/memory.db, ~/.claude, or the real `claude`
 CLI -- the subprocess only ever sees the fixture DB via the env override."""
 import json
 import os
@@ -87,7 +87,7 @@ def _recv(proc, timeout=10):
 
 
 def test_memory_mcp():
-    tmp_root = tempfile.mkdtemp(prefix="midiai-mcptest-")
+    tmp_root = tempfile.mkdtemp(prefix="podium-mcptest-")
     db_path = os.path.join(tmp_root, "memory.db")
     proj_dir = os.path.join(tmp_root, "fixtureproj")
     os.makedirs(proj_dir)
@@ -95,7 +95,7 @@ def test_memory_mcp():
     ids = _build_fixture_db(db_path)
 
     env = dict(os.environ)
-    env["MIDIAI_MEMORY_DB"] = db_path
+    env["PODIUM_MEMORY_DB"] = db_path
 
     proc = subprocess.Popen(
         [sys.executable, SCRIPT_PATH], cwd=proj_dir, env=env,
@@ -109,7 +109,7 @@ def test_memory_mcp():
         assert resp["id"] == 1, resp
         result = resp["result"]
         assert result["protocolVersion"] == "2025-06-18", result
-        assert result["serverInfo"]["name"] == "midiai-memory", result
+        assert result["serverInfo"]["name"] == "podium-memory", result
         assert "tools" in result["capabilities"], result
 
         # notifications/initialized has no id -> must produce no response at
