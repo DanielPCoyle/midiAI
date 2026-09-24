@@ -1088,9 +1088,10 @@ A queue is **paused** until you say otherwise. Nothing leaves it until
 **play** (drain the top one each time the agent is free) or **send next**
 (release just the top one, once, when the agent is next free). Clear,
 compact and a saved prompt's **run** all add to it rather than typing into
-the agent, so none of them lands mid-turn or goes out unread. Play is held in
-mapui's memory: a restart pauses every queue again, which is the safe
-direction. Emptying a queue cancels a pending send next, so the next thing
+the agent, so none of them lands mid-turn or goes out unread. Play is kept
+in `~/.midiai/queue-playing.json`, so it survives a mapui restart. It used to
+live in memory, and every restart silently paused every queue: items you had
+set playing sat there, which read as "the queue is not running". Emptying a queue cancels a pending send next, so the next thing
 you add is never sent unseen.
 
 It holds back while a question is on screen or something is half-typed on the

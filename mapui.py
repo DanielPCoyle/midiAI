@@ -250,9 +250,30 @@ _queue_lock = threading.Lock()
 _queue_last = {}      # tid -> when we last sent into it
 # Paused is the default: a queue holds everything until you press play (drain
 # whenever the agent is free) or send next (release just the head, once).
-# ponytail: memory-only, so a restart pauses every queue again -- the safe
-# direction, and the app shows it; persist it if that ever surprises anyone.
-_queue_playing = set()   # tids whose queue drains on its own
+# Play is kept on disk: memory-only, every mapui restart paused every queue
+# again, and a queue you had set playing quietly stopped -- which looked like
+# the queue being broken. A new agent's queue still starts paused.
+QUEUE_PLAYING_FILE = os.path.expanduser("~/.midiai/queue-playing.json")
+
+
+def load_playing():
+    try:
+        with open(QUEUE_PLAYING_FILE) as f:
+            got = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return set()
+    return {str(t) for t in got} if isinstance(got, list) else set()
+
+
+def save_playing():
+    os.makedirs(os.path.dirname(QUEUE_PLAYING_FILE), exist_ok=True)
+    tmp = QUEUE_PLAYING_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sorted(_queue_playing), f)
+    os.replace(tmp, QUEUE_PLAYING_FILE)
+
+
+_queue_playing = load_playing()   # tids whose queue drains on its own
 _queue_once = set()      # tids allowed to send their head one time
 _queue_gone = set()   # ids already delivered, so a stale client list can't
                       # put one back
@@ -2609,6 +2630,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "bad request", "text/plain")
         if self.path == "/queue/play":
             (_queue_playing.add if body.get("playing") else _queue_playing.discard)(tid)
+            save_playing()
         else:
             _queue_once.add(tid)
         with _queue_lock:

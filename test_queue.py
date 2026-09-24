@@ -6,6 +6,8 @@ import mapui
 import push_cc
 
 mapui.QUEUE_FILE = os.path.join(tempfile.mkdtemp(), "q.json")
+mapui.QUEUE_PLAYING_FILE = os.path.join(tempfile.mkdtemp(), "playing.json")
+mapui._queue_playing.clear()
 sent, status, pane = [], {"s": "working"}, {}
 push_cc.agents = lambda: [{"terminal_id": "t1", "agent_status": status["s"]}]
 push_cc.pane_summary = lambda a, *k: pane
@@ -51,4 +53,8 @@ mapui.save_queue({"t1": [{"id": "d", "text": "q"}]})
 mapui._queue_last["t1"] = 0
 mapui.queue_tick()
 assert len(sent) == 2, "a question on screen is not an empty input line"
+# play survives a restart: it is read back from disk
+mapui._queue_playing = {"t9"}
+mapui.save_playing()
+assert mapui.load_playing() == {"t9"}, "play is remembered across a restart"
 print("ok")
