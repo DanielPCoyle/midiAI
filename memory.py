@@ -47,8 +47,15 @@ SKIP_DIRS = ("claude-mem-observer",)
 # no MCP servers, no tools, no session persisted. Verified against a live
 # run -- summarising a session can never fire a hook or plugin that writes
 # back into the index this module is building.
+#
+# Thinking off: these are one-line or one-paragraph summaries, and with it
+# on Haiku spent ~1,400 thinking tokens on a 20-token answer -- 14s and
+# $0.011 a prompt summary, against 3.2s and $0.0037 without, same answer
+# (measured by telemetry, 2026-09-24). `--effort low` made it WORSE (6,300
+# thinking tokens, 43s), so this is the setting, not effort.
 SUMMARY_CMD = ["claude", "-p", "--model", "haiku", "--no-session-persistence",
-               "--setting-sources", "", "--strict-mcp-config", "--tools", ""]
+               "--setting-sources", "", "--strict-mcp-config", "--tools", "",
+               "--settings", '{"alwaysThinkingEnabled": false}']
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
