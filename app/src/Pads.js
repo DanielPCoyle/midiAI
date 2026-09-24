@@ -5,6 +5,7 @@ import Inspector from './Inspector';
 import { MemoryPanel } from './Memory';
 import PushButton from './PushButton';
 import { QueuePanel } from './Queue';
+import Rules from './Rules';
 import { ANSWER_HEX, C, S, hexFor, mono } from './theme';
 
 const TEST_HEX = { pass: '#3cd05a', fail: '#e03c3c', run: '#f0c828', '': C.edge };
@@ -52,9 +53,15 @@ export default function Pads({
   queueCtl,
   base,
   cwd,
+  agentName,
 }) {
   const [q, setQ] = useState('');
   const [masterScope, setMasterScope] = useState('global');
+  // The rules tab's own list -- fetched inside Rules.js, not here, but the
+  // tab's count and the shared ＋ key both live in this header, so both are
+  // bridged back up rather than duplicating the fetch.
+  const [ruleCount, setRuleCount] = useState(null);
+  const [newRuleAt, setNewRuleAt] = useState(0);
 
   // whatever the view, a pending question is what the pads are
   if (opts && opts.length) {
@@ -178,21 +185,28 @@ export default function Pads({
     prompts: macros.filter((prompt) => prompt && promptInMasterScope(prompt)).length,
     skills: skills.filter(inMasterScope).length,
     hooks: hooks.filter(inMasterScope).length,
+    rules: ruleCount,
     queue: queue.length,
   };
   const at = panel || 'prompts';
   const placeholder =
-    at === 'prompts' ? 'search prompts' : at === 'skills' ? 'search skills' : 'search hooks';
+    at === 'prompts' ? 'search prompts'
+    : at === 'skills' ? 'search skills'
+    : at === 'hooks' ? 'search hooks'
+    : 'search rules';
   // the queue and memory are each their own thing, not the catalog: the
   // queue is this agent's own list, memory is a search over a different
   // store entirely, so neither wants the scope tabs, the catalog search or ＋
   const catalogTab = at !== 'queue' && at !== 'memory';
+  // rules has no `local` rules directory -- CLAUDE.local.md is the one file
+  // that scope owns and it is already listed, never created here
+  const canAdd = catalogTab && !(at === 'rules' && masterScope === 'local');
 
   return (
     <View style={styles.rail}>
       <View style={styles.headCol}>
         <View style={styles.tabs}>
-          {['prompts', 'skills', 'hooks', 'queue', 'memory'].map((k) => (
+          {['prompts', 'skills', 'hooks', 'rules', 'queue', 'memory'].map((k) => (
             <Text
               key={k}
               accessibilityRole="tab"
@@ -253,12 +267,14 @@ export default function Pads({
           shelf with three things on it, and a ＋ that moves or vanishes
           between them would read as three panels that happen to share a
           column. */}
-      {catalogTab && (
+      {canAdd && (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`new ${at === 'prompts' ? 'prompt' : at.slice(0, -1)}`}
         onPress={() =>
-          at === 'prompts' ? onNewPad && onNewPad() : onEntry && onEntry(at, null, masterScope)
+          at === 'prompts' ? onNewPad && onNewPad()
+          : at === 'rules' ? setNewRuleAt((n) => n + 1)
+          : onEntry && onEntry(at, null, masterScope)
         }
         style={styles.add}>
         <Text style={styles.addText}>
@@ -284,6 +300,19 @@ export default function Pads({
       {at === 'skills' && <Scoped rows={skills} labels={labels} q={q} kind="skills" masterScope={masterScope} onEntry={onEntry} />}
       {at === 'queue' && <QueuePanel queue={queue} onChange={onQueueChange} err={queueErr} ctl={queueCtl} />}
       {at === 'hooks' && <Scoped rows={hooks} labels={labels} q={q} kind="hooks" masterScope={masterScope} onEntry={onEntry} />}
+      {/* mounted whether or not this tab is showing, same reason as the
+          comment inside Rules.js -- its tab count wants to be there already,
+          not just after the first visit */}
+      <Rules
+        base={base}
+        cwd={cwd}
+        q={q}
+        masterScope={masterScope}
+        agentName={agentName}
+        newSignal={newRuleAt}
+        onCount={setRuleCount}
+        active={at === 'rules'}
+      />
       {at === 'memory' && <MemoryPanel base={base} cwd={cwd} />}
     </View>
   );

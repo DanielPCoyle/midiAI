@@ -30,6 +30,7 @@ import guardrails
 import memory
 import ptybridge
 import push_cc
+import rules
 
 PORT = 8765
 PUSH_CC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push_cc.py")
@@ -1782,6 +1783,12 @@ class Handler(BaseHTTPRequestHandler):
             self._branches()
         elif self.path == "/skill" or self.path.startswith("/skill?"):
             self._skill_read()
+        elif self.path == "/rules" or self.path.startswith("/rules?"):
+            self._rules_list()
+        elif self.path == "/rules/read" or self.path.startswith("/rules/read?"):
+            self._rules_read()
+        elif self.path == "/rules/effective" or self.path.startswith("/rules/effective?"):
+            self._rules_effective()
         elif self.path == "/catalog" or self.path.startswith("/catalog?"):
             self._catalog()
         else:
@@ -1813,6 +1820,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._skill_move()
         if self.path == "/skill/state":
             return self._skill_state()
+        if self.path == "/rules/write":
+            return self._rules_write()
+        if self.path == "/rules/file":
+            return self._rules_file_write()
+        if self.path == "/rules/delete":
+            return self._rules_delete()
+        if self.path == "/rules/move":
+            return self._rules_move()
+        if self.path == "/rules/review":
+            return self._rules_review()
         if self.path == "/hook/toggle":
             return self._hook_toggle()
         if self.path == "/plugin/toggle":
@@ -2015,6 +2032,134 @@ class Handler(BaseHTTPRequestHandler):
         if check.returncode:
             return None, "not a git checkout"
         return check.stdout.strip(), ""
+
+    def _rules_repo_request(self, body=None):
+        """Like _repo_request, but a plain folder with no repo yet resolves
+        to itself rather than a 400 -- the same fallback /projects gives a
+        plain_checkout project, since a rules-managed folder doesn't stop
+        being one for having no .git yet."""
+        cwd = (body or {}).get("cwd") or target_cwd()
+        cwd = os.path.realpath(os.path.expanduser(str(cwd)))
+        if not os.path.isdir(cwd):
+            return None, "checkout does not exist"
+        check = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=10)
+        if check.returncode:
+            return cwd, ""
+        return check.stdout.strip(), ""
+
+    def _rules_payload(self, root):
+        return json.dumps({"rows": rules.list_rules(root),
+                           "agents_md": rules.agents_md_state(root)})
+
+    def _rules_list(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._rules_repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        self._send(200, self._rules_payload(root), "application/json")
+
+    def _rules_read(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        root, err = self._rules_repo_request({"cwd": (q.get("cwd") or [""])[0]})
+        if err:
+            return self._send(400, err, "text/plain")
+        path = (q.get("path") or [""])[0]
+        try:
+            text = rules.read(root, path)
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except OSError:
+            return self._send(404, "no such file", "text/plain")
+        self._send(200, json.dumps({"path": path, "text": text}), "application/json")
+
+    def _rules_write(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._send(400, "bad json", "text/plain")
+        root, err = self._rules_repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            rules.write_rule(root, body.get("scope"), body.get("title", ""),
+                             body.get("body", ""), body.get("paths") or [],
+                             path=body.get("path"))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except OSError as e:
+            return self._send(500, f"could not write the rule: {e}", "text/plain")
+        self._send(200, self._rules_payload(root), "application/json")
+
+    def _rules_file_write(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._send(400, "bad json", "text/plain")
+        root, err = self._rules_repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            rules.write_file(root, body.get("path"), body.get("text", ""))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except OSError as e:
+            return self._send(500, f"could not write the file: {e}", "text/plain")
+        self._send(200, self._rules_payload(root), "application/json")
+
+    def _rules_delete(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._send(400, "bad json", "text/plain")
+        root, err = self._rules_repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            rules.delete_rule(root, body.get("path"))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except OSError as e:
+            return self._send(500, f"could not delete the rule: {e}", "text/plain")
+        self._send(200, self._rules_payload(root), "application/json")
+
+    def _rules_move(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._send(400, "bad json", "text/plain")
+        root, err = self._rules_repo_request(body)
+        if err:
+            return self._send(400, err, "text/plain")
+        try:
+            rules.move_rule(root, body.get("path"), body.get("to"))
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except OSError as e:
+            return self._send(500, f"could not move the rule: {e}", "text/plain")
+        self._send(200, self._rules_payload(root), "application/json")
+
+    def _rules_effective(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        cwd = (q.get("cwd") or [""])[0] or target_cwd()
+        self._send(200, json.dumps(rules.effective(cwd)), "application/json")
+
+    def _rules_review(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._send(400, "bad json", "text/plain")
+        cwd = body.get("cwd") or target_cwd()
+        try:
+            result = rules.review(cwd)
+        except Exception as e:
+            return self._send(502, str(e)[:500], "text/plain")
+        self._send(200, json.dumps(result), "application/json")
 
     def _pr_read(self):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)

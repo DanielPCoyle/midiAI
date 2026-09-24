@@ -931,6 +931,7 @@ export default function App() {
                 <Pads
                 base={base}
                 cwd={hereCwd}
+                agentName={here?.name || ''}
                 kind={data.kind}
                 data={data}
                 opts={opts}
@@ -1028,6 +1029,7 @@ export default function App() {
               <Pads
                 base={base}
                 cwd={hereCwd}
+                agentName={here?.name || ''}
                 kind={data.kind}
                 data={data}
                 opts={opts}
@@ -1170,6 +1172,7 @@ const PANELS = [
   ['prompts', 'prompts'],
   ['skills', 'skills'],
   ['hooks', 'hooks'],
+  ['rules', 'rules'],
   ['queue', 'up next'],
   ['memory', 'memory'],
 ];

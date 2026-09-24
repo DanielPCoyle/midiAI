@@ -17,6 +17,7 @@ const GLYPH = {
   prompts: 'grid',
   skills: 'star',
   hooks: 'link',
+  rules: 'book-open',
   queue: 'list',
   memory: 'database',
   shell: 'terminal',

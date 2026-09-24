@@ -1162,6 +1162,52 @@ plugin: `~/.midiai/memory.db`, SQLite with FTS5, stdlib only (`memory.py`).
 
 Gates: `test_memory.py`, `test_memory_mcp.py`, `test_memory_routes.py`.
 
+## Rules
+
+The instructions an agent actually reads, in the order it reads them --
+Claude Code's own model (code.claude.com/docs/en/memory, 2.1.281): a
+read-only managed policy at `/Library/Application Support/ClaudeCode/CLAUDE.md`,
+then `~/.claude/CLAUDE.md` and `~/.claude/rules/**/*.md` (**global**), then
+`<root>/CLAUDE.md`, `<root>/.claude/CLAUDE.md` and `<root>/.claude/rules/**/*.md`
+(**project**), then `<root>/CLAUDE.local.md` (**local**, gitignored).
+CLAUDE.md and CLAUDE.local.md load from every ancestor directory, root of
+the filesystem first, cwd last; a rule with `paths:` frontmatter loads only
+when Claude reads a matching file, one without loads at the start of every
+session; `@path` imports expand, relative to the importing file, up to 4
+deep, and are never read out of a code span or fenced block. `rules.py`
+(stdlib) is the one place midiAI reads and writes any of it -- every path
+arriving over HTTP has to realpath-resolve into that exact set or it is a
+400, and the managed policy is never written to.
+
+**AGENTS.md** is for every other agent (Codex, Cursor, Gemini...), which
+read `AGENTS.md` and never `.claude/rules/`. midiAI keeps it in sync: after
+any project-scope rule is written, moved or deleted, the block between
+`<!-- midiai:rules:start -->` and `<!-- midiai:rules:end -->` is rewritten
+to hold every *unscoped* project rule (no `paths:`), each as `## <title>`
+and its body -- path-scoped rules stay Claude-only and are never copied in.
+Everything outside the markers is the author's and is never touched; the
+markers (and a one-line note saying the block is generated) are appended
+the first time a project rule is saved and AGENTS.md has none yet, whether
+or not the file itself existed before that.
+
+**The doubling caveat.** Claude Code reads `AGENTS.md` only when a project
+has no `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` anywhere from
+the cwd up -- but `.claude/rules/` loads regardless of that. A project with
+no CLAUDE.md and unscoped rules therefore has Claude reading each of those
+rules twice: once directly, once folded into AGENTS.md. `agents_md_state()`
+carries this as `doubled`, and the app surfaces it rather than hiding it.
+
+`rules.effective(cwd)` renders the full load order for one agent's cwd,
+file by file, with each one's line count and any `@import` it pulls in, and
+flags a file over 200 lines or an import that doesn't resolve.
+`rules.review(cwd)` hands the *start*-loaded files (never the path-scoped
+ones nobody has read yet) to an isolated `claude -p --model sonnet --tools
+""` -- the same isolation `guardrails.REVIEW_CMD` uses -- and asks it for
+conflicts, duplicates, vague rules and stale ones; cached in memory by the
+sha256 of what was sent.
+
+Gate: `test_rules.py`.
+
 ## Slash commands
 
 Start the composer with `/` and a menu opens above it: Claude Code's own

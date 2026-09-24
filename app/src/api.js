@@ -340,6 +340,55 @@ export const saveHook = (base, fields) => post(base, '/hook', fields);
 export const deleteHook = (base, scope, event, gi, hi, cwd) =>
   post(base, '/hook/delete', { scope, event, gi, hi, cwd });
 
+// The rules tab: what an agent working in `cwd` reads before anything else,
+// and where midiAI can write more of it. `list` carries every always-on file
+// slot for the three scopes (global/project/local) plus every rule file, so
+// the tab can offer "create" for a slot that is not on disk yet.
+export const listRules = (base, cwd) =>
+  getJSON(base, `/rules?cwd=${encodeURIComponent(cwd || '')}`);
+
+// A rule or an always-on file's raw text -- frontmatter and heading included,
+// same shape read/write agree on. The route answers {path, text}.
+export const readRule = async (base, cwd, path) =>
+  (await getJSON(
+    base,
+    `/rules/read?cwd=${encodeURIComponent(cwd || '')}&path=${encodeURIComponent(path)}`
+  )).text || '';
+
+// Create or replace a rule. The server derives the path from scope + title
+// for a new one; editing an existing rule keeps its path (`path` in fields).
+// Writes return the fresh /rules payload, same shape as listRules.
+export const writeRule = async (base, fields) =>
+  JSON.parse(await post(base, '/rules/write', fields));
+
+// The whole text of an always-on file (CLAUDE.md, CLAUDE.local.md,
+// AGENTS.md, project .claude/CLAUDE.md) -- creating one is just writing to
+// a slot that was listed with `exists: false`.
+export const writeRuleFile = async (base, cwd, path, text) =>
+  JSON.parse(await post(base, '/rules/file', { cwd, path, text }));
+
+// Rules only -- CLAUDE.md/AGENTS.md are never deleted, only emptied via
+// writeRuleFile.
+export const deleteRule = async (base, cwd, path) =>
+  JSON.parse(await post(base, '/rules/delete', { cwd, path }));
+
+// Between the global and project rules directories of the same checkout.
+export const moveRule = async (base, cwd, path, to) =>
+  JSON.parse(await post(base, '/rules/move', { cwd, path, to }));
+
+// Every file an agent in `cwd` actually loads, in load order -- managed
+// policy, user, project ancestors, AGENTS.md when it applies, the rules
+// directories -- with warnings for anything over 200 lines, a broken
+// @import, or a rule AGENTS.md doubles up.
+export const effectiveRules = (base, cwd) =>
+  getJSON(base, `/rules/effective?cwd=${encodeURIComponent(cwd || '')}`);
+
+// Hands the same start-loaded files to an isolated model and asks what looks
+// like a conflict, a duplicate, something vague, or stale. Can take a
+// minute -- there is no polling here, the call just runs long.
+export const reviewRules = async (base, cwd) =>
+  JSON.parse(await post(base, '/rules/review', { cwd }));
+
 // The folders on the machine running the agents. A picker on the tablet would
 // browse the tablet, which is not where the repos are.
 export const listDirs = (base, path) =>
