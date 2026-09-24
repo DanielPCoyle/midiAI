@@ -191,25 +191,6 @@ export default function Pads({
   return (
     <View style={styles.rail}>
       <View style={styles.headCol}>
-        {catalogTab && (
-        <View style={styles.masterTabs}>
-          {[
-            ['global', 'global'],
-            ['project', 'project'],
-            ['local', 'project local'],
-          ].map(([key, word]) => (
-            <Pressable
-              key={key}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: masterScope === key }}
-              onPress={() => setMasterScope(key)}>
-              <Text style={[styles.masterTab, masterScope === key && styles.masterTabOn]}>
-                {word}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        )}
         <View style={styles.tabs}>
           {['prompts', 'skills', 'hooks', 'queue', 'memory'].map((k) => (
             <Text
@@ -233,6 +214,27 @@ export default function Pads({
             </Pressable>
           )}
         </View>
+        {/* the panels first, then which scope of the catalog -- the scope row
+            only exists for the catalog panels, so it reads under them */}
+        {catalogTab && (
+        <View style={styles.masterTabs}>
+          {[
+            ['global', 'global'],
+            ['project', 'project'],
+            ['local', 'project local'],
+          ].map(([key, word]) => (
+            <Pressable
+              key={key}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: masterScope === key }}
+              onPress={() => setMasterScope(key)}>
+              <Text style={[styles.masterTab, masterScope === key && styles.masterTabOn]}>
+                {word}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        )}
         {catalogTab && (
         <TextInput
           value={q}
