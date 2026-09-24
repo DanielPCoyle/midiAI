@@ -1,6 +1,6 @@
 # Issue tracker: SimplerDevelopment portal
 
-Issues for this repo are kanban cards on the portal board **midiAI**
+Issues for this repo are kanban cards on the portal board **Podium**
 (`projectId 216`, `clientId 104`), reached through the Simpler Development MCP
 (`mcp__claude_ai_Simpler_Development__*`).
 

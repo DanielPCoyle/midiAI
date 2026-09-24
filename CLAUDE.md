@@ -12,7 +12,7 @@ the voice, and the Notes section, which is where the hard-won details live.
 
 ### Issue tracker
 
-Kanban cards on the SimplerDevelopment portal board **midiAI** (`projectId 216`,
+Kanban cards on the SimplerDevelopment portal board **Podium** (`projectId 216`,
 `clientId 104`) via the Simpler Development MCP. Every call needs an explicit
 `clientId` — the portal's default is a different company.
 See `docs/agents/issue-tracker.md`.
