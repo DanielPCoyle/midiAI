@@ -15,7 +15,7 @@ import {
 
 import {
   listPrs,
-  getDirty, addToQueue, baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
+  getDirty, addToQueue, agentNext, baseFor, defaultHost, getJSON, listCatalog, listProjects, PORT, post } from './src/api';
 import EntrySheet from './src/EntrySheet';
 import Icon from './src/Icon';
 import NoAgent from './src/NoAgent';
@@ -911,6 +911,7 @@ export default function App() {
                 current={surface.current}
                 onSeat={(i) => press({ seat: i })}
                 onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+                onNext={() => here?.tid && agentNext(base, here.tid).catch(() => {})}
                 base={base}
                 onSent={refresh}
                 mode={mode}
@@ -934,6 +935,7 @@ export default function App() {
                 data={data}
                 opts={opts}
                 onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+                onNext={() => here?.tid && agentNext(base, here.tid).catch(() => {})}
                 macros={macros}
                 labels={labels}
                 promptRoot={place?.root || ''}
@@ -994,6 +996,7 @@ export default function App() {
                 current={surface.current}
                 onSeat={(i) => press({ seat: i })}
                 onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+                onNext={() => here?.tid && agentNext(base, here.tid).catch(() => {})}
                 base={base}
                 onSent={refresh}
                 mode={mode}
@@ -1029,6 +1032,7 @@ export default function App() {
                 data={data}
                 opts={opts}
                 onAnswer={(k, text) => press({ answer: k, ...(text ? { answer_text: text } : {}) })}
+                onNext={() => here?.tid && agentNext(base, here.tid).catch(() => {})}
                 macros={macros}
                 labels={labels}
                 promptRoot={place?.root || ''}

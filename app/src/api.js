@@ -450,5 +450,10 @@ export const deleteClaudeKey = async (base) =>
 // happens on the Mac" idea as chooseDir's Finder dialog. There is nothing to
 // await past {ok:true}; the result turns up in the next getClaudeSettings
 // read, same as a login elsewhere shows up in the next health check.
+// Tab, into a question: the only way off a multi-select question once its
+// boxes are ticked (to the next question, or the review screen)
+export const agentNext = (base, terminal_id) =>
+  post(base, '/agent/next', { terminal_id });
+
 export const claudeLogin = async (base) =>
   JSON.parse(await post(base, '/settings/claude/login', {}));

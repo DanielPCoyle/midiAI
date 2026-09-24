@@ -200,6 +200,7 @@ export default function Pane({
   current,
   onSeat,
   onAnswer,
+  onNext,
   question,
   base,
   onSent,
@@ -219,7 +220,7 @@ export default function Pane({
   // tests -- the pads are what answer from wherever you are, and here that is
   // the rail.
   if (opts && opts.length && (!kind || kind === 'focus')) {
-    return <Question opts={opts} question={question} onAnswer={onAnswer} />;
+    return <Question opts={opts} question={question} onAnswer={onAnswer} onNext={onNext} />;
   }
   if (kind === 'focus')
     return (
@@ -264,15 +265,24 @@ function Empty({ what }) {
   );
 }
 
-function Question({ opts, question, onAnswer }) {
+// A multi-select option is drawn "[ ] Apple" / "[✔] Apple" on the pane.
+// Tapping one ticks it (the same walk-and-Enter a single answer sends --
+// Enter toggles here) and the question stays up; only Tab moves on.
+const BOX_RE = /^\[([ ✔✓xX])\]\s*/;
+const unboxed = (label) => label.replace(BOX_RE, '');
+
+function Question({ opts, question, onAnswer, onNext }) {
   const [custom, setCustom] = useState('');
-  const customAt = opts.findIndex(([, label]) => /^type something\.?$/i.test(label.trim()));
-  const chatAt = opts.findIndex(([, label]) => /^chat about this\.?$/i.test(label.trim()));
+  const multi = opts.some(([, label]) => BOX_RE.test(label));
+  const ticked = (label) => /^\[[✔✓xX]\]/.test(label);
+  const customAt = opts.findIndex(([, label]) => /^type something\.?$/i.test(unboxed(label).trim()));
+  const chatAt = opts.findIndex(([, label]) => /^chat about this\.?$/i.test(unboxed(label).trim()));
   return (
     <ScrollView contentContainerStyle={[styles.body, styles.asking]}>
       <Text style={styles.askHead}>ASKING</Text>
       {/* the options alone said "3 ways to answer" and nothing about to what */}
       <Text style={styles.askText}>{question || `${opts.length} ways to answer`}</Text>
+      {multi && <Text style={styles.askHint}>pick any number, then next</Text>}
       <View style={styles.opts}>
         {opts.map(([num, label], k) => {
           if (k === customAt || k === chatAt) return null;
@@ -286,11 +296,24 @@ function Question({ opts, question, onAnswer }) {
               style={[styles.opt, { borderColor: hue }]}>
               <View style={styles.optRow}>
                 <Text style={[styles.optNum, { backgroundColor: hue }]}>{num}</Text>
-                <Text style={styles.optLabel}>{label}</Text>
+                {multi && (
+                  <Icon name={ticked(label) ? 'ticked' : 'unticked'} size={16} color={ticked(label) ? hue : C.dim} />
+                )}
+                <Text style={styles.optLabel}>{unboxed(label)}</Text>
               </View>
             </PushButton>
           );
         })}
+        {multi && !!onNext && (
+          <PushButton
+            label="next →"
+            accessibilityLabel="next question"
+            colour={C.accentText}
+            lit
+            onPress={onNext}
+            style={styles.askNext}
+          />
+        )}
         {customAt >= 0 && (
           <>
             <View style={styles.orDivider}>
@@ -5563,6 +5586,8 @@ const styles = StyleSheet.create({
   askHead: { color: C.bad, fontSize: 10, letterSpacing: 1.2 },
   askText: { color: C.dim, fontSize: 13 },
   opts: { gap: 10 },
+  askHint: { color: C.dim, fontSize: 12, marginTop: -4 },
+  askNext: { alignSelf: 'flex-end', minWidth: 120 },
   opt: { minHeight: 60, alignItems: 'stretch', justifyContent: 'center', paddingHorizontal: 16, paddingBottom: 10 },
   optRow: { flexDirection: 'row', alignItems: 'center', gap: 14, width: '100%' },
   optNum: {

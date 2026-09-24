@@ -1071,6 +1071,20 @@ hand-kept list in `app/src/Slash.js` -- nothing readable lists them -- and a
 stale one costs nothing, since Claude Code answers an unknown command
 itself. A command sent to a busy agent queues like any other prompt.
 
+## Multi-select questions
+
+Claude Code draws a multi-select question as `[ ] Apple` / `[✔] Apple`
+rows followed by an unnumbered **Next** (or **Submit**) row. Pressing an
+option's number (or walking the caret and pressing Enter, which is what the
+app's answer does) ticks it and the question stays up; only **Tab** leaves
+it, to the next question or to the review screen ("Submit answers" /
+"Cancel", which are ordinary numbered options). The app used to have no Tab
+to send, so a multi-select question could be ticked and never left. Now the
+Question view spots the checkboxes, draws them as ticked or not, and adds
+**next →**, which is `POST /agent/next` -- a Tab into that agent's pane.
+Found by driving a throwaway `claude` on its own tmux server
+(`tmux -L <name>`), which neither the rail nor the Push can see.
+
 ## Up next
 
 Send to a working agent and the prompt goes into its queue rather than into

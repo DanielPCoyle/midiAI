@@ -37,6 +37,8 @@ const GLYPH = {
   down: 'chevron-down',
   right: 'chevron-right',
   up: 'chevron-up',
+  ticked: 'check-square',
+  unticked: 'square',
 };
 
 // Decoration next to a label, not a control of its own -- the Pressable

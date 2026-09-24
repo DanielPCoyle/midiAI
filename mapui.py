@@ -1809,6 +1809,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._prompt()
         if self.path.startswith("/settings/claude"):
             return self._claude_settings()
+        if self.path == "/agent/next":
+            return self._agent_next()
         if self.path in ("/queue/play", "/queue/next"):
             return self._queue_control()
         if self.path in ("/queue", "/queue/add"):
@@ -2594,6 +2596,21 @@ class Handler(BaseHTTPRequestHandler):
             # is added later -- that would be sending something unseen
             _queue_once.discard(tid)
         self._send(200, json.dumps({"items": q[tid]}), "application/json")
+
+    def _agent_next(self):
+        """Tab into a question widget: a multi-select question is answered by
+        ticking boxes (the usual /press answer does that -- Enter toggles),
+        and only Tab moves on to the next question or the review screen.
+        Nothing else sends a Tab, so without this a multi-select question
+        could be ticked and never left."""
+        body = self._read_json_body()
+        tid = str((body or {}).get("terminal_id") or "")
+        if not tid or tid not in {a.get("terminal_id") for a in push_cc.agents()}:
+            return self._send(400, "no such agent", "text/plain")
+        err = herdr_error(push_cc.herdr("agent", "send", tid, "\t"))
+        if err:
+            return self._send(500, err.get("message", "send failed"), "text/plain")
+        self._send(200, json.dumps({"ok": True}), "application/json")
 
     def _claude_settings(self):
         """Settings > Claude. access.py holds every rule; this only routes.
