@@ -402,7 +402,23 @@ function Focus({
   // and what it has dispatched. A sub-tab rather than a second view, because
   // both are this agent -- switching views to see its subagents means leaving
   // the agent to look at it.
-  const [tab, setTab] = useState('pretty');
+  const [tab, setTab] = useState(() => (info?.engine === 'codex' ? 'terminal' : 'pretty'));
+  // Codex transcripts are not (yet, everywhere) wired into /history the way
+  // Claude Code's are -- the pretty tab would draw an empty "Send a prompt to
+  // begin" over a session that is already well underway. The terminal is the
+  // one view guaranteed to show what is actually happening, so a freshly
+  // focused Codex agent opens there. Keyed on tid, not on every render, so a
+  // manual switch back to pretty for that same agent holds; a real transcript
+  // arriving later (the server links a Codex agent to its rollout) shows up
+  // in the pretty tab exactly as it would for Claude, this only decides where
+  // a first look lands.
+  const focusedTid = useRef(info?.tid);
+  useEffect(() => {
+    if (info?.tid !== focusedTid.current) {
+      focusedTid.current = info?.tid;
+      if (info?.engine === 'codex') setTab('terminal');
+    }
+  }, [info?.tid, info?.engine]);
   const running = subs.filter((r) => r.running).length;
   const [receipt, setReceipt] = useState(null);
   const [typing, setTyping] = useState(false);
@@ -718,6 +734,10 @@ function Focus({
             subagent · ‹ back
           </Text>
         )}
+        {/* Same "mark only the exception" rule as the rail card: a `claude`
+            badge on every other agent would be noise, and an older server
+            sending no `engine` field at all reads the same as "claude". */}
+        {info.engine === 'codex' && <Text style={styles.engineBadge}>codex</Text>}
         <Text style={styles.model}>{info.model}</Text>
         <View style={styles.spacer} />
         {/* The progress line lives at the foot of the conversation now, beside
@@ -5604,6 +5624,19 @@ const styles = StyleSheet.create({
   subTag: {
     color: C.accentText,
     fontSize: 10,
+    borderWidth: 1,
+    borderColor: C.accent,
+    borderRadius: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    overflow: 'hidden',
+  },
+  engineBadge: {
+    color: C.accentText,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
     borderWidth: 1,
     borderColor: C.accent,
     borderRadius: 3,

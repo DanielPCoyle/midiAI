@@ -83,8 +83,9 @@ export default function App() {
   const [railOpen, setRailOpen] = useState(false);
   // reconnect, the mirror and the host field, behind one ⋮ -- see the header.
   const [menu, setMenu] = useState(false);
-  // null | 'claude' | 'mcps' -- which section of the Settings modal is open,
-  // or closed entirely. The gear opens 'claude'; the rail's footer MCPs row
+  // null | 'providers' | 'engines' | 'mcps' | 'integrations' -- which section
+  // of the Settings modal is open, or closed entirely. The gear opens
+  // 'providers'; the rail's footer MCPs row
   // opens 'mcps' directly via onOpenSettings, same modal either way.
   const [settings, setSettings] = useState(null);
   // { project, path, label, main } | null -- a worktree picked in the rail
@@ -936,7 +937,7 @@ export default function App() {
           accessibilityLabel="settings"
           colour={C.accentText}
           lit={!!settings}
-          onPress={() => setSettings('claude')}
+          onPress={() => setSettings('providers')}
           style={styles.dots}>
           <Icon name="settings" size={16} color={settings ? C.text : C.dim} />
         </PushButton>

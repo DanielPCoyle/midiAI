@@ -185,8 +185,17 @@ export const runTests = (base, cwd, path = [], file = '') =>
 
 export const stopTests = (base, cwd) => post(base, '/tests/stop', { cwd });
 
-export const createAgent = (base, cwd, name) =>
-  post(base, '/agents', name ? { cwd, name } : { cwd });
+// engine/model are optional: omitted, the server starts whatever Settings'
+// Engines section has as the default engine, at that engine's own default
+// model. An older server that does not read these two extra fields yet
+// ignores them the same way /hook already drops fields outside its shape.
+export const createAgent = (base, cwd, name, engine, model) =>
+  post(base, '/agents', {
+    cwd,
+    ...(name ? { name } : {}),
+    ...(engine ? { engine } : {}),
+    ...(model ? { model } : {}),
+  });
 
 export const renameAgent = (base, terminal_id, name) =>
   post(base, '/agents/rename', { terminal_id, name });
@@ -244,8 +253,17 @@ export const stopRecording = async (base) =>
 export const pasteImage = async (base, data) =>
   JSON.parse(await post(base, '/paste', { data })).path;
 
-export const makeWorktree = (base, cwd, branch, name) =>
-  post(base, '/worktree', { cwd, branch, ...(name ? { name } : {}) });
+// engine/model: same optional pair as createAgent -- a "new worktree" from
+// the new-agent sheet starts an agent in it too, so the engine picked there
+// has to ride along here as well, not only on the plain /agents path.
+export const makeWorktree = (base, cwd, branch, name, engine, model) =>
+  post(base, '/worktree', {
+    cwd,
+    branch,
+    ...(name ? { name } : {}),
+    ...(engine ? { engine } : {}),
+    ...(model ? { model } : {}),
+  });
 
 // Projects: the repos worth listing, each with its worktrees already attached,
 // which is one call rather than one per repo. The server remembers them --
@@ -542,6 +560,41 @@ export const agentNext = (base, terminal_id) =>
 
 export const claudeLogin = async (base) =>
   JSON.parse(await post(base, '/settings/claude/login', {}));
+
+// Providers + engines: agents run as Claude Code or Codex (the engines);
+// each authenticates through one of four providers (Anthropic, OpenAI, AWS
+// Bedrock, Google Vertex), each with its own credentials. Supersedes
+// getClaudeSettings/setClaudeSettings/saveClaudeKey/deleteClaudeKey/
+// claudeLogin above for this app -- those stay in api.js and the server
+// keeps /settings/claude* answering (a thin wrapper) so an older client
+// still works, but Settings.js/Providers.js read and write through here now.
+//
+// GET -> {providers: {anthropic:{mode,key:{saved,hint}}, openai:{...},
+// bedrock:{region,profile}, vertex:{region,project}}, engines: {claude:
+// {provider,model,effort}, codex:{provider,model,effort,sandbox,approval},
+// default}, codex: {installed, version, logged_in}, claude: {auth…}}.
+export const getProviders = (base) => getJSON(base, '/providers');
+
+// Any subset of {providers: {...}, engines: {...}} -- the server merges it
+// into what it already has and hands back the same shape getProviders reads,
+// the same "patch and read look identical" idiom setClaudeSettings uses.
+export const patchProviders = async (base, patch) =>
+  JSON.parse(await post(base, '/providers', patch));
+
+// Checked against the provider before it is saved to the Keychain, same
+// bargain saveClaudeKey always made -- a rejection is a 400 with a plain-text
+// reason, already folded into e.message by post()'s ask().
+export const saveProviderKey = async (base, provider, key) =>
+  JSON.parse(await post(base, '/providers/key', { provider, key }));
+
+export const deleteProviderKey = async (base, provider) =>
+  JSON.parse(await post(base, '/providers/key/delete', { provider }));
+
+// Opens Terminal.app on the Mac: `claude auth login` for anthropic, `codex
+// login` for openai. Nothing to await past {ok:true} -- the result turns up
+// in the next getProviders read, same as claudeLogin above.
+export const providerLogin = async (base, provider) =>
+  JSON.parse(await post(base, '/providers/login', { provider }));
 
 // Integrations: one row per manifest found under integrations/<name>/ (built
 // in) or ~/.midiai/integrations/<name>/ (a user folder of the same name

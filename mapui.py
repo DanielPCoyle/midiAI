@@ -26,6 +26,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import access
+import engines
 import guardrails
 import integrations
 import memory
@@ -200,6 +201,26 @@ def herdr_error(text):
         return json.loads(text).get("error")
     except (json.JSONDecodeError, AttributeError):
         return None
+
+
+def _start_named_agent(cwd, engine, model, split):
+    """The numbered-name retry push_cc.start_agent already does for a bare
+    claude launch, generalised to any engine. push_cc.py only ever starts a
+    bare `claude`, so an engine-aware New Agent request that arrives with no
+    name of its own mints one here rather than teaching push_cc.py a second
+    engine."""
+    base = os.path.basename(cwd.rstrip("/")) or "agent"
+    for n in range(1, 21):
+        name = base if n == 1 else f"{base}-{n}"
+        out = push_cc.herdr("agent", "start", name, "--cwd", cwd, "--engine", engine,
+                            *(("--model", model) if model else ()),
+                            *(("--split", split) if split else ()), "--focus")
+        err = herdr_error(out)
+        if not err:
+            return name, None
+        if err.get("code") != "agent_name_taken":
+            return None, err
+    return None, {"code": "agent_start_failed", "message": "no free agent name found"}
 
 
 # The repos worth listing, which is a different question from "where is an
@@ -1947,6 +1968,8 @@ class Handler(BaseHTTPRequestHandler):
                        "application/json")
         elif self.path == "/settings/claude":
             self._send(200, json.dumps(access.state()), "application/json")
+        elif self.path == "/providers":
+            self._send(200, json.dumps(engines.state()), "application/json")
         elif self.path == "/agents":
             self._send(200, json.dumps({"agents": push_cc.agents()}),
                       "application/json")
@@ -2079,6 +2102,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._prompt()
         if self.path.startswith("/settings/claude"):
             return self._claude_settings()
+        if self.path.startswith("/providers"):
+            return self._providers_settings()
         if self.path == "/agent/next":
             return self._agent_next()
         if self.path in ("/queue/play", "/queue/next"):
@@ -3235,6 +3260,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, str(e)[:300], "text/plain")
         self._send(200, json.dumps(access.state()), "application/json")
 
+    def _providers_settings(self):
+        """Settings > Providers/Engines. engines.py holds every rule; this
+        only routes, the same shape _claude_settings already has. A key
+        comes in on /providers/key and never goes back out -- state() carries
+        whether one is saved and a hint, not the key."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        try:
+            if self.path == "/providers":
+                engines.update(body)
+            elif self.path == "/providers/key":
+                engines.save_provider_key(str(body.get("provider") or ""),
+                                          str(body.get("key") or ""))
+            elif self.path == "/providers/key/delete":
+                engines.delete_provider_key(str(body.get("provider") or ""))
+            elif self.path == "/providers/login":
+                provider = str(body.get("provider") or "")
+                if provider == "anthropic":
+                    access.login()
+                elif provider == "openai":
+                    engines.codex_login()
+                else:
+                    return self._send(400, "no such provider", "text/plain")
+                return self._send(200, json.dumps({"ok": True}), "application/json")
+            else:
+                return self._send(404, "not found", "text/plain")
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except Exception as e:
+            return self._send(500, str(e)[:300], "text/plain")
+        self._send(200, json.dumps(engines.state()), "application/json")
+
     def _queue_control(self):
         """/queue/play {terminal_id, playing} turns draining on or off;
         /queue/next {terminal_id} lets the head go once, when the agent is
@@ -3545,8 +3603,17 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, (out.stdout or "ok").strip()[:500], "text/plain")
 
     def _agents_create(self):
-        """A new claude, split into the tmux server. Named agents go straight
-        through herdr so a taken name comes back as 409, not a silent -2."""
+        """A new agent, split into the tmux server. Named agents go straight
+        through herdr so a taken name comes back as 409, not a silent -2.
+
+        `engine` ("claude"|"codex") and `model` are optional -- New Agent's
+        engine picker. Neither present is the untouched request an older app
+        still sends, and it takes the exact path it always has (push_cc's
+        own claude-only start_agent/herdr calls). Either present routes
+        through engines.launch_argv (term.py's `--engine`/`--model`), which
+        is also what a "claude" engine with an explicit model uses -- the
+        model has to reach the launch somehow, and engines.py is the one
+        place that now decides claude's own flags too (see engines.py)."""
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
             body = json.loads(raw)
@@ -3559,7 +3626,27 @@ class Handler(BaseHTTPRequestHandler):
         # caller explicitly asks for a split
         split = body.get("split") or ""
         name = body.get("name")
-        if name:
+        engine = body.get("engine")
+        model = body.get("model")
+        if engine is not None and engine not in ("claude", "codex"):
+            return self._send(400, f"no such engine: {engine!r}", "text/plain")
+
+        if (engine and engine != "claude") or model:
+            eng = engine or "claude"
+            if name:
+                out = push_cc.herdr("agent", "start", name, "--cwd", cwd, "--engine", eng,
+                                    *(("--model", model) if model else ()),
+                                    *(("--split", split) if split else ()), "--focus")
+                err = herdr_error(out)
+                if err:
+                    code = 409 if err.get("code") == "agent_name_taken" else 500
+                    return self._send(code, err.get("message", "start failed"), "text/plain")
+            else:
+                name, err = _start_named_agent(cwd, eng, model, split)
+                if not name:
+                    return self._send(500, (err or {}).get("message", "could not start agent"),
+                                      "text/plain")
+        elif name:
             out = push_cc.herdr("agent", "start", name, "--cwd", cwd,
                                 *(("--split", split) if split else ()),
                                 "--focus", "--", "claude", "--permission-mode", "auto")

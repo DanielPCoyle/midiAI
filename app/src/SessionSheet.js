@@ -16,6 +16,7 @@ import {
   chooseDir,
   closeAgent,
   createAgent,
+  getProviders,
   listBranches,
   listDirs,
   listProjects,
@@ -23,6 +24,11 @@ import {
   renameAgent,
   switchBranch,
 } from './api';
+
+// Which engine a new agent starts as, offered here rather than buried a
+// Settings tab away -- Engines' "default engine" only decides what this
+// picker opens on.
+const ENGINES = [['claude', 'Claude Code'], ['codex', 'Codex']];
 
 // The same rule mapui.py enforces server-side -- checked here too so a typo
 // is caught before the round trip rather than after a 400 comes back.
@@ -400,6 +406,12 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, plac
   const [wt, setWt] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // 'new' only: which engine the agent starts as, and an optional model id.
+  // Seeded from Settings' "default engine" each time the sheet opens -- a
+  // quiet 'claude' when /providers is not there yet (an older server, or
+  // this one mid-rollout), since that is the one engine that always exists.
+  const [engine, setEngine] = useState('claude');
+  const [engineModel, setEngineModel] = useState('');
 
   // re-seed the form every time the sheet opens, or a rename typed for one
   // seat would still be sitting in the field when it opens again for another.
@@ -412,7 +424,14 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, plac
     setWt(false);
     setBusy(false);
     setErr('');
-  }, [visible, mode, cwd, name]);
+    setEngine('claude');
+    setEngineModel('');
+    if (mode === 'new' && base) {
+      getProviders(base)
+        .then((res) => res?.engines?.default && setEngine(res.engines.default))
+        .catch(() => {}); // /providers may not exist yet -- 'claude' already set above
+    }
+  }, [visible, mode, cwd, name, base]);
 
   const needsCwd = mode === 'new' || mode === 'worktree' || mode === 'project';
   const cwdOk = !needsCwd || cwdField.trim().length > 0;
@@ -436,8 +455,12 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, plac
     setBusy(true);
     try {
       if (mode === 'new' && wt)
-        await makeWorktree(base, cwdField.trim(), branchField.trim(), nameField.trim() || undefined);
-      else if (mode === 'new') await createAgent(base, cwdField.trim(), nameField.trim() || undefined);
+        await makeWorktree(
+          base, cwdField.trim(), branchField.trim(), nameField.trim() || undefined,
+          engine, engineModel.trim() || undefined
+        );
+      else if (mode === 'new')
+        await createAgent(base, cwdField.trim(), nameField.trim() || undefined, engine, engineModel.trim() || undefined);
       else if (mode === 'rename') await renameAgent(base, tid, nameField.trim());
       else if (mode === 'close') await closeAgent(base, tid);
       else if (mode === 'worktree') await makeWorktree(base, cwdField.trim(), branchField.trim());
@@ -494,6 +517,29 @@ export default function SessionSheet({ visible, mode, base, tid, name, cwd, plac
                 autoCorrect={false}
               />
               {!nameOk && <Text style={styles.rule}>{NAME_HELP}</Text>}
+
+              <Text style={styles.label}>engine</Text>
+              <View style={styles.chips}>
+                {ENGINES.map(([key, word]) => (
+                  <Text
+                    key={key}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: engine === key }}
+                    onPress={() => setEngine(key)}
+                    style={[styles.chip, engine === key && styles.chipOn]}>
+                    {word}
+                  </Text>
+                ))}
+              </View>
+              <TextInput
+                style={styles.input}
+                value={engineModel}
+                onChangeText={setEngineModel}
+                placeholder="model (optional)"
+                placeholderTextColor={C.faint}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
 
               <Pressable style={styles.checkRow} onPress={() => setWt((v) => !v)}>
                 <View style={[styles.checkbox, wt && styles.checkboxOn]}>
@@ -657,6 +703,17 @@ const styles = StyleSheet.create({
   body: { gap: 8 },
   label: { color: C.dim, fontSize: 12 },
   hint: { color: C.faint, fontSize: 11 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  chip: {
+    color: C.faint,
+    fontSize: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: 6,
+  },
+  chipOn: { color: C.text, borderColor: C.accentText },
   input: {
     backgroundColor: C.raised,
     color: C.text,
