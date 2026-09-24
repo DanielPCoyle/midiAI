@@ -958,44 +958,182 @@ def finished_calls(path):
     return ids
 
 
-def subagents(agent, limit=None, now=None):
-    """The Task subagents of one session, oldest first.
+# What a session has sent off to run on its own: Task/Agent subagents and
+# background shells. Claude Code used to leave a .meta.json beside each
+# subagent log; background (async) agents get none, and their Agent call
+# returns at once ("Async agent launched ... agentId: <id>") -- so reading
+# "running" as "no tool_result yet" called every background agent finished
+# the moment it started, and a log with no .meta.json was never listed at all.
+# What says a background task has ended is a <task-notification> with a
+# terminal <status> in the parent's transcript, for agents and shells alike.
+_task_cache = {}      # transcript -> (offset, index)
+_AGENT_ID_RE = re.compile(r"agentId: ([0-9a-f]{6,})")
+_TASK_NOTE_RE = re.compile(r"<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>", re.S)
+_TASK_NAME_RE = re.compile(r"<task-id>([^<]+)</task-id>.*?<summary>[^<]*?\"([^\"<]+)\"", re.S)
+_TASK_ENDED = {"completed", "failed", "killed", "stopped", "cancelled", "canceled", "error"}
+SUB_FRESH_S = 60      # a log with no known launch counts as running this long
 
-    Claude writes each one a log and a sibling .meta.json carrying the
-    description it was dispatched with -- which is the only human name a
-    subagent ever gets. Whether it is still going is the parent's business:
-    the task is running until its tool call comes back."""
+
+def _ts(value):
+    # imported here: this must not lean on a module-level import another
+    # change adds
+    from datetime import datetime as _dt
+    try:
+        return _dt.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _text_of(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(_text_of(b.get("text") if isinstance(b, dict) and "text" in b
+                                 else b.get("content") if isinstance(b, dict) else b)
+                        for b in content)
+    return ""
+
+
+def task_index(path):
+    """Launches and endings of a session's background work, read off the
+    transcript by byte offset like finished_calls. `calls`: tool_use id ->
+    {name, input, at}; `agents`: agent id -> {call, async}; `shells`:
+    background task id -> {call}; `ended`: task id -> when its terminal
+    task-notification arrived (the latest one -- a resumed agent ends again);
+    `names`: task id -> the description its notification quotes, the only name
+    an agent launched from an earlier session file (before a compact) has here."""
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        return {"calls": {}, "agents": {}, "shells": {}, "ended": {}, "names": {}}
+    off, idx = _task_cache.get(path, (0, None))
+    if idx is None or size < off:
+        off, idx = 0, {"calls": {}, "agents": {}, "shells": {}, "ended": {}, "names": {}}
+    if size > off:
+        try:
+            with open(path, "rb") as f:
+                f.seek(off)
+                chunk = f.read()
+        except OSError:
+            return idx
+        cut = chunk.rfind(b"\n") + 1
+        for raw in chunk[:cut].split(b"\n"):
+            if not (b'"tool_use"' in raw or b"agentId" in raw
+                    or b"backgroundTaskId" in raw or b"task-notification" in raw):
+                continue
+            try:
+                row = json.loads(raw.decode(errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            at = _ts(row.get("timestamp"))
+            content = (row.get("message") or {}).get("content")
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    idx["calls"][block.get("id")] = {"name": block.get("name"),
+                                                     "input": block.get("input") or {},
+                                                     "at": at}
+                elif block.get("type") == "tool_result":
+                    text = _text_of(block.get("content"))
+                    m = _AGENT_ID_RE.search(text)
+                    if m:
+                        idx["agents"][m.group(1)] = {
+                            "call": block.get("tool_use_id"),
+                            "async": "Async agent launched" in text}
+            result = row.get("toolUseResult")
+            if isinstance(result, dict) and result.get("backgroundTaskId"):
+                call = next((b.get("tool_use_id") for b in content or []
+                             if isinstance(b, dict) and b.get("type") == "tool_result"), None)
+                idx["shells"][str(result["backgroundTaskId"])] = {"call": call}
+            if b"task-notification" in raw:
+                text = _text_of(row.get("content")) + " " + _text_of(content)
+                for tid, name in _TASK_NAME_RE.findall(text):
+                    idx["names"][tid.strip()] = name.strip()
+                for tid, status in _TASK_NOTE_RE.findall(text):
+                    if status.strip().lower() in _TASK_ENDED:
+                        idx["ended"][tid.strip()] = at or time.time()
+        _task_cache[path] = (off + cut, idx)
+    return idx
+
+
+def _log_tail_field(log, key):
+    """The last `"key":"value"` in a log's final few KB -- a subagent's own
+    log names its type (attributionAgent) and model even when no .meta.json
+    was written for it."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(max(0, os.path.getsize(log) - 16384))
+            tail = f.read().decode(errors="replace")
+    except OSError:
+        return ""
+    found = re.findall(r'"%s":"([^"]+)"' % re.escape(key), tail)
+    return found[-1] if found else ""
+
+
+def subagents(agent, limit=None, now=None):
+    """The session's subagents and background shells, oldest first: every
+    subagents/agent-*.jsonl log (with or without a .meta.json beside it),
+    plus each background shell that has not ended. With `limit`, everything
+    running is kept and the newest finished ones fill what is left."""
     path = transcript(agent) if agent else None
     if not path:
         return []
     done = finished_calls(path)
+    idx = task_index(path)
     now = time.time() if now is None else now
     out = []
-    for meta in glob.glob(os.path.join(path[:-len(".jsonl")],
-                                       "subagents", "agent-*.meta.json")):
+    for log in glob.glob(os.path.join(path[:-len(".jsonl")], "subagents", "agent-*.jsonl")):
+        aid = os.path.basename(log)[len("agent-"):-len(".jsonl")]
+        meta = {}
         try:
-            with open(meta) as f:
-                info = json.load(f)
-            born = os.path.getmtime(meta)
+            with open(log[:-len(".jsonl")] + ".meta.json") as f:
+                meta = json.load(f) or {}
         except (OSError, json.JSONDecodeError):
-            continue
-        log = meta[:-len(".meta.json")] + ".jsonl"
+            pass
+        link = idx["agents"].get(aid) or {}
+        call_id = link.get("call") or meta.get("toolUseId")
+        call = idx["calls"].get(call_id) or {}
+        args = call.get("input") or {}
         try:
             touched = os.path.getmtime(log)
+            born = call.get("at") or getattr(os.stat(log), "st_birthtime", touched)
         except OSError:
-            touched = born
+            continue
+        ended = idx["ended"].get(aid)
+        if link.get("async") or ended:
+            # background: running until its task-notification, or again once
+            # a resume writes to the log after that
+            running = (ended is None or touched > ended + 5) and now - touched < SUB_STALE_S
+        elif call_id:
+            running = call_id not in done and now - touched < SUB_STALE_S
+        else:
+            running = now - touched < SUB_FRESH_S
         out.append({
-            "id": os.path.basename(meta)[len("agent-"):-len(".meta.json")],
-            "label": info.get("description") or info.get("agentType") or "task",
-            "type": info.get("agentType") or "?",
-            "model": info.get("model") or "",
-            "log": log, "at": born,
-            # no result AND a cold log means it died with its session rather
-            # than finishing -- otherwise a crash leaves a pad pulsing forever
-            "running": (info.get("toolUseId") not in done
-                        and now - touched < SUB_STALE_S)})
+            "id": aid, "kind": "agent",
+            "label": (meta.get("description") or args.get("description")
+                      or idx["names"].get(aid) or "task"),
+            "type": (meta.get("agentType") or args.get("subagent_type")
+                     or _log_tail_field(log, "attributionAgent") or "?"),
+            "model": meta.get("model") or args.get("model") or _log_tail_field(log, "model"),
+            "log": log, "at": born, "running": running})
+    for tid, shell in idx["shells"].items():
+        if tid in idx["ended"]:
+            continue
+        call = idx["calls"].get(shell.get("call")) or {}
+        args = call.get("input") or {}
+        out.append({
+            "id": tid, "kind": "shell",
+            "label": args.get("description") or " ".join(str(args.get("command") or "shell").split())[:60],
+            "type": call.get("name") or "shell", "model": "", "log": None,
+            "at": call.get("at") or now, "running": True})
     out.sort(key=lambda x: x["at"])
-    return out[-limit:] if limit else out
+    if limit and len(out) > limit:
+        live = [x for x in out if x["running"]]
+        rest = [x for x in out if not x["running"]]
+        keep = live[-limit:] + rest[-max(0, limit - len(live)):] if len(live) < limit else live[-limit:]
+        out = sorted(keep, key=lambda x: x["at"])
+    return out
 
 
 def tool_line(block):
@@ -2461,7 +2599,7 @@ def view_payload(view_name, mode, disp_mod, *, seat, cur, summary, scroll,
             drawn = (lambda b=bars, e=uerr, m=mode:
                      disp_mod.render_plan(b, e, m, USAGE_MODES))
     elif view_name == "sessions" and mode == 1:
-        rows = tuple({"label": x["label"], "type": x["type"],
+        rows = tuple({"label": x["label"], "type": x["type"], "kind": x.get("kind", "agent"),
                       "model": short_model(x["model"]),
                       "running": x["running"],
                       "focused": bool(subfocus)
@@ -3830,6 +3968,53 @@ bugcast: node /x/index.mjs - \u2714 Connected
     assert set(col) == {"name", "status", "model", "effort", "sub", "tid",
                         "cwd", "focused", "unseen", "subs", "context"}, col
     assert col["subs"] == 0, "no transcript, no subagents -- not a crash"
+
+    # background work, the way Claude Code now records it: an async Agent call
+    # that returns at once, a log with no .meta.json, a background shell, and
+    # <task-notification>s that end them
+    import tempfile as _tf
+    _sd = _tf.mkdtemp()
+    _tr = os.path.join(_sd, "s.jsonl")
+    os.makedirs(os.path.join(_sd, "s", "subagents"))
+    _lines = [
+        {"timestamp": "2026-01-01T00:00:00Z", "message": {"content": [
+            {"type": "tool_use", "id": "tu1", "name": "Agent",
+             "input": {"description": "Build the thing", "subagent_type": "sonnet-worker"}},
+            {"type": "tool_use", "id": "tu2", "name": "Bash",
+             "input": {"command": "npm run dev", "description": "dev server"}}]}},
+        {"timestamp": "2026-01-01T00:00:01Z", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tu1",
+             "content": "Async agent launched successfully.\nagentId: abc123def (internal)"}]}},
+        {"timestamp": "2026-01-01T00:00:01Z", "toolUseResult": {"backgroundTaskId": "shell9"},
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "tu2", "content": "started"}]}},
+    ]
+    with open(_tr, "w") as f:
+        f.write("\n".join(json.dumps(x) for x in _lines) + "\n")
+    _log = os.path.join(_sd, "s", "subagents", "agent-abc123def.jsonl")
+    with open(_log, "w") as f:
+        f.write('{"attributionAgent":"sonnet-worker","message":{"model":"claude-sonnet-5"}}\n')
+    _real_transcript = transcript
+    globals()["transcript"] = lambda a: _tr
+    try:
+        _now = os.path.getmtime(_log) + 1
+        _subs = subagents({"x": 1}, now=_now)
+        _agent = [x for x in _subs if x["kind"] == "agent"][0]
+        assert _agent["label"] == "Build the thing" and _agent["running"], \
+            "an async agent with no .meta.json is listed, and running until it ends"
+        assert [x for x in _subs if x["kind"] == "shell"][0]["label"] == "dev server", \
+            "a background shell is listed while it runs"
+        with open(_tr, "a") as f:
+            f.write(json.dumps({"type": "queue-operation", "timestamp": "2099-01-01T00:00:00Z",
+                                "content": "<task-notification><task-id>abc123def</task-id>"
+                                           "<status>completed</status></task-notification>"}) + "\n")
+            f.write(json.dumps({"type": "queue-operation", "timestamp": "2099-01-01T00:00:00Z",
+                                "content": "<task-notification><task-id>shell9</task-id>"
+                                           "<status>completed</status></task-notification>"}) + "\n")
+        _subs = subagents({"x": 1}, now=_now)
+        assert [x["running"] for x in _subs] == [False], \
+            "a notification ends the agent, and an ended shell leaves the list"
+    finally:
+        globals()["transcript"] = _real_transcript
     assert col["tid"] == "t", "the app acts on a seat and must know which agent"
     done_col = panel_col({"cwd": "/a/b/bugcast", "agent_status": "idle",
                           "terminal_id": "t", "focused": False}, unseen=True)

@@ -1669,6 +1669,21 @@ function SubagentList({ subs, base, cwd, onFocus }) {
           ones fold into one line rather than vanishing. The index stays the
           server's: onFocus(i) is a position in the full list. */}
       {subs.map((r, i) => ({ r, i })).filter(({ r }) => r.running || showDone).map(({ r, i }) => {
+        // a background shell (a dev server, a long build) is listed so it is
+        // accounted for, but it has no conversation to open
+        if (r.kind === 'shell') {
+          return (
+            <View key={i} style={styles.subRow} accessibilityLabel={`background shell ${r.label}, running`}>
+              <View style={styles.row}>
+                <View style={[styles.dot, { backgroundColor: '#2cd0d0' }]} />
+                <View style={styles.rowBody}>
+                  <Text style={styles.rowName}>{r.label}</Text>
+                  <Text style={styles.rowSub}>background shell · running</Text>
+                </View>
+              </View>
+            </View>
+          );
+        }
         return (
           <View key={i} style={[styles.subRow, !r.running && styles.subDone]}>
             <Pressable
