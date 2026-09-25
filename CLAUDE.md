@@ -58,6 +58,13 @@ things in there look like bugs and are not:
   the pane height.
 - An agent with no session yet reports `unknown`, not `idle`. The process is
   what says an agent is present; the session only enriches it.
+- A pane attached to a **background** session (`kind: "background"` in
+  `claude agents --json`) is matched by cwd, not pid: the session's pid is
+  its `claude bg-spare` daemon, outside the pane's process tree. And its
+  `status` stays `busy` while any background shell runs (a dev server:
+  forever) -- `state: "blocked"` is what means "turn over, waiting on you",
+  so that reads `idle`. Symptom when this was missed: the pane showed
+  `unknown` and the queue never drained into it (the `story` agent).
 - Agent status can be up to 1.5s old. `claude agents --json` is a Node CLI
   (~0.8s a run) and push_cc lists agents every 0.5s, so uncached it never
   stopped running and the machine serving the app crawled -- a page load's
