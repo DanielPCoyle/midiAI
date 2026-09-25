@@ -64,7 +64,16 @@ def _flag(rest, name):
     return None
 
 
-def _status(claude_status):
+def _status(claude_status, session=None):
+    """A background session -- one Claude Code hosts in a daemon (`claude
+    bg-spare`), which is what the pane's claude is then attached to -- says
+    `busy` for as long as any background shell or agent of its runs, a dev
+    server included, so forever. Its `state` is what says whether it is
+    waiting on you: `blocked` is turn over, prompt empty. Read as busy, the
+    queue never sent to it."""
+    session = session or {}
+    if session.get("kind") == "background" and session.get("state") == "blocked":
+        return "idle"
     return STATUS.get(claude_status, "idle")
 
 
@@ -123,7 +132,7 @@ def _find_claude_pid(pane_pid, by_pid, table):
     return known, running
 
 
-def _match_agents(rows, by_pid, table=None):
+def _match_agents(rows, by_pid, table=None, background=()):
     """rows: parsed PANE_FORMAT tuples. join on pid, never cwd -- two agents
     routinely share a cwd and a cwd join would silently collapse them.
 
@@ -159,13 +168,34 @@ def _match_agents(rows, by_pid, table=None):
             "cwd": info.get("cwd") or cwd,
             # a claude with no session yet is present but unclassified, which
             # is what `unknown` is for. idle would be a claim we cannot make.
-            "agent_status": _status(info.get("status")) if info else "unknown",
+            "agent_status": _status(info.get("status"), info) if info else "unknown",
             "focused": focused,
             "agent_session": {"value": info.get("sessionId")},
             "name": name or None,
         })
         seen[pane_id] = agents[-1]
+    _adopt_background(agents, by_pid, background)
     return agents
+
+
+def _adopt_background(agents, by_pid, background):
+    """A background session's pid is its daemon's, which is no descendant of
+    the pane whose claude is attached to it -- so the pid join above misses it
+    and the pane reads `unknown` for good. Such a pane takes the background
+    session in its own cwd, but only when that is unambiguous: exactly one
+    unclaimed background session there and exactly one unmatched pane. The
+    pid rule exists because a cwd join collapses two agents in one folder;
+    anything short of one-to-one stays unknown rather than guess."""
+    claimed = {a["agent_session"]["value"] for a in agents if a["agent_session"]["value"]}
+    free = [s for s in background if s.get("sessionId") and s["sessionId"] not in claimed]
+    orphans = [a for a in agents if not a["agent_session"]["value"]]
+    for a in orphans:
+        mine = [s for s in free if s.get("cwd") == a["cwd"]]
+        rivals = [o for o in orphans if o["cwd"] == a["cwd"]]
+        if len(mine) == 1 and len(rivals) == 1:
+            s = mine[0]
+            a.update(agent_status=_status(s.get("status"), s),
+                     agent_session={"value": s["sessionId"]})
 
 
 # `claude agents --json` is a Node CLI: ~0.8s a run. push_cc lists agents
@@ -203,7 +233,9 @@ def _agent_list():
     by_pid = {a["pid"]: a for a in claude_agents if "pid" in a}
     rows = [tuple(line.split("\t")) for line in panes.stdout.splitlines() if line.strip()]
     rows = [r for r in rows if len(r) == 7]
-    return _ok({"agents": _match_agents(rows, by_pid), "type": "agent_list"})
+    background = [a for a in claude_agents if a.get("kind") == "background"]
+    return _ok({"agents": _match_agents(rows, by_pid, background=background),
+                "type": "agent_list"})
 
 
 # Claude Code's suggested next prompt is drawn dim on an otherwise empty
@@ -625,6 +657,10 @@ if __name__ == "__main__":
         assert _status("waiting") == "blocked"
         assert _status("idle") == "idle"
         assert _status("anything-else") == "idle"
+        # a background session waiting on you is idle, whatever its daemon says
+        assert _status("busy", {"kind": "background", "state": "blocked"}) == "idle"
+        assert _status("busy", {"kind": "background", "state": "running"}) == "working"
+        assert _status("busy", {"kind": "interactive"}) == "working"
 
         capture = "\n".join(f"line{i}" for i in range(57))
         tail40 = _tail(capture, 40).splitlines()
@@ -684,6 +720,28 @@ if __name__ == "__main__":
         assert a["agent_status"] == "unknown", a
         assert a["agent_session"]["value"] is None
         assert a["cwd"] == "/repo", "no session, so the pane's cwd is all we have"
+
+        # a pane attached to a background session: the session's pid is the
+        # bg-spare daemon's, outside the pane's process tree. Captured shape
+        # from the live `story` pane that stalled the queue.
+        bg = {"pid": 31582, "kind": "background", "cwd": "/story", "sessionId": "sss",
+              "status": "busy", "state": "blocked"}
+        table6 = {700: (1, "zsh"), 701: (700, "claude"), 31582: (1, "claude")}
+        [c] = _match_agents([("%2", "700", "/story", "0", "0", "0", "")], {31582: bg},
+                            table6, background=[bg])
+        assert (c["agent_status"], c["agent_session"]["value"]) == ("idle", "sss"), c
+        # two unmatched panes in that cwd: which one owns it is a guess, so neither does
+        two = _match_agents([("%2", "700", "/story", "0", "0", "0", ""),
+                             ("%3", "702", "/story", "0", "0", "0", "")], {31582: bg},
+                            {**table6, 702: (1, "zsh"), 703: (702, "claude")}, background=[bg])
+        assert [a["agent_status"] for a in two] == ["unknown", "unknown"], two
+        # a session some pane already holds by pid is not handed out again
+        held = _match_agents([("%4", "704", "/story", "0", "0", "0", ""),
+                              ("%2", "700", "/story", "0", "0", "0", "")],
+                             {31582: bg, 705: {**bg, "pid": 705}},
+                             {**table6, 704: (1, "zsh"), 705: (704, "claude")},
+                             background=[{**bg, "pid": 705}])
+        assert [a["agent_session"]["value"] for a in held] == ["sss", None], held
 
         # a shell with no claude under it is not an agent and must not appear
         assert _match_agents([("%8", "900", "/repo", "0", "0", "0", "")], {},
