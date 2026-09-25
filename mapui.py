@@ -276,29 +276,37 @@ _queue_last = {}      # tid -> when we last sent into it
 # whenever the agent is free) or send next (release just the head, once).
 # Play is kept on disk: memory-only, every mapui restart paused every queue
 # again, and a queue you had set playing quietly stopped -- which looked like
-# the queue being broken. A new agent's queue still starts paused.
+# the queue being broken. A new agent's queue still starts paused. An armed
+# send next is kept the same way: memory-only, a restart dropped it and the
+# queue sat on "sending the top one when the agent is free" for good.
 QUEUE_PLAYING_FILE = os.path.expanduser("~/.podium/queue-playing.json")
+QUEUE_NEXT_FILE = os.path.expanduser("~/.podium/queue-next.json")
 
 
-def load_playing():
+def load_playing(path=None):
     try:
-        with open(QUEUE_PLAYING_FILE) as f:
+        with open(path or QUEUE_PLAYING_FILE) as f:
             got = json.load(f)
     except (OSError, json.JSONDecodeError):
         return set()
     return {str(t) for t in got} if isinstance(got, list) else set()
 
 
-def save_playing():
-    os.makedirs(os.path.dirname(QUEUE_PLAYING_FILE), exist_ok=True)
-    tmp = QUEUE_PLAYING_FILE + ".tmp"
+def save_playing(path=None, tids=None):
+    path = path or QUEUE_PLAYING_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(sorted(_queue_playing), f)
-    os.replace(tmp, QUEUE_PLAYING_FILE)
+        json.dump(sorted(_queue_playing if tids is None else tids), f)
+    os.replace(tmp, path)
+
+
+def save_once():
+    save_playing(QUEUE_NEXT_FILE, _queue_once)
 
 
 _queue_playing = load_playing()   # tids whose queue drains on its own
-_queue_once = set()      # tids allowed to send their head one time
+_queue_once = load_playing(QUEUE_NEXT_FILE)   # tids allowed to send their head one time
 _queue_gone = set()   # ids already delivered, so a stale client list can't
                       # put one back
 
@@ -357,7 +365,9 @@ def queue_tick():
         push_cc.herdr("agent", "send", tid, head["text"] + "\r")
         telemetry.event("queue.send", kind="queue")
         _queue_last[tid] = time.time()
-        _queue_once.discard(tid)
+        if tid in _queue_once:
+            _queue_once.discard(tid)
+            save_once()
         with _queue_lock:
             _queue_gone.add(head["id"])
             q = load_queue()
@@ -3217,7 +3227,9 @@ class Handler(BaseHTTPRequestHandler):
         if not q[tid]:
             # a "send next" for a queue since emptied must not fire whatever
             # is added later -- that would be sending something unseen
-            _queue_once.discard(tid)
+            if tid in _queue_once:
+                _queue_once.discard(tid)
+                save_once()
         self._send(200, json.dumps({"items": q[tid]}), "application/json")
 
     def _agent_next(self):
@@ -3306,6 +3318,7 @@ class Handler(BaseHTTPRequestHandler):
             save_playing()
         else:
             _queue_once.add(tid)
+            save_once()
         with _queue_lock:
             items = load_queue().get(tid, [])
         self._send(200, json.dumps(queue_state(tid, items)), "application/json")

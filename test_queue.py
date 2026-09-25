@@ -7,7 +7,9 @@ import push_cc
 
 mapui.QUEUE_FILE = os.path.join(tempfile.mkdtemp(), "q.json")
 mapui.QUEUE_PLAYING_FILE = os.path.join(tempfile.mkdtemp(), "playing.json")
+mapui.QUEUE_NEXT_FILE = os.path.join(tempfile.mkdtemp(), "next.json")
 mapui._queue_playing.clear()
+mapui._queue_once.clear()
 sent, status, pane = [], {"s": "working"}, {}
 push_cc.agents = lambda: [{"terminal_id": "t1", "agent_status": status["s"]}]
 push_cc.pane_summary = lambda a, *k: pane
@@ -57,4 +59,11 @@ assert len(sent) == 2, "a question on screen is not an empty input line"
 mapui._queue_playing = {"t9"}
 mapui.save_playing()
 assert mapui.load_playing() == {"t9"}, "play is remembered across a restart"
+# so is an armed send next, and releasing it clears it on disk too
+mapui._queue_once.add("t8")
+mapui.save_once()
+assert mapui.load_playing(mapui.QUEUE_NEXT_FILE) == {"t8"}, "send next survives a restart"
+mapui._queue_once.discard("t8")
+mapui.save_once()
+assert mapui.load_playing(mapui.QUEUE_NEXT_FILE) == set()
 print("ok")
