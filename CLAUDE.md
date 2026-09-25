@@ -62,9 +62,12 @@ things in there look like bugs and are not:
   `claude agents --json`) is matched by cwd, not pid: the session's pid is
   its `claude bg-spare` daemon, outside the pane's process tree. And its
   `status` stays `busy` while any background shell runs (a dev server:
-  forever) -- `state: "blocked"` is what means "turn over, waiting on you",
-  so that reads `idle`. Symptom when this was missed: the pane showed
-  `unknown` and the queue never drained into it (the `story` agent).
+  forever) -- `state: "blocked"` or `"done"` is what means "turn over,
+  waiting on you", so those read `idle`. Symptom when this was missed: the
+  pane showed `unknown` and the queue never drained into it (the `story`
+  agent); with only `blocked` handled, it read `working` after every
+  finished turn and the queue sat on "sending the top one when the agent is
+  free".
 - Agent status can be up to 1.5s old. `claude agents --json` is a Node CLI
   (~0.8s a run) and push_cc lists agents every 0.5s, so uncached it never
   stopped running and the machine serving the app crawled -- a page load's

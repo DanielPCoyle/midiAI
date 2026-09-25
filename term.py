@@ -70,10 +70,11 @@ def _status(claude_status, session=None):
     bg-spare`), which is what the pane's claude is then attached to -- says
     `busy` for as long as any background shell or agent of its runs, a dev
     server included, so forever. Its `state` is what says whether it is
-    waiting on you: `blocked` is turn over, prompt empty. Read as busy, the
+    waiting on you: `blocked` is turn over, prompt empty, and `done` is the
+    same after a finished turn ("done 11:17 AM" on screen). Read as busy, the
     queue never sent to it."""
     session = session or {}
-    if session.get("kind") == "background" and session.get("state") == "blocked":
+    if session.get("kind") == "background" and session.get("state") in ("blocked", "done"):
         return "idle"
     return STATUS.get(claude_status, "idle")
 
@@ -775,6 +776,7 @@ if __name__ == "__main__":
         assert _status("anything-else") == "idle"
         # a background session waiting on you is idle, whatever its daemon says
         assert _status("busy", {"kind": "background", "state": "blocked"}) == "idle"
+        assert _status("busy", {"kind": "background", "state": "done"}) == "idle"
         assert _status("busy", {"kind": "background", "state": "running"}) == "working"
         assert _status("busy", {"kind": "interactive"}) == "working"
 
