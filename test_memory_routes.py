@@ -3,7 +3,7 @@
 
 memory.DB_PATH is pointed at a fresh tempfile database before mapui's own
 memory.connect() calls ever run, so nothing here can touch the real
-~/.midiai/memory.db."""
+~/.podium/memory.db."""
 import json
 import os
 import shutil
@@ -13,7 +13,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import memory
 
-_tmp_dir = tempfile.mkdtemp(prefix="midiai-memroutes-")
+_tmp_dir = tempfile.mkdtemp(prefix="podium-memroutes-")
 memory.DB_PATH = os.path.join(_tmp_dir, "memory.db")
 
 import mapui  # noqa: E402 -- must come after DB_PATH is redirected

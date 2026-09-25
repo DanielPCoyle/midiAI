@@ -293,7 +293,7 @@ export default function App() {
     return () => { live = false; clearTimeout(timer); };
   }, [base, scopePath]);
   // TELEMETRY's own badge: errors in the last hour, kept live on every tab
-  // the same way deployBuilding is -- midiAI's own health, not the checked-
+  // the same way deployBuilding is -- Podium's own health, not the checked-
   // out project's, so this has no `scopePath` dependency at all.
   const [telemetryErrors, setTelemetryErrors] = useState(0);
   useEffect(() => {
@@ -765,7 +765,7 @@ export default function App() {
           the rest of them. */}
       <View style={[styles.band, headerTight && styles.bandWrap]}>
         <View style={[styles.dot, { backgroundColor: dot }]} />
-        <Text style={styles.brand}>midiAI</Text>
+        <Text style={styles.brand}>Podium</Text>
 
         {/* Spend is account-wide, so usage gets no checkout chip -- a repo name
             over it would be claiming those were that repo's tokens. */}

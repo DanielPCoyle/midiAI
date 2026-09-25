@@ -1,4 +1,4 @@
-// The midiAI desktop app: one window, and the services it needs underneath it.
+// The Podium desktop app: one window, and the services it needs underneath it.
 //
 // The browser was never the product -- it was the cheapest way to get pixels
 // while the surface was being built. What a window buys is the rest of it: an
@@ -8,7 +8,7 @@
 //   npm start          window against the running Metro (develop like before)
 //   npm run dist       a .app, loading the exported build off disk
 //
-// The Python half runs the same way it does under midiAI.command. This process
+// The Python half runs the same way it does under Podium.command. This process
 // owns those children: quitting the window stops them, because two push_cc
 // processes fight over the same MIDI port and a stray one is invisible.
 const { app, BrowserWindow, shell } = require('electron');
@@ -27,7 +27,7 @@ const EXPORT = DEV
 let win = null;
 const kids = [];
 
-// Only if one is not already up. midiAI.command starts the same two, and two
+// Only if one is not already up. Podium.command starts the same two, and two
 // push_cc processes fight over the one MIDI port while a second mapui cannot
 // bind 8765 -- both fail quietly, which reads exactly like the app being
 // broken. Adopting the running pair is right anyway: it is the same surface.

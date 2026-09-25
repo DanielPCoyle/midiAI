@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The midiAI API for the Push 2: macros.json read/write, the live surface
+"""The Podium API for the Push 2: macros.json read/write, the live surface
 mirror, and pad firing. The editor UI itself is the Expo app in ./app --
 this file only serves the data it needs.
 
@@ -48,7 +48,7 @@ PUSH_LOG = "/tmp/push.log"
 # The mic is this machine's, not the tablet's. Expo Go has no Web Speech API,
 # so a browser-side recogniser would leave the iPad with nothing, and the mic
 # worth talking into is the one already next to the Push.
-WHISPER_MODEL = os.environ.get("MIDIAI_WHISPER_MODEL") or os.path.expanduser(
+WHISPER_MODEL = os.environ.get("PODIUM_WHISPER_MODEL") or os.path.expanduser(
     "~/.cache/openwhispr/whisper-models/ggml-base.bin")
 RECORD_MAX_S = 120                 # a stuck button must not fill the disk
 _rec_lock = threading.Lock()
@@ -58,7 +58,7 @@ _app_test_runs = {}                # repo root -> push_cc.TestRun
 
 # Where pasted images land. Not the repo -- these are scratch, and a stray
 # screenshot in `git status` is noise every agent then has to read past.
-PASTE_DIR = os.path.expanduser("~/.midiai/pastes")
+PASTE_DIR = os.path.expanduser("~/.podium/pastes")
 PASTE_MAX = 20 * 1024 * 1024
 
 # The type is taken from the bytes, never from the name the client sent: the
@@ -88,7 +88,7 @@ def voice_missing():
     if not shutil.which("whisper-cli"):
         return "no whisper-cli on PATH: brew install whisper-cpp"
     if not os.path.exists(WHISPER_MODEL):
-        return f"no whisper model at {WHISPER_MODEL} (set MIDIAI_WHISPER_MODEL)"
+        return f"no whisper model at {WHISPER_MODEL} (set PODIUM_WHISPER_MODEL)"
     return ""
 
 
@@ -148,7 +148,7 @@ def relaunch():
 
 
 API_NOTE = (
-    "midiAI API for the Push 2.\n"
+    "Podium API for the Push 2.\n"
     "\n"
     "The UI is the Expo app in ./app -- run `npx expo start` there and open\n"
     "it in Expo Go on the iPad, or `npx expo start --web` for a browser.\n"
@@ -230,7 +230,7 @@ def _start_named_agent(cwd, engine, model, split):
 # first time an agent runs there, or when someone adds it, and stays until it
 # is explicitly forgotten. Beside the pastes rather than in the repo -- it is
 # a fact about this machine, not about any one checkout.
-PROJECTS_FILE = os.path.expanduser("~/.midiai/projects.json")
+PROJECTS_FILE = os.path.expanduser("~/.podium/projects.json")
 
 # The guardrail checklist's state, per checkout. Beside projects.json rather
 # than inside the repo, deliberately: the starter list is a framework, and a
@@ -238,7 +238,7 @@ PROJECTS_FILE = os.path.expanduser("~/.midiai/projects.json")
 # that repo that nobody agreed to. Somewhere in .github is the right home for
 # this the day a team decides it is theirs -- that is a decision to make on
 # purpose, not a default.
-GUARDRAILS_FILE = os.path.expanduser("~/.midiai/guardrails.json")
+GUARDRAILS_FILE = os.path.expanduser("~/.podium/guardrails.json")
 
 
 def load_guardrails():
@@ -263,7 +263,7 @@ def save_guardrails(all_of_them):
 # own queue a pty cannot reach it again, so nothing there can be edited,
 # reordered or pulled. Held here, it can -- and it keeps draining whichever
 # agent the app happens to be looking at, or with the app closed.
-QUEUE_FILE = os.path.expanduser("~/.midiai/queue.json")
+QUEUE_FILE = os.path.expanduser("~/.podium/queue.json")
 QUEUE_TICK_S = 2
 # herdr reads idle for a moment after a submit, before the agent picks it up;
 # without a gap the whole queue would go in one burst.
@@ -277,7 +277,7 @@ _queue_last = {}      # tid -> when we last sent into it
 # Play is kept on disk: memory-only, every mapui restart paused every queue
 # again, and a queue you had set playing quietly stopped -- which looked like
 # the queue being broken. A new agent's queue still starts paused.
-QUEUE_PLAYING_FILE = os.path.expanduser("~/.midiai/queue-playing.json")
+QUEUE_PLAYING_FILE = os.path.expanduser("~/.podium/queue-playing.json")
 
 
 def load_playing():
@@ -433,7 +433,7 @@ _memory_first_sweep_done = False
 def memory_tick():
     """One pass: reindex every transcript, then summarise at most one idle
     session -- one per tick, on purpose, so a backlog of idle sessions never
-    turns into a burst of `claude -p` calls. MIDIAI_MEMORY_SUMMARIES=0 turns
+    turns into a burst of `claude -p` calls. PODIUM_MEMORY_SUMMARIES=0 turns
     the summarising half off entirely (for a machine where a model call in
     the background is unwelcome); sweeping still runs either way."""
     global _memory_first_sweep_done
@@ -441,7 +441,7 @@ def memory_tick():
     try:
         memory.sweep(conn)
         _memory_first_sweep_done = True
-        if os.environ.get("MIDIAI_MEMORY_SUMMARIES") != "0":
+        if os.environ.get("PODIUM_MEMORY_SUMMARIES") != "0":
             due = memory.due_for_summary(conn)
             if due:
                 memory.summarize(conn, due[0])
@@ -564,7 +564,7 @@ def clean_template_name(name):
     return " ".join(str(name or "").split())[:60]
 
 
-TEMPLATES_FILE = os.path.expanduser("~/.midiai/guardrail-templates.json")
+TEMPLATES_FILE = os.path.expanduser("~/.podium/guardrail-templates.json")
 
 
 def load_templates():
@@ -1189,13 +1189,13 @@ def skill_path(scope, name, root):
 # the caller picks WHAT to open, never WITH WHAT, so there is no argument on
 # this wire that turns into a command. Overridable by whoever starts the
 # server, which is the person whose editor it is.
-EDITOR_CMD = os.environ.get("MIDIAI_EDITOR", "code-insiders")
+EDITOR_CMD = os.environ.get("PODIUM_EDITOR", "code-insiders")
 
 # Which terminal to hand a pane to. Same bargain as EDITOR_CMD: the caller
 # picks WHAT to open and never WITH WHAT, so there is no argument on this wire
 # that becomes a command. Empty means whatever the OS opens a .command with,
 # which on a Mac is Terminal.
-TERMINAL_APP = os.environ.get("MIDIAI_TERMINAL", "")
+TERMINAL_APP = os.environ.get("PODIUM_TERMINAL", "")
 
 # A tmux pane id and nothing else. This is the only thing from the request that
 # reaches the script below, and `%` followed by digits has nothing in it to
@@ -1494,8 +1494,8 @@ def hook_summary(entry):
 # future version got stricter about a field we invented is not a trade worth
 # making for a note. So the notes live here, beside the pastes and the
 # projects, and settings.json keeps only what Claude Code documents.
-NOTES_FILE = os.path.expanduser("~/.midiai/hook-notes.json")
-SKILL_LABELS_FILE = os.path.expanduser("~/.midiai/skill-labels.json")
+NOTES_FILE = os.path.expanduser("~/.podium/hook-notes.json")
+SKILL_LABELS_FILE = os.path.expanduser("~/.podium/skill-labels.json")
 
 
 def skill_label_key(scope, name, root="", path=""):
@@ -1754,7 +1754,7 @@ SKILL_STATES = ("on", "name-only", "user-invocable-only", "off")
 # disableAllHooks, which takes the status line and @ suggestions with it. So a
 # hook that is off lives here instead, whole, and goes back where it was when
 # it is turned on again. settings.json keeps only what Claude Code documents.
-PARKED_FILE = os.path.expanduser("~/.midiai/hooks-parked.json")
+PARKED_FILE = os.path.expanduser("~/.podium/hooks-parked.json")
 
 
 def load_parked():
@@ -1885,7 +1885,7 @@ class Handler(BaseHTTPRequestHandler):
         self._telemetry_status = None
         path = self.path.split("?", 1)[0]
         is_poll = path == "/surface" or self.path.startswith("/queue?")
-        with telemetry.span(f"http GET {path}", "server", **{"midiai.poll": is_poll}) as s:
+        with telemetry.span(f"http GET {path}", "server", **{"podium.poll": is_poll}) as s:
             try:
                 self._do_GET()
             finally:
@@ -3723,7 +3723,7 @@ class Handler(BaseHTTPRequestHandler):
         # activate first: owning the dialog is not the same as fronting it,
         # and without this it opened behind whatever you were looking at --
         # the button then seemed to do nothing while a dialog sat waiting
-        prompt = (q.get("prompt") or ["midiAI: folder for this session"])[0][:120]
+        prompt = (q.get("prompt") or ["Podium: folder for this session"])[0][:120]
         script = ('tell application "System Events"\n'
                   '  activate\n'
                   f'  return POSIX path of (choose folder with prompt {json.dumps(prompt)} '
@@ -4020,7 +4020,7 @@ class Handler(BaseHTTPRequestHandler):
         if not shutil.which(EDITOR_CMD):
             return self._send(
                 501, f"{EDITOR_CMD} is not on this machine's PATH -- set "
-                     f"MIDIAI_EDITOR to the one you use", "text/plain")
+                     f"PODIUM_EDITOR to the one you use", "text/plain")
         try:
             subprocess.Popen([EDITOR_CMD, dest],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -4183,7 +4183,7 @@ class Handler(BaseHTTPRequestHandler):
         """A hook off, or back on again.
 
         Off lifts the whole entry out of the settings file and parks it in
-        ~/.midiai/hooks-parked.json; on puts it back into the group whose
+        ~/.podium/hooks-parked.json; on puts it back into the group whose
         matcher it had. There is no per-hook switch in the schema -- the only
         documented one is disableAllHooks, which takes the status line and the
         @ file suggestions with it -- so this is ours, and the trade is the
@@ -4801,11 +4801,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(
                 501, "opening a terminal is wired for macOS only -- "
                      f"`tmux attach` and select pane {pane} by hand", "text/plain")
-        script = os.path.join(tempfile.gettempdir(), f"midiai-attach-{pane[1:]}.command")
+        script = os.path.join(tempfile.gettempdir(), f"podium-attach-{pane[1:]}.command")
         try:
             with open(script, "w") as f:
                 f.write("#!/bin/sh\n"
-                        "# opened by midiAI -- attaches to the pane you were reading\n"
+                        "# opened by Podium -- attaches to the pane you were reading\n"
                         f"S=$(tmux display-message -p -t '{pane}' '#{{session_name}}') || exit 1\n"
                         f"tmux select-pane -t '{pane}'\n"
                         'exec tmux attach -t "$S"\n')
@@ -4814,7 +4814,7 @@ class Handler(BaseHTTPRequestHandler):
                              + [script])
         except OSError as e:
             return self._send(500, f"could not open a terminal: {e}", "text/plain")
-        self._send(200, "opened a terminal on the machine running midiAI",
+        self._send(200, "opened a terminal on the machine running Podium",
                    "text/plain")
 
     def _keys(self):

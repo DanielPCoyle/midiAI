@@ -1,7 +1,7 @@
 {
-  "name": "midiai-desktop",
+  "name": "podium-desktop",
   "version": "1.0.0",
-  "description": "midiAI as a desktop application",
+  "description": "Podium as a desktop application",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -9,8 +9,8 @@
     "dist": "electron-builder --mac"
   },
   "build": {
-    "appId": "dev.midiai.push",
-    "productName": "midiAI",
+    "appId": "dev.podium.push",
+    "productName": "Podium",
     "files": [
       "main.js",
       "package.json"

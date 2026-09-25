@@ -1924,7 +1924,7 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue, 
     try {
       const ok = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!ok.granted) {
-        setErr('midiAI needs photo access to attach an image');
+        setErr('Podium needs photo access to attach an image');
         return;
       }
       const res = await ImagePicker.launchImageLibraryAsync({
@@ -3229,7 +3229,7 @@ function Overview({ base, cwd }) {
       <Text style={styles.note}>
         Autonomy proportional to blast radius: low-risk reversible work runs
         free, and the controls get deterministic where the damage does. Ticks
-        are kept per checkout in `~/.midiai/guardrails.json`, not in the repo.
+        are kept per checkout in `~/.podium/guardrails.json`, not in the repo.
       </Text>
     </>
   );

@@ -1,5 +1,5 @@
 """telemetry.py's own tests -- a temp DB throughout, never the real
-~/.midiai/telemetry.db, and no real `claude` CLI. python3 test_telemetry.py"""
+~/.podium/telemetry.db, and no real `claude` CLI. python3 test_telemetry.py"""
 import json
 import os
 import sqlite3
@@ -17,7 +17,7 @@ def _fresh_db():
     stopped so the next span/event starts a fresh one against it."""
     path = os.path.join(tempfile.mkdtemp(prefix="telemetry-test-db-", dir=SCRATCH), "telemetry.db")
     os.environ["TELEMETRY_DB"] = path
-    os.environ["MIDIAI_TELEMETRY"] = "1"
+    os.environ["PODIUM_TELEMETRY"] = "1"
     telemetry._reset_for_tests()
     return path
 
@@ -102,15 +102,15 @@ def test_attr_sanitising():
 
 def test_disabled_flag_writes_nothing():
     path = _fresh_db()
-    os.environ["MIDIAI_TELEMETRY"] = "0"
+    os.environ["PODIUM_TELEMETRY"] = "0"
     telemetry._reset_for_tests()
     with telemetry.span("should not land", "internal"):
         pass
     telemetry.event("also not", kind="internal")
     telemetry.flush()
     assert not os.path.exists(path), \
-        "MIDIAI_TELEMETRY=0 must never even create the DB file"
-    os.environ["MIDIAI_TELEMETRY"] = "1"
+        "PODIUM_TELEMETRY=0 must never even create the DB file"
+    os.environ["PODIUM_TELEMETRY"] = "1"
     telemetry._reset_for_tests()
     print("test_disabled_flag_writes_nothing ok")
 
@@ -142,9 +142,9 @@ def test_retention():
 
 def test_queue_never_blocks_past_10k():
     path = _fresh_db()
-    os.environ["MIDIAI_TELEMETRY"] = "0"   # keep the writer from draining the queue
+    os.environ["PODIUM_TELEMETRY"] = "0"   # keep the writer from draining the queue
     telemetry._reset_for_tests()
-    os.environ["MIDIAI_TELEMETRY"] = "1"
+    os.environ["PODIUM_TELEMETRY"] = "1"
     # fill the queue directly -- emitting through span() would start the
     # writer and drain it as fast as it fills, which defeats the point
     for i in range(telemetry.QUEUE_MAX):
@@ -216,15 +216,15 @@ def test_run_model_success_shape_and_no_prompt_leak():
     assert ok == 1 and err is None
     attrs = json.loads(attrs_json)
     assert attrs["gen_ai.operation.name"] == "chat"
-    assert attrs["midiai.purpose"] == "test.purpose"
+    assert attrs["podium.purpose"] == "test.purpose"
     assert attrs["gen_ai.request.model"] == "sonnet"
     assert attrs["gen_ai.response.model"] == "claude-sonnet-test"
     assert attrs["gen_ai.usage.input_tokens"] == 10
     assert attrs["gen_ai.usage.output_tokens"] == 4
-    assert attrs["midiai.cache_read_tokens"] == 1
-    assert attrs["midiai.cost_usd"] == 0.0022
-    assert attrs["midiai.ttft_ms"] == 50
-    assert attrs["midiai.prompt_chars"] == len(prompt)
+    assert attrs["podium.cache_read_tokens"] == 1
+    assert attrs["podium.cost_usd"] == 0.0022
+    assert attrs["podium.ttft_ms"] == 50
+    assert attrs["podium.prompt_chars"] == len(prompt)
     # the whole point: the prompt text itself is never recorded
     blob = json.dumps(attrs)
     assert "secret prompt" not in blob and prompt not in blob
@@ -292,13 +292,13 @@ def test_summary_percentiles_and_poll_and_totals():
     rows.append(r(1, "http GET /work", "server", 5, 0, "ValueError", {}))
     # http: GET /queue, tagged as a poll
     for i, ms in enumerate([5, 7]):
-        rows.append(r(i, "http GET /queue", "server", ms, 1, None, {"midiai.poll": True}))
+        rows.append(r(i, "http GET /queue", "server", ms, 1, None, {"podium.poll": True}))
 
     # model calls: two of the same (purpose, model)
     for cost, in_tok, out_tok in [(0.01, 100, 20), (0.02, 200, 40)]:
         rows.append(r(1, "gen_ai.chat", "model", 500, 1, None,
-                      {"midiai.purpose": "memory.summary", "gen_ai.response.model": "haiku",
-                       "midiai.cost_usd": cost, "gen_ai.usage.input_tokens": in_tok,
+                      {"podium.purpose": "memory.summary", "gen_ai.response.model": "haiku",
+                       "podium.cost_usd": cost, "gen_ai.usage.input_tokens": in_tok,
                        "gen_ai.usage.output_tokens": out_tok}))
 
     # tool execs

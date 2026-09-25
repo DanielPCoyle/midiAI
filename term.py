@@ -213,7 +213,7 @@ def _match_agents(rows, by_pid, table=None, background=()):
 
     One agent per pane, though a pane can come back more than once: a
     grouped session shares its windows, so `list-panes -a` lists each pane
-    once per session in the group. ptybridge's `midiai-push` view is one --
+    once per session in the group. ptybridge's `podium-push` view is one --
     with the terminal tab open, every agent showed up twice in the rail and
     the seat tabs. Its rows differ only in the per-session flags, so the
     pane is focused if any of them says so."""
@@ -819,10 +819,10 @@ if __name__ == "__main__":
                  ("%1", "222", "/b", "1", "1", "0", "")]
         assert not any(a["focused"] for a in _match_agents(rows3, by_pid2))
 
-        # a grouped session (ptybridge's midiai-push view) lists every pane
+        # a grouped session (ptybridge's podium-push view) lists every pane
         # once per session: still one agent, focused if any copy is
         rows5 = [("%0", "111", "/a", "1", "1", "0", "abc"),   # push
-                 ("%0", "111", "/a", "1", "1", "1", "abc")]   # midiai-push
+                 ("%0", "111", "/a", "1", "1", "1", "abc")]   # podium-push
         dup = _match_agents(rows5, by_pid2)
         assert len(dup) == 1 and dup[0]["focused"], dup
 
@@ -923,7 +923,7 @@ if __name__ == "__main__":
         # pattern as _with_access/access.py) and comes back None -- never
         # raises -- when that raises, so _agent_start can report bad_engine
         # instead of crashing. A fake module stands in for engines.py here so
-        # this file's own self-test never touches ~/.midiai or the Keychain;
+        # this file's own self-test never touches ~/.podium or the Keychain;
         # engines.py's own launch_argv is test_engines.py's job.
         import sys
         import types

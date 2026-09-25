@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""How the Claude Code agents midiAI starts get to a model.
+"""How the Claude Code agents Podium starts get to a model.
 
 Settings > Claude in the app. Four ways in: the claude.ai subscription the
 CLI is already logged into (nothing to add), an Anthropic API key, Bedrock,
 or Vertex -- plus a default model and effort. All of it reaches an agent as
 flags on its own `claude` command line (`launch_flags`, called by term.py for
-every agent it starts), so it applies to midiAI's agents only and never
+every agent it starts), so it applies to Podium's agents only and never
 rewrites ~/.claude/settings.json under the terminal you use by hand.
 
 The API key lives in the macOS login Keychain and nowhere else. The agent
@@ -25,9 +25,9 @@ import time
 import urllib.error
 import urllib.request
 
-CONFIG_FILE = os.path.expanduser("~/.midiai/claude-access.json")
-KC_SERVICE = "midiai-anthropic-api-key"
-KC_ACCOUNT = "midiai"
+CONFIG_FILE = os.path.expanduser("~/.podium/claude-access.json")
+KC_SERVICE = "podium-anthropic-api-key"
+KC_ACCOUNT = "podium"
 SECURITY = "/usr/bin/security"
 
 MODES = ("subscription", "api_key", "bedrock", "vertex")
@@ -175,7 +175,7 @@ def save_key(key):
     if not _KEY_RE.match(key):
         raise ValueError("that doesn't look like an Anthropic API key (sk-ant-…)")
     verify_key(key)
-    if not keychain_set(KC_SERVICE, KC_ACCOUNT, key, label="midiAI Anthropic API key"):
+    if not keychain_set(KC_SERVICE, KC_ACCOUNT, key, label="Podium Anthropic API key"):
         raise RuntimeError("the Keychain would not take it")
     cfg = load()
     cfg["hint"] = f"{key[:7]}…{key[-4:]}"
@@ -192,7 +192,7 @@ def delete_key():
 # ------------------------------------------------------------ what agents get
 
 def launch_flags(cfg=None, have_key=None):
-    """Extra `claude` flags for an agent midiAI starts. Empty for the
+    """Extra `claude` flags for an agent Podium starts. Empty for the
     subscription with no defaults, so an untouched install launches exactly
     as it always has."""
     cfg = cfg or load()

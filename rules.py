@@ -47,9 +47,9 @@ MANAGED_POLICY = "/Library/Application Support/ClaudeCode/CLAUDE.md"
 REVIEW_CMD = ["claude", "-p", "--model", "sonnet", "--no-session-persistence",
               "--setting-sources", "", "--strict-mcp-config", "--tools", ""]
 
-_AGENTS_START = "<!-- midiai:rules:start -->"
-_AGENTS_END = "<!-- midiai:rules:end -->"
-_AGENTS_NOTE = ("<!-- generated from .claude/rules/ by midiAI -- rules with "
+_AGENTS_START = "<!-- podium:rules:start -->"
+_AGENTS_END = "<!-- podium:rules:end -->"
+_AGENTS_NOTE = ("<!-- generated from .claude/rules/ by Podium -- rules with "
                 "`paths:` frontmatter are Claude-only and are not listed "
                 "here; edit the rules, not this block. -->")
 

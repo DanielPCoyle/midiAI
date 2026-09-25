@@ -3,7 +3,7 @@
 
 Every test uses its own tempfile.mkdtemp() database and, where relevant, its
 own fixture transcript/claude-mem files. Nothing here ever opens the real
-~/.midiai/memory.db, reads ~/.claude or ~/.claude-mem, or shells out to the
+~/.podium/memory.db, reads ~/.claude or ~/.claude-mem, or shells out to the
 real `claude` CLI -- summarize() is always called with a fake `run`."""
 import json
 import os
@@ -19,7 +19,7 @@ import memory
 
 
 def _tmp_db():
-    d = tempfile.mkdtemp(prefix="midiai-memtest-")
+    d = tempfile.mkdtemp(prefix="podium-memtest-")
     return os.path.join(d, "memory.db"), d
 
 
@@ -417,7 +417,7 @@ def test_context_cli():
     try:
         repo_dir = os.path.dirname(os.path.abspath(memory.__file__))
         env = dict(os.environ)
-        env["MIDIAI_MEMORY_DB"] = db_path
+        env["PODIUM_MEMORY_DB"] = db_path
 
         hook_input = json.dumps({"cwd": "/Users/x/myproj", "source": "startup"})
         result = subprocess.run([sys.executable, "memory.py", "context"], cwd=repo_dir,

@@ -341,7 +341,7 @@ export default function Rail({
     setPicking(true);
     setAddErr('');
     try {
-      const path = await chooseDir(base, '', 'midiAI: add a project');
+      const path = await chooseDir(base, '', 'Podium: add a project');
       if (path) {                       // null is a cancel: nothing to do
         await addProject(base, path);
         refreshProjects();
@@ -535,7 +535,7 @@ export default function Rail({
                             <View key={i} style={styles.agentSlot}>
                               <Pressable
                                 accessibilityRole="button"
-                                // left to itself this announces as "midiAIidle" -- the
+                                // left to itself this announces as "Podiumidle" -- the
                                 // name and the status run together, same shape as the
                                 // tab that answered to "· 0"
                                 accessibilityLabel={`${col.name} · ${seatWord(col)}${ctx != null ? ` · context ${Math.round(ctx * 100)}% full` : ''}`}

@@ -1,6 +1,6 @@
 # Issue tracker: SimplerDevelopment portal
 
-Issues for this repo are kanban cards on the portal board **midiAI**
+Issues for this repo are kanban cards on the portal board **Podium**
 (`projectId 216`, `clientId 104`), reached through the Simpler Development MCP
 (`mcp__claude_ai_Simpler_Development__*`).
 
@@ -10,8 +10,8 @@ not this repo. `whoami` lists the roster if you need it.
 
 The board exists because board 153 says so in as many words — a separate repo
 gets its own board, like bugcast (215), Vanta (194) and Cookoojobs (195). The
-test is where a change **lands**, not what it is about. midiAI is its own repo,
-so midiAI work does not go on 153.
+test is where a change **lands**, not what it is about. Podium is its own repo,
+so Podium work does not go on 153.
 
 ## Conventions
 

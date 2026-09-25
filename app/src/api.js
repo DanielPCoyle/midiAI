@@ -62,7 +62,7 @@ export const mcpDo = (base, verb, body) => post(base, `/mcp/${verb}`, body);
 export const sendKeys = (base, terminal_id, keys) =>
   post(base, '/keys', { terminal_id, keys });
 
-// Hands the pane to a real terminal on the machine running midiAI. The
+// Hands the pane to a real terminal on the machine running Podium. The
 // in-app one is a picture with a keyboard on it; this is the thing itself.
 // Which pane the in-app terminal is looking at now. A read: tmux owns the
 // active pane and shares it between clients, so the app follows rather than
@@ -133,7 +133,7 @@ export const dropGuardrailTemplate = (base, name) =>
 // Enforcement: a guardrail can carry a script or an agent-review brief that
 // checks it mechanically, kept in the repo under .guardrails/ and compiled by
 // guardrails.py. This is a separate store from getGuardrails/saveGuardrails
-// (that one is the checklist itself, in ~/.midiai/guardrails.json) -- status
+// (that one is the checklist itself, in ~/.podium/guardrails.json) -- status
 // here is manifest + last results + local approvals + hook state, all at once,
 // the same "one call, several things read together" idea as getWork.
 export const getEnforce = (base, cwd) =>
@@ -359,7 +359,7 @@ export const deleteHook = (base, scope, event, gi, hi, cwd) =>
   post(base, '/hook/delete', { scope, event, gi, hi, cwd });
 
 // The rules tab: what an agent working in `cwd` reads before anything else,
-// and where midiAI can write more of it. `list` carries every always-on file
+// and where Podium can write more of it. `list` carries every always-on file
 // slot for the three scopes (global/project/local) plus every rule file, so
 // the tab can offer "create" for a slot that is not on disk yet.
 export const listRules = (base, cwd) =>
@@ -509,7 +509,7 @@ export const getActiveSpec = (base, terminal_id) =>
 export const setActiveSpec = async (base, terminal_id, path) =>
   JSON.parse(await post(base, '/specs/active', { terminal_id, path }));
 
-// midiAI's own memory: what an agent decided, tried and learned, mined from
+// Podium's own memory: what an agent decided, tried and learned, mined from
 // transcripts and (where imported) claude-mem. `cwd` scopes a call to that
 // checkout's project; omitted, it reads every project. GET and JSON, like the
 // rest of this file -- the store is read-only from here.
@@ -528,7 +528,7 @@ export const getMemoryEntry = (base, id) =>
 
 export const memoryStats = (base) => getJSON(base, '/memory/stats');
 
-// Claude access: how agents midiAI starts authenticate, plus the default
+// Claude access: how agents Podium starts authenticate, plus the default
 // model/effort new ones start with. The API key itself lives in the macOS
 // Keychain and is never returned -- `key.hint` is the only trace of it that
 // ever rides this wire.
@@ -597,7 +597,7 @@ export const providerLogin = async (base, provider) =>
   JSON.parse(await post(base, '/providers/login', { provider }));
 
 // Integrations: one row per manifest found under integrations/<name>/ (built
-// in) or ~/.midiai/integrations/<name>/ (a user folder of the same name
+// in) or ~/.podium/integrations/<name>/ (a user folder of the same name
 // overrides the built-in). `ok` is a cached auth.check (60s), null when the
 // integration has no such capability or has not been asked yet.
 export const listIntegrations = async (base) =>
@@ -665,7 +665,7 @@ export const deployAction = async (base, cwd, provider, op, id) => {
   return body; // {ok:true, results} or {blocked:true, results}
 };
 
-// TELEMETRY tab: midiAI's own health, not the checked-out project's -- one
+// TELEMETRY tab: Podium's own health, not the checked-out project's -- one
 // summary of telemetry.py's spans over the trailing `since` seconds (server
 // default 86400 when omitted). {http, models, tools, guardrails,
 // integrations, queue, errors, totals}; see telemetry.py's `summary()`.

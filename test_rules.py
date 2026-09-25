@@ -171,12 +171,12 @@ assert rules.agents_md_state(repo)["synced"], "and it is current"
 
 repo2 = new_repo()
 open(os.path.join(repo2, "AGENTS.md"), "w").write(
-    "# Hand-written notes\n\nSomeone wrote this before midiAI touched the file.\n")
+    "# Hand-written notes\n\nSomeone wrote this before Podium touched the file.\n")
 rules.write_rule(repo2, "project", "Formatting", "Two-space indent everywhere.", [])
 with open(os.path.join(repo2, "AGENTS.md")) as f:
     agents2 = f.read()
 assert agents2.startswith("# Hand-written notes\n\n"
-                          "Someone wrote this before midiAI touched the file.\n"), agents2
+                          "Someone wrote this before Podium touched the file.\n"), agents2
 assert rules._AGENTS_START in agents2 and rules._AGENTS_END in agents2
 assert "## Formatting" in agents2 and "Two-space indent everywhere." in agents2
 
@@ -189,7 +189,7 @@ with open(os.path.join(repo2, "AGENTS.md")) as f:
     agents2b = f.read()
 assert "API Only" not in agents2b, "path-scoped rules are Claude-only"
 assert agents2b.startswith("# Hand-written notes\n\n"
-                           "Someone wrote this before midiAI touched the file.\n"), \
+                           "Someone wrote this before Podium touched the file.\n"), \
     "outside-the-markers text survives a second sync untouched"
 
 state2b = rules.agents_md_state(repo2)

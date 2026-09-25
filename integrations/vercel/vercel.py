@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The Vercel adapter for midiAI's integrations contract (see integrations.py
+"""The Vercel adapter for Podium's integrations contract (see integrations.py
 at the repo root). stdlib only -- this runs as a subprocess integrations.call()
 execs, with no guarantee its interpreter has `requests` installed.
 

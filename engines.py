@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Two engines an agent midiAI starts can run as -- Claude Code or Codex --
+"""Two engines an agent Podium starts can run as -- Claude Code or Codex --
 each picking one of four providers: Anthropic, OpenAI, AWS Bedrock, Google
 Vertex. Settings > Providers holds credentials per provider; Settings >
 Engines picks which provider (and model/effort/etc) each engine defaults to;
 New agent can override the model per launch.
 
-Store: ~/.midiai/providers.json, no secrets in it --
+Store: ~/.podium/providers.json, no secrets in it --
     {"providers": {"anthropic": {"mode": "subscription"|"api_key"},
                     "openai": {"mode": "chatgpt"|"api_key"},
                     "bedrock": {"region", "profile"},
@@ -17,7 +17,7 @@ Store: ~/.midiai/providers.json, no secrets in it --
 The Anthropic API key stays in access.py's existing Keychain item
 (access.KC_SERVICE/KC_ACCOUNT) so a key saved before this file existed keeps
 working -- this module never makes a second copy of it. The OpenAI key gets
-its own item, same shape (midiai-openai-api-key / midiai). Bedrock and Vertex
+its own item, same shape (podium-openai-api-key / podium). Bedrock and Vertex
 have no secret of their own here: they authenticate through the AWS/gcloud
 CLIs already on this Mac (~/.aws/*, gcloud's own credentials).
 
@@ -61,10 +61,10 @@ import urllib.request
 
 import access
 
-STORE_FILE = os.path.expanduser("~/.midiai/providers.json")
+STORE_FILE = os.path.expanduser("~/.podium/providers.json")
 
-OPENAI_KC_SERVICE = "midiai-openai-api-key"
-OPENAI_KC_ACCOUNT = "midiai"
+OPENAI_KC_SERVICE = "podium-openai-api-key"
+OPENAI_KC_ACCOUNT = "podium"
 # OpenAI issues both "sk-..." and "sk-proj-..." keys; both start the same way.
 _OPENAI_KEY_RE = re.compile(r"^sk-[A-Za-z0-9_-]{20,300}$")
 
@@ -111,7 +111,7 @@ def _merge(base, patch):
 
 
 def _migrate_from_access():
-    """~/.midiai/claude-access.json -- the shape access.py has always
+    """~/.podium/claude-access.json -- the shape access.py has always
     written (mode/model/effort/bedrock/vertex) -- read once, when
     providers.json does not exist yet, and turned into the new shape.
     access.py's own file is never written here; it stays exactly what it
@@ -292,7 +292,7 @@ def save_provider_key(provider, key):
             raise ValueError("that doesn't look like an OpenAI API key (sk-…)")
         _verify_openai_key(key)
         if not access.keychain_set(OPENAI_KC_SERVICE, OPENAI_KC_ACCOUNT, key,
-                                   label="midiAI OpenAI API key"):
+                                   label="Podium OpenAI API key"):
             raise RuntimeError("the Keychain would not take it")
         cfg = load()
         cfg["providers"]["openai"]["hint"] = f"{key[:7]}…{key[-4:]}"
@@ -358,10 +358,10 @@ def _codex_provider_flags(provider, providers):
         openai_cfg = providers.get("openai") or {}
         if (openai_cfg.get("mode") or "chatgpt") != "api_key":
             return []       # codex's own built-in "openai" provider + its ChatGPT login
-        pid = "midiai-openai-key"
+        pid = "podium-openai-key"
         return [
             "-c", f"model_provider={_toml(pid)}",
-            "-c", f"model_providers.{pid}.name={_toml('OpenAI (midiAI key)')}",
+            "-c", f"model_providers.{pid}.name={_toml('OpenAI (Podium key)')}",
             "-c", f"model_providers.{pid}.base_url={_toml('https://api.openai.com/v1')}",
             "-c", f"model_providers.{pid}.wire_api={_toml('responses')}",
             # the key never reaches argv, env, or this function's return

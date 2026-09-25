@@ -4084,12 +4084,12 @@ bugcast: node /x/index.mjs - \u2714 Connected
     assert chain_step_done(False, "idle", CHAIN_GRACE_S, CHAIN_SETTLE), "grace covers it"
     assert not chain_step_done(True, "blocked", 9.0, CHAIN_SETTLE), "blocked is not done"
 
-    ch = Chain([0, 1], "term_x", 3, "midiAI")
+    ch = Chain([0, 1], "term_x", 3, "Podium")
     assert ch.phase == "armed" and ch.step == 0
     ch.index = 2
     assert ch.step is None, "past the end has no step"
     # mapui can clear a pad while the chain that queued it is still running
-    ch = Chain([0, 1], "term_x", 3, "midiAI")
+    ch = Chain([0, 1], "term_x", 3, "Podium")
     assert ch.fire([None] * MACRO_SLOTS, 0.0) is False, "an emptied row just ends"
     assert ch.index == 2, "and it does not sit on a pad that is gone"
     info = Chain([0, 1], "t", 0, "n").info(pads)

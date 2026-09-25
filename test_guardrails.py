@@ -15,7 +15,7 @@ import guardrails
 GUARDRAILS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guardrails.py")
 
 # Local state lives outside the repo, so tests point it at a scratch file
-# rather than the real ~/.midiai/*, the same way test_queue.py repoints
+# rather than the real ~/.podium/*, the same way test_queue.py repoints
 # mapui.QUEUE_FILE.
 guardrails.APPROVALS_FILE = os.path.join(tempfile.mkdtemp(), "approvals.json")
 guardrails.RUNS_FILE = os.path.join(tempfile.mkdtemp(), "runs.json")
@@ -262,12 +262,12 @@ guardrails.set_binding(repo8, "p", "exit", ["git:pre-commit"])
 
 # The subprocess below is a fresh interpreter, so it does not see this
 # process's monkeypatched APPROVALS_FILE/RUNS_FILE -- give it its own HOME
-# instead of touching the real ~/.midiai, and pre-approve the script there
+# instead of touching the real ~/.podium, and pre-approve the script there
 # (the file on disk is real and shared; only the approval record is per-home).
 fake_home8 = tempfile.mkdtemp()
 _, alias_content = guardrails.rail_file(repo8, "alias-chk")
 rooted8 = guardrails._root(repo8)
-fake_approvals8 = os.path.join(fake_home8, ".midiai", "guardrail-approvals.json")
+fake_approvals8 = os.path.join(fake_home8, ".podium", "guardrail-approvals.json")
 os.makedirs(os.path.dirname(fake_approvals8), exist_ok=True)
 with open(fake_approvals8, "w") as f:
     json.dump({rooted8: {"alias-chk": guardrails.digest(alias_content)}}, f)
@@ -276,7 +276,7 @@ proc = subprocess.run([sys.executable, GUARDRAILS_PY, "hook", "pre-commit", "--c
                       capture_output=True, text=True, timeout=30,
                       env=dict(os.environ, HOME=fake_home8))
 assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
-with open(os.path.join(fake_home8, ".midiai", "guardrail-runs.json")) as f:
+with open(os.path.join(fake_home8, ".podium", "guardrail-runs.json")) as f:
     runs8 = json.load(f)
 assert runs8[rooted8]["alias-chk"]["verdict"] == "pass", runs8
 assert runs8[rooted8]["alias-chk"]["event"] == "git:pre-commit", "the bare alias resolves to the event"
@@ -522,7 +522,7 @@ guardrails.set_binding(rootP, "test", "exit", ["git:pre-commit"])
 # and pre-approve the script there.
 fake_homeP = tempfile.mkdtemp()
 _, note_chk_content = guardrails.rail_file(rootP, "note-chk")
-fake_approvalsP = os.path.join(fake_homeP, ".midiai", "guardrail-approvals.json")
+fake_approvalsP = os.path.join(fake_homeP, ".podium", "guardrail-approvals.json")
 os.makedirs(os.path.dirname(fake_approvalsP), exist_ok=True)
 with open(fake_approvalsP, "w") as f:
     json.dump({rootP: {"note-chk": guardrails.digest(note_chk_content)}}, f)
@@ -548,7 +548,7 @@ assert statement["_type"] == "https://in-toto.io/Statement/v1"
 head_sha = subprocess.run(["git", "-C", repoP, "rev-parse", "HEAD"],
                           capture_output=True, text=True, timeout=10).stdout.strip()
 assert statement["subject"] == [{"name": "git-commit", "digest": {"gitCommit": head_sha}}]
-assert statement["predicateType"] == "https://midiai.local/guardrails/v1"
+assert statement["predicateType"] == "https://podium.local/guardrails/v1"
 assert "git:pre-commit" in statement["predicate"]["events"]
 results_by_id = {r["id"]: r for r in statement["predicate"]["results"]}
 assert results_by_id["note-chk"]["verdict"] == "pass"
@@ -591,7 +591,7 @@ assert note_nv.returncode != 0, "a --no-verify commit gets no note"
 # ---- a spec made active before a commit becomes its Spec trailer ----
 spec_pathP = guardrails.create_spec(rootP, "Provenance work", "tests need it", "tests pass")
 orig_active_specs_file = guardrails.ACTIVE_SPECS_FILE
-guardrails.ACTIVE_SPECS_FILE = os.path.join(fake_homeP, ".midiai", "active-specs.json")
+guardrails.ACTIVE_SPECS_FILE = os.path.join(fake_homeP, ".podium", "active-specs.json")
 try:
     guardrails.set_active_spec(rootP, "sess-abc", spec_pathP)
 finally:

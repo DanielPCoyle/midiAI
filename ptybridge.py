@@ -37,7 +37,7 @@ import fcntl
 IDLE_REAP = 90.0
 READ_CHUNK = 65536
 
-VIEW_PREFIX = "midiai-"
+VIEW_PREFIX = "podium-"
 
 
 def _run(argv, timeout=10):
@@ -55,7 +55,7 @@ def base_session(name):
 
     Grouped sessions share their windows, so `display-message -t <pane>` can
     answer with the VIEW's name rather than the session the pane was made in.
-    Prefixing that again produced `midiai-midiai-push`, a view of a view, and
+    Prefixing that again produced `podium-podium-push`, a view of a view, and
     a fresh one on every reconnect. The prefix comes off before it goes on."""
     while name.startswith(VIEW_PREFIX):
         name = name[len(VIEW_PREFIX):]
@@ -71,7 +71,7 @@ def view_for(session):
     session = base_session(session or "")
     if not session:
         return ""            # `new-session -t ""` groups with whatever is
-                             # current and leaves a session called `midiai-`
+                             # current and leaves a session called `podium-`
     name = VIEW_PREFIX + session
     if _run(["tmux", "has-session", "-t", name]).returncode != 0:
         made = _run(["tmux", "new-session", "-d", "-s", name, "-t", session])
@@ -306,7 +306,7 @@ def reap(now=None):
                 gone.append(slot["view"])
                 _views.pop(session, None)
     for view in gone:
-        if view and view != VIEW_PREFIX:      # never kill a bare `midiai-`
+        if view and view != VIEW_PREFIX:      # never kill a bare `podium-`
             _run(["tmux", "kill-session", "-t", view])
     return len(gone)
 
@@ -316,9 +316,9 @@ def demo():
     assert base_session(VIEW_PREFIX + "push") == "push", "a view is not a session"
     assert base_session(VIEW_PREFIX * 3 + "push") == "push", "however deep it got"
     assert base_session("") == "" and view_for("") == "", \
-        "no session means no view -- `new-session -t \"\"` makes `midiai-`"
+        "no session means no view -- `new-session -t \"\"` makes `podium-`"
     # checked on the name, not by calling view_for -- a self-check that makes
-    # tmux sessions leaves them behind, and this one did (`midiai-x`)
+    # tmux sessions leaves them behind, and this one did (`podium-x`)
     assert VIEW_PREFIX + base_session(VIEW_PREFIX + "x") == VIEW_PREFIX + "x", \
         "never a view of a view"
 

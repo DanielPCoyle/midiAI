@@ -1,9 +1,9 @@
 """engines.py: the providers.json store, migration from the old
-~/.midiai/claude-access.json, argv building for claude (through access.py,
+~/.podium/claude-access.json, argv building for claude (through access.py,
 not a second copy of it) and codex, and value validation. The Keychain is
 mocked throughout (same in-memory dict test_integrations.py uses for
 integrations.py's secrets) and every network call is faked -- this must
-never touch the real ~/.midiai, the real Keychain, or call the real
+never touch the real ~/.podium, the real Keychain, or call the real
 codex/claude CLIs or the Anthropic/OpenAI/AWS/Google APIs.
 python3 test_engines.py"""
 import json
