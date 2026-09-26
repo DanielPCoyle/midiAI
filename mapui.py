@@ -26,6 +26,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import access
+import engines
 import guardrails
 import integrations
 import memory
@@ -202,6 +203,26 @@ def herdr_error(text):
         return None
 
 
+def _start_named_agent(cwd, engine, model, split):
+    """The numbered-name retry push_cc.start_agent already does for a bare
+    claude launch, generalised to any engine. push_cc.py only ever starts a
+    bare `claude`, so an engine-aware New Agent request that arrives with no
+    name of its own mints one here rather than teaching push_cc.py a second
+    engine."""
+    base = os.path.basename(cwd.rstrip("/")) or "agent"
+    for n in range(1, 21):
+        name = base if n == 1 else f"{base}-{n}"
+        out = push_cc.herdr("agent", "start", name, "--cwd", cwd, "--engine", engine,
+                            *(("--model", model) if model else ()),
+                            *(("--split", split) if split else ()), "--focus")
+        err = herdr_error(out)
+        if not err:
+            return name, None
+        if err.get("code") != "agent_name_taken":
+            return None, err
+    return None, {"code": "agent_start_failed", "message": "no free agent name found"}
+
+
 # The repos worth listing, which is a different question from "where is an
 # agent right now". Nothing on the wire knew a repo existed until something
 # was running in it, so the app's PROJECTS group could only ever show you what
@@ -255,29 +276,37 @@ _queue_last = {}      # tid -> when we last sent into it
 # whenever the agent is free) or send next (release just the head, once).
 # Play is kept on disk: memory-only, every mapui restart paused every queue
 # again, and a queue you had set playing quietly stopped -- which looked like
-# the queue being broken. A new agent's queue still starts paused.
+# the queue being broken. A new agent's queue still starts paused. An armed
+# send next is kept the same way: memory-only, a restart dropped it and the
+# queue sat on "sending the top one when the agent is free" for good.
 QUEUE_PLAYING_FILE = os.path.expanduser("~/.podium/queue-playing.json")
+QUEUE_NEXT_FILE = os.path.expanduser("~/.podium/queue-next.json")
 
 
-def load_playing():
+def load_playing(path=None):
     try:
-        with open(QUEUE_PLAYING_FILE) as f:
+        with open(path or QUEUE_PLAYING_FILE) as f:
             got = json.load(f)
     except (OSError, json.JSONDecodeError):
         return set()
     return {str(t) for t in got} if isinstance(got, list) else set()
 
 
-def save_playing():
-    os.makedirs(os.path.dirname(QUEUE_PLAYING_FILE), exist_ok=True)
-    tmp = QUEUE_PLAYING_FILE + ".tmp"
+def save_playing(path=None, tids=None):
+    path = path or QUEUE_PLAYING_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(sorted(_queue_playing), f)
-    os.replace(tmp, QUEUE_PLAYING_FILE)
+        json.dump(sorted(_queue_playing if tids is None else tids), f)
+    os.replace(tmp, path)
+
+
+def save_once():
+    save_playing(QUEUE_NEXT_FILE, _queue_once)
 
 
 _queue_playing = load_playing()   # tids whose queue drains on its own
-_queue_once = set()      # tids allowed to send their head one time
+_queue_once = load_playing(QUEUE_NEXT_FILE)   # tids allowed to send their head one time
 _queue_gone = set()   # ids already delivered, so a stale client list can't
                       # put one back
 
@@ -310,8 +339,16 @@ def clean_queue(items):
     return out
 
 
+# Why each armed queue did not send on its last tick, for the app to show:
+# "sending the top one when the agent is free" with no reason was every
+# stuck-queue report -- each one needed tmux and `claude agents` read by hand
+# to find which check said no.
+_queue_why = {}       # tid -> one short reason, or absent
+
+
 def queue_state(tid, items):
-    return {"items": items, "playing": tid in _queue_playing, "next": tid in _queue_once}
+    return {"items": items, "playing": tid in _queue_playing, "next": tid in _queue_once,
+            "waiting": _queue_why.get(tid, "") if items else ""}
 
 
 def queue_tick():
@@ -323,20 +360,31 @@ def queue_tick():
     live = {a.get("terminal_id"): a for a in push_cc.agents()}
     for tid, head in heads.items():
         if tid not in _queue_playing and tid not in _queue_once:
+            _queue_why.pop(tid, None)
             continue          # paused: it waits for play or send next
         agent = live.get(tid)
-        if (not agent or agent.get("agent_status") != "idle"
-                or time.time() - _queue_last.get(tid, 0) < QUEUE_GAP_S):
+        why = ("no agent in that pane any more" if not agent
+               else f"agent is {agent.get('agent_status') or 'unknown'}"
+               if agent.get("agent_status") != "idle"
+               else "just sent one, giving it a moment"
+               if time.time() - _queue_last.get(tid, 0) < QUEUE_GAP_S else "")
+        if not why:
+            pane = push_cc.pane_summary(agent)
+            # a question on screen would take the text as its answer, and a
+            # half dictated line would have ours glued onto the end of it
+            why = ("a question is on its screen" if pane.get("opts")
+                   else "text is typed in its prompt"
+                   if (pane.get("pending") or "").strip() else "")
+        if why:
+            _queue_why[tid] = why
             continue
-        pane = push_cc.pane_summary(agent)
-        # a question on screen would take the text as its answer, and a half
-        # dictated line would have ours glued onto the end of it
-        if pane.get("opts") or (pane.get("pending") or "").strip():
-            continue
+        _queue_why.pop(tid, None)
         push_cc.herdr("agent", "send", tid, head["text"] + "\r")
         telemetry.event("queue.send", kind="queue")
         _queue_last[tid] = time.time()
-        _queue_once.discard(tid)
+        if tid in _queue_once:
+            _queue_once.discard(tid)
+            save_once()
         with _queue_lock:
             _queue_gone.add(head["id"])
             q = load_queue()
@@ -1947,6 +1995,8 @@ class Handler(BaseHTTPRequestHandler):
                        "application/json")
         elif self.path == "/settings/claude":
             self._send(200, json.dumps(access.state()), "application/json")
+        elif self.path == "/providers":
+            self._send(200, json.dumps(engines.state()), "application/json")
         elif self.path == "/agents":
             self._send(200, json.dumps({"agents": push_cc.agents()}),
                       "application/json")
@@ -2079,6 +2129,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._prompt()
         if self.path.startswith("/settings/claude"):
             return self._claude_settings()
+        if self.path.startswith("/providers"):
+            return self._providers_settings()
         if self.path == "/agent/next":
             return self._agent_next()
         if self.path in ("/queue/play", "/queue/next"):
@@ -3192,7 +3244,9 @@ class Handler(BaseHTTPRequestHandler):
         if not q[tid]:
             # a "send next" for a queue since emptied must not fire whatever
             # is added later -- that would be sending something unseen
-            _queue_once.discard(tid)
+            if tid in _queue_once:
+                _queue_once.discard(tid)
+                save_once()
         self._send(200, json.dumps({"items": q[tid]}), "application/json")
 
     def _agent_next(self):
@@ -3235,6 +3289,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, str(e)[:300], "text/plain")
         self._send(200, json.dumps(access.state()), "application/json")
 
+    def _providers_settings(self):
+        """Settings > Providers/Engines. engines.py holds every rule; this
+        only routes, the same shape _claude_settings already has. A key
+        comes in on /providers/key and never goes back out -- state() carries
+        whether one is saved and a hint, not the key."""
+        body = self._read_json_body()
+        if body is None:
+            return self._send(400, "bad request", "text/plain")
+        try:
+            if self.path == "/providers":
+                engines.update(body)
+            elif self.path == "/providers/key":
+                engines.save_provider_key(str(body.get("provider") or ""),
+                                          str(body.get("key") or ""))
+            elif self.path == "/providers/key/delete":
+                engines.delete_provider_key(str(body.get("provider") or ""))
+            elif self.path == "/providers/login":
+                provider = str(body.get("provider") or "")
+                if provider == "anthropic":
+                    access.login()
+                elif provider == "openai":
+                    engines.codex_login()
+                else:
+                    return self._send(400, "no such provider", "text/plain")
+                return self._send(200, json.dumps({"ok": True}), "application/json")
+            else:
+                return self._send(404, "not found", "text/plain")
+        except ValueError as e:
+            return self._send(400, str(e), "text/plain")
+        except Exception as e:
+            return self._send(500, str(e)[:300], "text/plain")
+        self._send(200, json.dumps(engines.state()), "application/json")
+
     def _queue_control(self):
         """/queue/play {terminal_id, playing} turns draining on or off;
         /queue/next {terminal_id} lets the head go once, when the agent is
@@ -3248,6 +3335,7 @@ class Handler(BaseHTTPRequestHandler):
             save_playing()
         else:
             _queue_once.add(tid)
+            save_once()
         with _queue_lock:
             items = load_queue().get(tid, [])
         self._send(200, json.dumps(queue_state(tid, items)), "application/json")
@@ -3545,8 +3633,17 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, (out.stdout or "ok").strip()[:500], "text/plain")
 
     def _agents_create(self):
-        """A new claude, split into the tmux server. Named agents go straight
-        through herdr so a taken name comes back as 409, not a silent -2."""
+        """A new agent, split into the tmux server. Named agents go straight
+        through herdr so a taken name comes back as 409, not a silent -2.
+
+        `engine` ("claude"|"codex") and `model` are optional -- New Agent's
+        engine picker. Neither present is the untouched request an older app
+        still sends, and it takes the exact path it always has (push_cc's
+        own claude-only start_agent/herdr calls). Either present routes
+        through engines.launch_argv (term.py's `--engine`/`--model`), which
+        is also what a "claude" engine with an explicit model uses -- the
+        model has to reach the launch somehow, and engines.py is the one
+        place that now decides claude's own flags too (see engines.py)."""
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
             body = json.loads(raw)
@@ -3559,7 +3656,27 @@ class Handler(BaseHTTPRequestHandler):
         # caller explicitly asks for a split
         split = body.get("split") or ""
         name = body.get("name")
-        if name:
+        engine = body.get("engine")
+        model = body.get("model")
+        if engine is not None and engine not in ("claude", "codex"):
+            return self._send(400, f"no such engine: {engine!r}", "text/plain")
+
+        if (engine and engine != "claude") or model:
+            eng = engine or "claude"
+            if name:
+                out = push_cc.herdr("agent", "start", name, "--cwd", cwd, "--engine", eng,
+                                    *(("--model", model) if model else ()),
+                                    *(("--split", split) if split else ()), "--focus")
+                err = herdr_error(out)
+                if err:
+                    code = 409 if err.get("code") == "agent_name_taken" else 500
+                    return self._send(code, err.get("message", "start failed"), "text/plain")
+            else:
+                name, err = _start_named_agent(cwd, eng, model, split)
+                if not name:
+                    return self._send(500, (err or {}).get("message", "could not start agent"),
+                                      "text/plain")
+        elif name:
             out = push_cc.herdr("agent", "start", name, "--cwd", cwd,
                                 *(("--split", split) if split else ()),
                                 "--focus", "--", "claude", "--permission-mode", "auto")

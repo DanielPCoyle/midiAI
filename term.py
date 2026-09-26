@@ -8,6 +8,7 @@ session id and status for every claude on the machine, tmux knows which pane
 is which -- pid is the only key that is safe to join them on, because two
 agents commonly share a cwd.
 """
+import glob
 import json
 import os
 import re
@@ -64,7 +65,17 @@ def _flag(rest, name):
     return None
 
 
-def _status(claude_status):
+def _status(claude_status, session=None):
+    """A background session -- one Claude Code hosts in a daemon (`claude
+    bg-spare`), which is what the pane's claude is then attached to -- says
+    `busy` for as long as any background shell or agent of its runs, a dev
+    server included, so forever. Its `state` is what says whether it is
+    waiting on you: `blocked` is turn over, prompt empty, and `done` is the
+    same after a finished turn ("done 11:17 AM" on screen). Read as busy, the
+    queue never sent to it."""
+    session = session or {}
+    if session.get("kind") == "background" and session.get("state") in ("blocked", "done"):
+        return "idle"
     return STATUS.get(claude_status, "idle")
 
 
@@ -103,27 +114,93 @@ def _descendants(root, table, depth=3):
     return seen
 
 
-def _find_claude_pid(pane_pid, by_pid, table):
-    """Two questions, not one: is there a claude in this pane at all, and does
-    `claude agents --json` know a session for it?
+def _find_engine(pane_pid, by_pid, table):
+    """Which engine (if any) a pane's process tree is running, and claude's
+    session pid when it is claude.
 
-    herdr identifies the agent by process and layers state on top, and it is
-    right to. A claude sitting in the agents view has not started a session,
-    so it appears nowhere in `claude agents --json` -- joining on that alone
-    drops the pane off the Push entirely until someone types into it. The
-    process is what says an agent is there; the session is enrichment.
+    Two questions, not one, for claude: is there a claude in this pane at
+    all, and does `claude agents --json` know a session for it? herdr
+    identifies the agent by process and layers state on top, and it is right
+    to. A claude sitting in the agents view has not started a session, so it
+    appears nowhere in `claude agents --json` -- joining on that alone drops
+    the pane off the Push entirely until someone types into it. The process
+    is what says an agent is there; the session is enrichment.
 
-    Returns (session_pid or None, claude_is_running).
+    Codex has no equivalent join here: `codex agents` browses the app-server
+    daemon interactively and has no `--json`, and the app-server protocol
+    itself is a whole daemon to speak to for what would otherwise be a cheap
+    per-poll call -- so a codex agent is only ever "there", never enriched by
+    pid the way claude is. Its status is `unknown` (see _match_agents) and
+    its session comes from _codex_rollout_for, by cwd, not by pid.
+
+    Returns ("claude", session_pid_or_None) | ("codex", None) | (None, None).
     """
     line = _descendants(pane_pid, table)
     known = next((p for p in line if p in by_pid), None)
     # `claude bg-spare` is a daemon, not a session -- basename match only
-    running = any(table.get(p, (0, ""))[1].rsplit("/", 1)[-1] == "claude"
-                  for p in line)
-    return known, running
+    comms = {table.get(p, (0, ""))[1].rsplit("/", 1)[-1] for p in line}
+    if known is not None or "claude" in comms:
+        return "claude", known
+    if "codex" in comms:
+        return "codex", None
+    return None, None
 
 
-def _match_agents(rows, by_pid, table=None):
+# A codex rollout's first line is `session_meta`, carrying cwd, a session id
+# and a start timestamp -- push_cc.codex_usage already reads the newest few
+# rollouts for rate-limit bars the same way (glob, sort by mtime, cap the
+# scan), proof this is cheap enough for a poll loop. Only that first line is
+# read per file -- never the whole transcript -- so linking an agent to its
+# rollout costs one small read per candidate file, not one per byte of
+# history.
+CODEX_SESSIONS_GLOB = os.path.expanduser("~/.codex/sessions/**/rollout-*.jsonl")
+CODEX_ROLLOUT_TTL = 5.0
+CODEX_ROLLOUT_SCAN = 20
+_codex_rollout_cache = {"at": -1e9, "rows": []}
+
+
+def _codex_rollouts():
+    """[{"cwd", "session_id", "path"}, ...], newest file first -- cached for
+    CODEX_ROLLOUT_TTL so an agent-list poll every 0.5s does not glob and open
+    files every time."""
+    now = time.monotonic()
+    if now - _codex_rollout_cache["at"] < CODEX_ROLLOUT_TTL:
+        return _codex_rollout_cache["rows"]
+    paths = glob.glob(CODEX_SESSIONS_GLOB, recursive=True)
+    paths.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0, reverse=True)
+    rows = []
+    for path in paths[:CODEX_ROLLOUT_SCAN]:
+        try:
+            with open(path) as f:
+                first = json.loads(f.readline())
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if first.get("type") != "session_meta":
+            continue
+        payload = first.get("payload") or {}
+        if payload.get("cwd"):
+            rows.append({"cwd": payload["cwd"],
+                        "session_id": payload.get("session_id"), "path": path})
+    _codex_rollout_cache.update(at=now, rows=rows)
+    return rows
+
+
+def _codex_rollout_for(cwd):
+    """The newest rollout whose session_meta.cwd matches this pane's cwd, or
+    None. A real "start time" join (matching a rollout to the moment THIS
+    pane's process started) is not available cheaply -- tmux carries no pane
+    start time in its format variables -- so this links on cwd and recency
+    only, which is right when one codex runs per checkout and can be wrong
+    with two codex panes open on the very same cwd at once. Documented, not
+    hidden: get it wrong and the worst case is a transcript link pointing at
+    a sibling agent's session, never a crash."""
+    for row in _codex_rollouts():
+        if row["cwd"] == cwd:
+            return row
+    return None
+
+
+def _match_agents(rows, by_pid, table=None, background=()):
     """rows: parsed PANE_FORMAT tuples. join on pid, never cwd -- two agents
     routinely share a cwd and a cwd join would silently collapse them.
 
@@ -149,23 +226,83 @@ def _match_agents(rows, by_pid, table=None):
         if pane_id in seen:
             seen[pane_id]["focused"] = seen[pane_id]["focused"] or focused
             continue
-        cpid, running = _find_claude_pid(int(pane_pid), by_pid, table)
-        if cpid is None and not running:
+        engine, cpid = _find_engine(int(pane_pid), by_pid, table)
+        if engine is None:
             continue                    # no agent here, just a shell
-        info = by_pid.get(cpid) or {}
+        if engine == "claude":
+            info = by_pid.get(cpid) or {}
+            agent_cwd = info.get("cwd") or cwd
+            # a claude with no session yet is present but unclassified, which
+            # is what `unknown` is for. idle would be a claim we cannot make.
+            status = _status(info.get("status"), info) if info else "unknown"
+            session = info.get("sessionId")
+        else:                            # codex
+            agent_cwd = cwd
+            # No machine-readable status exists cheaply for codex (see
+            # _find_engine) and this file never starts a codex session to go
+            # learn its TUI's busy/idle text -- `unknown` is the honest
+            # answer, not a guessed pane-scrape that could be silently wrong
+            # forever. A future pass that actually observes a live codex
+            # pane can add a scrape heuristic here.
+            status = "unknown"
+            session = (_codex_rollout_for(cwd) or {}).get("session_id")
         agents.append({
             "terminal_id": pane_id,
             "pane_id": pane_id,
-            "cwd": info.get("cwd") or cwd,
-            # a claude with no session yet is present but unclassified, which
-            # is what `unknown` is for. idle would be a claim we cannot make.
-            "agent_status": _status(info.get("status")) if info else "unknown",
+            "cwd": agent_cwd,
+            "engine": engine,
+            "agent_status": status,
             "focused": focused,
-            "agent_session": {"value": info.get("sessionId")},
+            "agent_session": {"value": session},
             "name": name or None,
         })
         seen[pane_id] = agents[-1]
+    _adopt_background(agents, by_pid, background)
     return agents
+
+
+def _adopt_background(agents, by_pid, background):
+    """A background session's pid is its daemon's, which is no descendant of
+    the pane whose claude is attached to it -- so the pid join above misses it
+    and the pane reads `unknown` for good. Such a pane takes the background
+    session in its own cwd, but only when that is unambiguous: exactly one
+    unclaimed background session there and exactly one unmatched pane. The
+    pid rule exists because a cwd join collapses two agents in one folder;
+    anything short of one-to-one stays unknown rather than guess."""
+    claimed = {a["agent_session"]["value"] for a in agents if a["agent_session"]["value"]}
+    free = [s for s in background if s.get("sessionId") and s["sessionId"] not in claimed]
+    orphans = [a for a in agents
+               if a.get("engine") == "claude" and not a["agent_session"]["value"]]
+    for a in orphans:
+        mine = [s for s in free if s.get("cwd") == a["cwd"]]
+        rivals = [o for o in orphans if o["cwd"] == a["cwd"]]
+        if len(mine) == 1 and len(rivals) == 1:
+            s = mine[0]
+            status = _status(s.get("status"), s)
+            if status == "working" and _turn_over(_screen_tail(a["pane_id"])):
+                status = "idle"
+            a.update(agent_status=status, agent_session={"value": s["sessionId"]})
+
+
+# A background session's `state` also reads `working` while a background
+# subagent of its runs ("← 1 agent" in the footer) -- after its own turn is
+# over and the prompt is empty, for as long as that subagent takes. Symptom:
+# story's queue sat on "sending the top one when the agent is free" under a
+# screen saying "done 9:27 PM". The screen is then the only witness: the
+# finished-turn line "✻ Cooked for 11m 27s · done 9:27 PM", and no running
+# turn's "esc to interrupt". Both are required, so a half-drawn screen stays
+# `working`. ponytail: one capture per such pane per poll; only background
+# sessions reading working pay it.
+_DONE_RE = re.compile(r"· done \d{1,2}:\d{2}")
+
+
+def _turn_over(tail):
+    return bool(_DONE_RE.search(tail)) and "esc to interrupt" not in tail
+
+
+def _screen_tail(pane_id):
+    out = _run(["tmux", "capture-pane", "-p", "-t", pane_id])
+    return "\n".join(out.stdout.rstrip().splitlines()[-12:]) if out.returncode == 0 else ""
 
 
 # `claude agents --json` is a Node CLI: ~0.8s a run. push_cc lists agents
@@ -203,7 +340,9 @@ def _agent_list():
     by_pid = {a["pid"]: a for a in claude_agents if "pid" in a}
     rows = [tuple(line.split("\t")) for line in panes.stdout.splitlines() if line.strip()]
     rows = [r for r in rows if len(r) == 7]
-    return _ok({"agents": _match_agents(rows, by_pid), "type": "agent_list"})
+    background = [a for a in claude_agents if a.get("kind") == "background"]
+    return _ok({"agents": _match_agents(rows, by_pid, background=background),
+                "type": "agent_list"})
 
 
 # Claude Code's suggested next prompt is drawn dim on an otherwise empty
@@ -286,7 +425,21 @@ def _with_access(argv):
         return list(argv)
 
 
-def _open_pane(cwd, argv):
+def _engine_argv(engine, model):
+    """The full argv for a new-agent request that names its engine --
+    engines.py already worked out every flag (provider, model, effort,
+    sandbox/approval for codex), so this is not a second copy of that
+    decision, just the lazy import _with_access already uses for access.py.
+    None on a bad engine/value, so the caller can report it instead of
+    starting a broken pane."""
+    try:
+        import engines
+        return engines.launch_argv(engine, {"model": model} if model else None)
+    except Exception:
+        return None
+
+
+def _open_pane(cwd, argv, access=True):
     """A pane running argv in cwd -- a new window in the push session, or a
     new session if this is the first pane on the machine.
 
@@ -295,8 +448,17 @@ def _open_pane(cwd, argv):
     a worktree worked all day and then failed the morning after the last agent
     was closed -- tmux's own "no server running" surfacing to the app as a 500.
     The question has one answer now, in one place.
+
+    `access=False` skips _with_access: an engine-built argv (_engine_argv)
+    already carries its own --settings/--model or -c overrides, and running
+    it back through _with_access would try to inject access.py's OWN
+    defaults a second time -- for claude that means two --settings flags
+    from two different stores; codex is unaffected either way since
+    _with_access only touches a bare `claude`, but the skip is correct for
+    both rather than correct by accident.
     """
-    argv = _with_access(argv)
+    if access:
+        argv = _with_access(argv)
     if _has_server():
         return _run(["tmux", "new-window", "-c", cwd,
                      "-P", "-F", "#{pane_id}", "--", *argv])
@@ -311,7 +473,16 @@ def _agent_start(args):
         return _err("bad_args", "agent start needs a name")
     cwd = _flag(rest, "--cwd") or os.getcwd()
     split = _flag(rest, "--split") or ""     # empty means a window of its own
-    argv = rest[rest.index("--") + 1:] if "--" in rest else []
+    engine = _flag(rest, "--engine") or ""   # a new-agent request carries this
+
+    if engine:
+        argv = _engine_argv(engine, _flag(rest, "--model") or "")
+        if argv is None:
+            return _err("bad_engine", f"could not build a launch for engine {engine!r}")
+        needs_access = False        # engines.py already built the final argv
+    else:
+        argv = rest[rest.index("--") + 1:] if "--" in rest else []
+        needs_access = True         # legacy bare-claude path, unchanged
 
     if _name_taken(name):
         return _err("agent_name_taken", f"agent name {name!r} already in use")
@@ -326,10 +497,11 @@ def _agent_start(args):
     # `--split` still splits, for whoever wants a side-by-side on the glass.
     # It is no longer what every caller passes without meaning it.
     if split:
+        split_argv = _with_access(argv) if needs_access else argv
         out = _run(["tmux", "split-window", "-h" if split == "right" else "-v",
-                    "-c", cwd, "-P", "-F", "#{pane_id}", "--", *_with_access(argv)])
+                    "-c", cwd, "-P", "-F", "#{pane_id}", "--", *split_argv])
     else:
-        out = _open_pane(cwd, argv)
+        out = _open_pane(cwd, argv, access=needs_access)
     if out.returncode != 0:
         return _err("tmux_start", out.stderr)
     _run(["tmux", "set-option", "-p", "-t", out.stdout.strip(),
@@ -625,6 +797,11 @@ if __name__ == "__main__":
         assert _status("waiting") == "blocked"
         assert _status("idle") == "idle"
         assert _status("anything-else") == "idle"
+        # a background session waiting on you is idle, whatever its daemon says
+        assert _status("busy", {"kind": "background", "state": "blocked"}) == "idle"
+        assert _status("busy", {"kind": "background", "state": "done"}) == "idle"
+        assert _status("busy", {"kind": "background", "state": "running"}) == "working"
+        assert _status("busy", {"kind": "interactive"}) == "working"
 
         capture = "\n".join(f"line{i}" for i in range(57))
         tail40 = _tail(capture, 40).splitlines()
@@ -684,6 +861,42 @@ if __name__ == "__main__":
         assert a["agent_status"] == "unknown", a
         assert a["agent_session"]["value"] is None
         assert a["cwd"] == "/repo", "no session, so the pane's cwd is all we have"
+        assert a["engine"] == "claude"
+
+        # a pane attached to a background session: the session's pid is the
+        # bg-spare daemon's, outside the pane's process tree. Captured shape
+        # from the live `story` pane that stalled the queue.
+        bg = {"pid": 31582, "kind": "background", "cwd": "/story", "sessionId": "sss",
+              "status": "busy", "state": "blocked"}
+        table6 = {700: (1, "zsh"), 701: (700, "claude"), 31582: (1, "claude")}
+        [c] = _match_agents([("%2", "700", "/story", "0", "0", "0", "")], {31582: bg},
+                            table6, background=[bg])
+        assert (c["agent_status"], c["agent_session"]["value"]) == ("idle", "sss"), c
+        # two unmatched panes in that cwd: which one owns it is a guess, so neither does
+        two = _match_agents([("%2", "700", "/story", "0", "0", "0", ""),
+                             ("%3", "702", "/story", "0", "0", "0", "")], {31582: bg},
+                            {**table6, 702: (1, "zsh"), 703: (702, "claude")}, background=[bg])
+        assert [a["agent_status"] for a in two] == ["unknown", "unknown"], two
+        # a session some pane already holds by pid is not handed out again
+        held = _match_agents([("%4", "704", "/story", "0", "0", "0", ""),
+                              ("%2", "700", "/story", "0", "0", "0", "")],
+                             {31582: bg, 705: {**bg, "pid": 705}},
+                             {**table6, 704: (1, "zsh"), 705: (704, "claude")},
+                             background=[{**bg, "pid": 705}])
+        assert [a["agent_session"]["value"] for a in held] == ["sss", None], held
+
+        # state `working` because a background subagent runs: the screen decides
+        global _screen_tail
+        real_tail = _screen_tail
+        done = "✻ Cooked for 11m 27s · done 9:27 PM · 1 shell still running\n❯ \n← 1 agent"
+        busy = "✻ Cooked for 1m · done 9:20 PM\n✢ Thinking… (12s · esc to interrupt)\n❯ "
+        for screen, want in ((done, "idle"), (busy, "working"), ("", "working")):
+            _screen_tail = lambda pid, s=screen: s
+            [c] = _match_agents([("%2", "700", "/story", "0", "0", "0", "")],
+                                {31582: {**bg, "state": "working"}}, table6,
+                                background=[{**bg, "state": "working"}])
+            assert c["agent_status"] == want, (screen, c)
+        _screen_tail = real_tail
 
         # a shell with no claude under it is not an agent and must not appear
         assert _match_agents([("%8", "900", "/repo", "0", "0", "0", "")], {},
@@ -694,7 +907,87 @@ if __name__ == "__main__":
         [b] = _match_agents([("%7", "800", "/x", "0", "0", "0", "")],
                             {801: {"cwd": "/real", "status": "busy",
                                    "sessionId": "ccc"}}, table5)
-        assert (b["agent_status"], b["cwd"]) == ("working", "/real"), b
+        assert (b["agent_status"], b["cwd"], b["engine"]) == ("working", "/real", "claude"), b
+
+        # a codex pane -- no pid join exists for it (claude agents --json
+        # knows nothing about codex), so it shows up on process alone, engine
+        # "codex", status "unknown" always (see _find_engine's docstring for
+        # why that is deliberate, not a gap)
+        table_codex = {700: (1, "login"), 701: (700, "codex")}
+        [c] = _match_agents([("%6", "700", "/cx", "0", "0", "0", "")], {}, table_codex)
+        assert c["engine"] == "codex", c
+        assert c["agent_status"] == "unknown", c
+        assert c["cwd"] == "/cx", c
+
+        # one pane each of claude and codex, sharing nothing -- both come
+        # back, correctly labelled, neither mistaken for the other
+        table_mixed = {600: (1, "login"), 601: (600, "claude"),
+                       650: (1, "login"), 651: (650, "codex")}
+        mixed = _match_agents(
+            [("%5", "600", "/a", "0", "0", "0", ""),
+             ("%4", "650", "/b", "0", "0", "0", "")],
+            {}, table_mixed)
+        by_engine = {m["terminal_id"]: m["engine"] for m in mixed}
+        assert by_engine == {"%5": "claude", "%4": "codex"}, by_engine
+
+        # rollout linking: a codex agent's session id comes from the newest
+        # rollout whose session_meta.cwd matches the pane's cwd -- cheap
+        # (first line of a handful of files), not a claim about which PANE
+        # wrote it (see _codex_rollout_for's docstring on the two-panes-one-
+        # cwd limit)
+        import tempfile
+        rollout_dir = tempfile.mkdtemp()
+        rollout_path = os.path.join(rollout_dir, "rollout-x.jsonl")
+        with open(rollout_path, "w") as f:
+            f.write(json.dumps({"type": "session_meta",
+                                "payload": {"cwd": "/cx", "session_id": "cdx-1"}}) + "\n")
+        real_glob, real_cache = CODEX_SESSIONS_GLOB, dict(_codex_rollout_cache)
+        globals()["CODEX_SESSIONS_GLOB"] = os.path.join(rollout_dir, "rollout-*.jsonl")
+        _codex_rollout_cache["at"] = -1e9
+        try:
+            row = _codex_rollout_for("/cx")
+            assert row and row["session_id"] == "cdx-1", row
+            assert _codex_rollout_for("/nowhere-near") is None
+            [d] = _match_agents([("%3", "700", "/cx", "0", "0", "0", "")], {}, table_codex)
+            assert d["agent_session"]["value"] == "cdx-1", d
+        finally:
+            globals()["CODEX_SESSIONS_GLOB"] = real_glob
+            _codex_rollout_cache.clear()
+            _codex_rollout_cache.update(real_cache)
+            import shutil as _shutil
+            _shutil.rmtree(rollout_dir, ignore_errors=True)
+
+        # _engine_argv defers to engines.launch_argv (lazily imported, same
+        # pattern as _with_access/access.py) and comes back None -- never
+        # raises -- when that raises, so _agent_start can report bad_engine
+        # instead of crashing. A fake module stands in for engines.py here so
+        # this file's own self-test never touches ~/.podium or the Keychain;
+        # engines.py's own launch_argv is test_engines.py's job.
+        import sys
+        import types
+        fake_engines = types.ModuleType("engines")
+        calls = []
+
+        def fake_launch_argv(engine, overrides=None):
+            calls.append((engine, overrides))
+            if engine == "codex":
+                return ["codex", "-s", "workspace-write"]
+            raise ValueError(f"unknown engine: {engine!r}")
+
+        fake_engines.launch_argv = fake_launch_argv
+        real_engines_mod = sys.modules.get("engines")
+        sys.modules["engines"] = fake_engines
+        try:
+            assert _engine_argv("codex", "") == ["codex", "-s", "workspace-write"]
+            assert calls[-1] == ("codex", None), calls
+            assert _engine_argv("codex", "gpt-5.1")[0] == "codex"
+            assert calls[-1] == ("codex", {"model": "gpt-5.1"}), calls
+            assert _engine_argv("not-a-real-engine", "") is None
+        finally:
+            if real_engines_mod is None:
+                sys.modules.pop("engines", None)
+            else:
+                sys.modules["engines"] = real_engines_mod
 
         # push_cc's slug() keeps "/" on purpose, and its fallback branch name
         # is push/HHMMSS -- straight into a path that is a stray directory.

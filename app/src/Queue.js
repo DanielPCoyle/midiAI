@@ -12,14 +12,14 @@ import { C, S } from './theme';
 export function useQueue(base, tid) {
   const [queue, setQ] = useState([]);
   const [err, setErr] = useState('');
-  const [flow, setFlow] = useState({ playing: false, next: false });
+  const [flow, setFlow] = useState({ playing: false, next: false, waiting: '' });
   const take = (d) => {
     setQ(d.items || []);
-    setFlow({ playing: !!d.playing, next: !!d.next });
+    setFlow({ playing: !!d.playing, next: !!d.next, waiting: d.waiting || '' });
   };
   useEffect(() => {
     setQ([]);
-    setFlow({ playing: false, next: false });
+    setFlow({ playing: false, next: false, waiting: '' });
     if (!base || !tid) return undefined;   // a subagent has no pane to queue into
     let live = true;
     const pull = () => getQueueState(base, tid).then((d) => live && take(d)).catch(() => {});
@@ -146,6 +146,9 @@ export function QueuePanel({ queue, onChange, err, ctl }) {
               : ctl.playing ? 'playing — top goes when the agent is free'
               : ctl.next ? 'sending the top one when the agent is free'
               : 'paused — nothing sends until you play or send next'}
+            {!!ctl?.waiting && (ctl.playing || ctl.next) && (
+              <Text style={styles.why}>{`\nwaiting: ${ctl.waiting}`}</Text>
+            )}
           </Text>
           <Text accessibilityRole="button" onPress={() => onChange([])} style={styles.clear}>
             clear
@@ -251,6 +254,7 @@ const styles = StyleSheet.create({
   none: { color: C.faint, fontSize: 12, lineHeight: 18 },
   headRow: { flexDirection: 'row', alignItems: 'center' },
   note: { flex: 1, color: '#e0a03c', fontSize: 11 },
+  why: { color: C.dim },
   clear: { color: C.faint, fontSize: 11, padding: 4 },
   err: { color: C.bad, fontSize: 12 },
   row: { gap: 4, borderWidth: 1, borderColor: C.line, borderRadius: S.radius, padding: 6, backgroundColor: C.panel },

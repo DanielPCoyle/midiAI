@@ -548,6 +548,14 @@ export default function Rail({
                                   numberOfLines={1}>
                                   {col.name}
                                 </Text>
+                                {/* Codex is the one engine besides Claude Code so far --
+                                    a plain "claude" badge next to every other row would
+                                    be noise, so only the exception is marked. Absent on
+                                    an older server that sends no `engine` field at all,
+                                    which reads the same as "claude". */}
+                                {col.engine === 'codex' && (
+                                  <Text style={styles.engineBadge}>codex</Text>
+                                )}
                                 {[col.model, col.effort]
                                   .filter(Boolean)
                                   .map((bit, k) => (
@@ -835,6 +843,18 @@ const styles = StyleSheet.create({
   name: { color: C.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
   nameOff: { color: C.dim },
   meta: { color: C.faint, fontSize: 11, flexShrink: 1 },
+  engineBadge: {
+    color: C.accentText,
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    borderWidth: 1,
+    borderColor: C.accent,
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
   keys: { flexDirection: 'row' },
   keyBtn: { paddingHorizontal: 4, paddingVertical: 2 },
   keyGlyph: { color: C.edge, fontSize: 13 },

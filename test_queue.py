@@ -7,7 +7,9 @@ import push_cc
 
 mapui.QUEUE_FILE = os.path.join(tempfile.mkdtemp(), "q.json")
 mapui.QUEUE_PLAYING_FILE = os.path.join(tempfile.mkdtemp(), "playing.json")
+mapui.QUEUE_NEXT_FILE = os.path.join(tempfile.mkdtemp(), "next.json")
 mapui._queue_playing.clear()
+mapui._queue_once.clear()
 sent, status, pane = [], {"s": "working"}, {}
 push_cc.agents = lambda: [{"terminal_id": "t1", "agent_status": status["s"]}]
 push_cc.pane_summary = lambda a, *k: pane
@@ -24,6 +26,7 @@ mapui._queue_once.add("t1")
 status["s"] = "working"
 mapui.queue_tick()
 assert sent == [] and "t1" in mapui._queue_once, "send next waits for a free agent"
+assert mapui.queue_state("t1", [1])["waiting"] == "agent is working", "and says why"
 status["s"] = "idle"
 mapui.queue_tick()
 assert sent == ["one\r"] and "t1" not in mapui._queue_once, "send next releases one"
@@ -53,8 +56,23 @@ mapui.save_queue({"t1": [{"id": "d", "text": "q"}]})
 mapui._queue_last["t1"] = 0
 mapui.queue_tick()
 assert len(sent) == 2, "a question on screen is not an empty input line"
+assert mapui.queue_state("t1", [1])["waiting"] == "a question is on its screen"
+pane.clear(); pane["pending"] = "half typed"
+mapui.queue_tick()
+assert len(sent) == 2 and mapui.queue_state("t1", [1])["waiting"] == "text is typed in its prompt"
+push_cc.agents = lambda: []
+mapui.queue_tick()
+assert mapui.queue_state("t1", [1])["waiting"] == "no agent in that pane any more"
+assert mapui.queue_state("t1", [])["waiting"] == "", "an empty queue waits for nothing"
 # play survives a restart: it is read back from disk
 mapui._queue_playing = {"t9"}
 mapui.save_playing()
 assert mapui.load_playing() == {"t9"}, "play is remembered across a restart"
+# so is an armed send next, and releasing it clears it on disk too
+mapui._queue_once.add("t8")
+mapui.save_once()
+assert mapui.load_playing(mapui.QUEUE_NEXT_FILE) == {"t8"}, "send next survives a restart"
+mapui._queue_once.discard("t8")
+mapui.save_once()
+assert mapui.load_playing(mapui.QUEUE_NEXT_FILE) == set()
 print("ok")

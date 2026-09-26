@@ -225,16 +225,22 @@ def launch_flags(cfg=None, have_key=None):
     return flags
 
 
-def with_access(argv):
+def with_access(argv, flags=None):
     """argv with launch_flags added when it starts a claude session. Only a
     bare `claude [flags]` -- `claude agents`, `claude mcp …`, `claude auth …`
-    are subcommands, and settings flags mean nothing (or worse) to them."""
+    are subcommands, and settings flags mean nothing (or worse) to them.
+
+    `flags`, when given, is used instead of this file's own launch_flags() --
+    engines.py's claude launch path already worked out the flags for the
+    engine's chosen provider and passes them straight through, so they are
+    not computed a second time from this file's own (possibly different)
+    config."""
     if not argv or os.path.basename(argv[0]) != "claude":
         return list(argv)
     if len(argv) > 1 and not argv[1].startswith("-"):
         return list(argv)
     try:
-        return [argv[0], *launch_flags(), *argv[1:]]
+        return [argv[0], *(flags if flags is not None else launch_flags()), *argv[1:]]
     except Exception:
         return list(argv)       # a broken settings file must not stop an agent starting
 

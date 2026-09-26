@@ -1470,6 +1470,67 @@ Found by hitting it: the python.org Python has no CA bundle until its
 CERTIFICATE_VERIFY_FAILED ("couldn't reach Anthropic") while curl worked.
 `access._tls` falls back to macOS's `/etc/ssl/cert.pem`.
 
+### Engines and providers
+
+An agent Podium starts runs as one of two **engines** -- **Claude Code** or
+**Codex** -- and each engine reaches its model through one of four
+**providers**: **Anthropic**, **OpenAI**, **AWS Bedrock**, **Google Vertex**.
+`engines.py` holds it (`~/.podium/providers.json`, `/providers`,
+`/providers/key[/delete]`, `/providers/login`), the same "flags on the new
+agent's own command line, nothing global" discipline access.py already
+established -- New agent's engine/model choice never rewrites
+`~/.claude/settings.json` or `~/.codex/config.toml` either.
+
+For Claude, `engines.launch_argv("claude", …)` is not a second copy of "how
+does a claude agent reach a model": it builds the exact cfg shape
+`access.launch_flags`/`access.with_access` have always understood, from the
+new store's provider + engine fields, and calls straight into access.py. The
+Anthropic API key stays in the one Keychain item access.py already used
+(`podium-anthropic-api-key`), so a key saved before this file existed keeps
+working. `/settings/claude*` (GET/POST) still work exactly as before, reading
+and writing access.py's own `claude-access.json` -- a back-compat shim for an
+older app, not a second live copy of the same settings; a `providers.json`
+that does not exist yet is migrated from `claude-access.json` once, on first
+load, and access.py's own file is never written by that migration.
+
+For Codex, `engines.launch_argv("codex", …)` builds a `codex` argv: `-m` for
+the model, `-c key=value` overrides for the provider, `-s`/`-a` for
+sandbox/approval. OpenAI has two provider modes -- **ChatGPT** (nothing
+extra; codex's own built-in provider and login) and **API key** (a custom
+`model_providers.<id>` block whose `auth.command` is `/usr/bin/security
+find-generic-password …`, so codex reads the Keychain itself and the key
+never reaches argv, an environment variable, or a log). Bedrock reuses
+codex's built-in `amazon-bedrock` provider with `aws.region`/`aws.profile`.
+**Vertex is Claude-only.** Codex needs the OpenAI Responses API
+(`wire_api = "responses"` is the only value a custom provider accepts, per
+codex's own config reference), and every Vertex OpenAI-compatibility doc
+found (cloud.google.com's, ai.google.dev's) documents Chat Completions only
+-- no `/responses` surface, and no built-in Vertex provider the way
+`amazon-bedrock` is built in. Rather than guess at an unconfirmed
+integration, `launch_argv("codex", …)` raises when the codex engine's
+provider is Vertex; the app shows it disabled, not offered.
+
+Codex agents are discovered the same way claude ones are -- a process in a
+pane's tree, walked from `ps`, same as `_find_claude_pid` always did for
+claude -- but there is no `claude agents --json` equivalent for codex:
+`codex agents` browses the app-server daemon interactively with no `--json`,
+and the app-server protocol itself is a whole daemon to speak to for what
+would otherwise be a cheap per-poll call. So a codex agent's status is
+always `unknown` -- not a gap filled in later with a guess, a deliberate
+choice not to scrape a TUI whose busy/idle text has never actually been
+observed (this file never starts a codex session to go learn it). Its
+session id, when one is known, comes from the newest
+`~/.codex/sessions/**/rollout-*.jsonl` whose first line (`session_meta`)
+names a matching cwd -- cheap, the same bounded/cached glob-and-read
+`push_cc.codex_usage` already does for the USAGE bars, reading only that
+first line, never a whole transcript.
+
+`python3 test_engines.py` is its gate -- argv for every engine × provider,
+secrets never in argv or env, migration from `claude-access.json`, value
+validation, and (in `python3 term.py`) codex pane discovery on faked
+tmux/`ps` output. Neither ever calls the real `codex`/`claude` CLIs or the
+Anthropic/OpenAI/AWS/Google APIs.
+
 ## Notes
 
 - `tmux list-panes -a` lists a pane once per session that can see it, and
