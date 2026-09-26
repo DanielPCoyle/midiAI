@@ -67,7 +67,10 @@ things in there look like bugs and are not:
   pane showed `unknown` and the queue never drained into it (the `story`
   agent); with only `blocked` handled, it read `working` after every
   finished turn and the queue sat on "sending the top one when the agent is
-  free".
+  free". And `state` reads `working` while a background *subagent* of its
+  runs ("← 1 agent" in the footer), turn over or not -- so for those the
+  screen decides (`term._turn_over`: "· done H:MM" shown, no "esc to
+  interrupt").
 - Agent status can be up to 1.5s old. `claude agents --json` is a Node CLI
   (~0.8s a run) and push_cc lists agents every 0.5s, so uncached it never
   stopped running and the machine serving the app crawled -- a page load's
