@@ -278,8 +278,31 @@ def _adopt_background(agents, by_pid, background):
         rivals = [o for o in orphans if o["cwd"] == a["cwd"]]
         if len(mine) == 1 and len(rivals) == 1:
             s = mine[0]
-            a.update(agent_status=_status(s.get("status"), s),
-                     agent_session={"value": s["sessionId"]})
+            status = _status(s.get("status"), s)
+            if status == "working" and _turn_over(_screen_tail(a["pane_id"])):
+                status = "idle"
+            a.update(agent_status=status, agent_session={"value": s["sessionId"]})
+
+
+# A background session's `state` also reads `working` while a background
+# subagent of its runs ("← 1 agent" in the footer) -- after its own turn is
+# over and the prompt is empty, for as long as that subagent takes. Symptom:
+# story's queue sat on "sending the top one when the agent is free" under a
+# screen saying "done 9:27 PM". The screen is then the only witness: the
+# finished-turn line "✻ Cooked for 11m 27s · done 9:27 PM", and no running
+# turn's "esc to interrupt". Both are required, so a half-drawn screen stays
+# `working`. ponytail: one capture per such pane per poll; only background
+# sessions reading working pay it.
+_DONE_RE = re.compile(r"· done \d{1,2}:\d{2}")
+
+
+def _turn_over(tail):
+    return bool(_DONE_RE.search(tail)) and "esc to interrupt" not in tail
+
+
+def _screen_tail(pane_id):
+    out = _run(["tmux", "capture-pane", "-p", "-t", pane_id])
+    return "\n".join(out.stdout.rstrip().splitlines()[-12:]) if out.returncode == 0 else ""
 
 
 # `claude agents --json` is a Node CLI: ~0.8s a run. push_cc lists agents
@@ -861,6 +884,19 @@ if __name__ == "__main__":
                              {**table6, 704: (1, "zsh"), 705: (704, "claude")},
                              background=[{**bg, "pid": 705}])
         assert [a["agent_session"]["value"] for a in held] == ["sss", None], held
+
+        # state `working` because a background subagent runs: the screen decides
+        global _screen_tail
+        real_tail = _screen_tail
+        done = "✻ Cooked for 11m 27s · done 9:27 PM · 1 shell still running\n❯ \n← 1 agent"
+        busy = "✻ Cooked for 1m · done 9:20 PM\n✢ Thinking… (12s · esc to interrupt)\n❯ "
+        for screen, want in ((done, "idle"), (busy, "working"), ("", "working")):
+            _screen_tail = lambda pid, s=screen: s
+            [c] = _match_agents([("%2", "700", "/story", "0", "0", "0", "")],
+                                {31582: {**bg, "state": "working"}}, table6,
+                                background=[{**bg, "state": "working"}])
+            assert c["agent_status"] == want, (screen, c)
+        _screen_tail = real_tail
 
         # a shell with no claude under it is not an agent and must not appear
         assert _match_agents([("%8", "900", "/repo", "0", "0", "0", "")], {},
