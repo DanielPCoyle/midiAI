@@ -2113,7 +2113,8 @@ function Composer({ info, base, onSent, onPromptSent, onComposerFocus, onQueue, 
           style={styles.upNext}>
           <MaterialIcons name="queue-music" size={16} color="#e0a03c" />
           <Text style={styles.queued} numberOfLines={1}>
-            UP NEXT · {queue.length}{queueCtl && !queueCtl.playing ? ' · paused' : ''} — {queue[0].text}
+            UP NEXT · {queue.length}{queueCtl && !queueCtl.playing && !queueCtl.next ? ' · paused'
+              : queueCtl?.waiting ? ` · ${queueCtl.waiting}` : ''} — {queue[0].text}
           </Text>
         </Pressable>
       )}

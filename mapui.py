@@ -339,8 +339,16 @@ def clean_queue(items):
     return out
 
 
+# Why each armed queue did not send on its last tick, for the app to show:
+# "sending the top one when the agent is free" with no reason was every
+# stuck-queue report -- each one needed tmux and `claude agents` read by hand
+# to find which check said no.
+_queue_why = {}       # tid -> one short reason, or absent
+
+
 def queue_state(tid, items):
-    return {"items": items, "playing": tid in _queue_playing, "next": tid in _queue_once}
+    return {"items": items, "playing": tid in _queue_playing, "next": tid in _queue_once,
+            "waiting": _queue_why.get(tid, "") if items else ""}
 
 
 def queue_tick():
@@ -352,16 +360,25 @@ def queue_tick():
     live = {a.get("terminal_id"): a for a in push_cc.agents()}
     for tid, head in heads.items():
         if tid not in _queue_playing and tid not in _queue_once:
+            _queue_why.pop(tid, None)
             continue          # paused: it waits for play or send next
         agent = live.get(tid)
-        if (not agent or agent.get("agent_status") != "idle"
-                or time.time() - _queue_last.get(tid, 0) < QUEUE_GAP_S):
+        why = ("no agent in that pane any more" if not agent
+               else f"agent is {agent.get('agent_status') or 'unknown'}"
+               if agent.get("agent_status") != "idle"
+               else "just sent one, giving it a moment"
+               if time.time() - _queue_last.get(tid, 0) < QUEUE_GAP_S else "")
+        if not why:
+            pane = push_cc.pane_summary(agent)
+            # a question on screen would take the text as its answer, and a
+            # half dictated line would have ours glued onto the end of it
+            why = ("a question is on its screen" if pane.get("opts")
+                   else "text is typed in its prompt"
+                   if (pane.get("pending") or "").strip() else "")
+        if why:
+            _queue_why[tid] = why
             continue
-        pane = push_cc.pane_summary(agent)
-        # a question on screen would take the text as its answer, and a half
-        # dictated line would have ours glued onto the end of it
-        if pane.get("opts") or (pane.get("pending") or "").strip():
-            continue
+        _queue_why.pop(tid, None)
         push_cc.herdr("agent", "send", tid, head["text"] + "\r")
         telemetry.event("queue.send", kind="queue")
         _queue_last[tid] = time.time()
